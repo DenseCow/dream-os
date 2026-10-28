@@ -233,7 +233,7 @@ struct LinkAccountView: View {
                     if phase == .keyChecking {
                         PageInfoRow(title: "Checking Your Key", caption: "One Moment…", lead: .mark(.busy))
                     } else {
-                        HStack(spacing: 10) {
+                        PageButtonPair(spacing: 10) {
                             PageSecondaryButton(title: "Paste", systemImage: "doc.on.clipboard") {
                                 if let s = UIPasteboard.general.string { key = s.trimmingCharacters(in: .whitespacesAndNewlines) }
                             }
@@ -261,7 +261,9 @@ struct LinkAccountView: View {
                 .minimumScaleFactor(0.6)
             Text(l.url.host().map { $0.replacingOccurrences(of: "www.", with: "") } ?? l.url.absoluteString)
                 .font(.system(size: 15, weight: .medium)).foregroundStyle(Palette.text.opacity(0.8))
-            HStack(spacing: 12) {
+                .fixedSize(horizontal: false, vertical: true)
+            // Side by side only when "Open Website" and "Copy Code" both fit whole; stacked on a narrow phone.
+            PageButtonPair(spacing: 12) {
                 PagePrimaryButton(title: "Open Website", systemImage: "safari") {
                     UIPasteboard.general.string = l.code
                     openURL(l.url)

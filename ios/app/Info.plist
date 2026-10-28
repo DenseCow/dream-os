@@ -5,7 +5,17 @@
 	<key>CFBundleDisplayName</key>
 	<string>Dream</string>
 	<key>CFBundleShortVersionString</key>
-	<string>0.1.0</string>
+	<string>4.2</string>
+	<key>CFBundleVersion</key>
+	<string>40200</string>
+	<key>DreamBuildChannel</key>
+	<string>DEV</string>
+	<key>LSApplicationQueriesSchemes</key>
+	<array>
+		<string>sidestore</string>
+	</array>
+	<key>NSFaceIDUsageDescription</key>
+	<string>Dream uses Face ID to unlock profiles you protect with a PIN.</string>
 	<key>UIStatusBarStyle</key>
 	<string>UIStatusBarStyleLightContent</string>
 	<key>UIUserInterfaceStyle</key>

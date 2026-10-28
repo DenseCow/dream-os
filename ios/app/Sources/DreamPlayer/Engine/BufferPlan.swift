@@ -56,17 +56,36 @@ final class NetPath: @unchecked Sendable {
     private let monitor = NWPathMonitor()
     private let lock = NSLock()
     private var _unmetered = true
+    private var seen = false
+    private let first = DispatchSemaphore(value: 0)
 
     private init() {
         monitor.pathUpdateHandler = { [weak self] p in
-            let free = p.status == .satisfied && !p.isExpensive && !p.isConstrained
-            self?.lock.withLock { self?._unmetered = free }
+            guard let self else { return }
+            let free = Self.unmetered(p)
+            let wasFirst = self.lock.withLock { () -> Bool in
+                self._unmetered = free
+                defer { self.seen = true }
+                return !self.seen
+            }
+            if wasFirst { self.first.signal() }
         }
         monitor.start(queue: DispatchQueue(label: "dreamos.player.path", qos: .utility))
     }
 
-    /// True until the first answer arrives (the player opens long after launch, so it has one by then).
-    var unmetered: Bool { lock.withLock { _unmetered } }
+    /// The same rule as Dream Core's `PlaybackPath` (DreamPlayback): cellular counts as metered even without
+    /// `isExpensive`; personal hotspot and Low Data Mode too.
+    private static func unmetered(_ p: NWPath) -> Bool {
+        p.status == .satisfied && !p.isExpensive && !p.isConstrained && !p.usesInterfaceType(.cellular)
+    }
+
+    /// Read fresh from the monitor's current path at each load (2026-10-28: the last callback could lag the real path,
+    /// so a cellular Play got the Wi-Fi plan). Waits once (at most 0.3 s) for the monitor's first answer.
+    var unmetered: Bool {
+        if !lock.withLock({ seen }), first.wait(timeout: .now() + 0.3) == .success { first.signal() }
+        if lock.withLock({ seen }) { return Self.unmetered(monitor.currentPath) }
+        return lock.withLock { _unmetered }
+    }
 
     /// Starts watching (call early, e.g. when a player opens, so the first load already knows the path).
     func start() { _ = unmetered }

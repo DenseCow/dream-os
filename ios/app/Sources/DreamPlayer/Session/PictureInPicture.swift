@@ -198,6 +198,8 @@ public final class PictureInPicture: NSObject, ObservableObject {
         Log.player.info("PiP: stopped (restore: \(self.restoring, privacy: .public), parked: \(self.isParked(), privacy: .public))")
         isActive = false
         session?.engine.pipDidStop()
+        // The picture back in its host for where the player is now (mini player or full screen), checked afresh.
+        PlayerPresentation.shared.pipEnded()
         let restored = restoring
         restoring = false
         guard !restored, let s = session else { return }
@@ -207,7 +209,8 @@ public final class PictureInPicture: NSObject, ObservableObject {
     }
 
     fileprivate func restore(_ done: @escaping @MainActor (Bool) -> Void) {
-        Log.player.info("PiP: restore asked (parked: \(self.isParked(), privacy: .public))")
+        Log.player.info("PiP: restore asked (parked: \(self.isParked(), privacy: .public), minimized: \(DreamPlayerPresenter.shared.isMinimized, privacy: .public); \(VideoDock.shared.owner, privacy: .public))")
+        // Minimized: the window goes back into the mini player (the picture stays docked there), never full screen.
         restoring = true
         if isParked(), let r = restorePlayer { r { done(true) } } else { done(true) }
     }

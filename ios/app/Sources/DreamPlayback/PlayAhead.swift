@@ -139,7 +139,8 @@ public final class PlayAhead: LookAheadService, @unchecked Sendable {
     /// One look-ahead lookup for [r] (30 s at most); a second ask within a minute, or one with a link remembered, is skipped.
     private func run(_ r: PlayRequest, why: String, budgetMs: Int64 = 30_000) async {
         let core = NativeResolver.shared
-        if core.peek(r) != nil { return }
+        // On mobile data a remembered link above Cellular Data Saver's limit doesn't count (the look-ahead looks within it).
+        if core.peekUsable(r) != nil { return }
         let k = core.key(r)
         let now = Mono.now()
         let go = lock.withLock { () -> Bool in

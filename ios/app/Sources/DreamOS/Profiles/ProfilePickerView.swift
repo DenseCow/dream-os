@@ -1,6 +1,7 @@
 import SwiftUI
 import DreamCore
 import DreamUI
+import DreamPlayback
 
 /// Avatars and colors a profile can take (Profiles.kt EMOJIS / COLORS).
 enum ProfileLook {
@@ -86,13 +87,19 @@ struct ProfilePickerView: View {
     @State private var loaded = false
     @State private var pinFor: PinAsk?
     @State private var edit: EditTarget?
+    @State private var autoFaceTried = false
 
     struct PinAsk: Identifiable {
         let id = UUID()
+        /// Whose PIN is asked (shown on the pad): the profile itself, or a grown-up's when leaving Kids.
         let profile: Profile
-        /// True: the PIN switches to this profile; false: it is only checked (editing, leaving Kids).
+        /// The profile being opened.
+        let target: Profile
+        /// True: the PIN switches to `target`; false: `profile`'s PIN is only checked (editing).
         var switches = true
-        let then: (String) -> Void
+        /// Unlock With Face ID is on for `profile` and the phone can check: the pad tries Face ID first.
+        var faceId = false
+        let then: () -> Void
     }
 
     enum EditTarget: Identifiable {
@@ -174,16 +181,16 @@ struct ProfilePickerView: View {
             if let ask = pinFor {
                 PinPadView(title: "Enter PIN", mode: .verify(subtitle: "\(ProfileLook.emoji(ask.profile, index: 0))  \(ask.profile.name)", check: { pin in
                     do {
-                        if ask.switches { try await Services.shared.profiles.select(ask.profile.id, pin: pin) }
+                        if ask.switches { try await Services.shared.profiles.select(ask.target.id, pin: pin) }
                         else { try await Services.shared.profiles.checkPin(ask.profile.id, pin: pin) }
-                        ask.then(pin)
+                        ask.then()
                         return nil
                     } catch let e as DreamError {
                         return e.message
                     } catch {
                         return "Wrong PIN. Try again."
                     }
-                })) { _ in pinFor = nil }
+                }), faceId: ask.faceId ? faceOffer(ask) : nil) { _ in pinFor = nil }
                 .transition(.opacity)
             }
         }
@@ -194,6 +201,13 @@ struct ProfilePickerView: View {
         profiles = await Services.shared.profiles.profiles()
         current = await Services.shared.profiles.current()
         loaded = true
+        // Launch with a single PIN-locked profile that has Unlock With Face ID on: Face ID comes up by itself (once);
+        // cancelling leaves the PIN pad, and Cancel there leaves Who's Watching (Add Profile).
+        if trustedId == nil, !autoFaceTried, profiles.count == 1, let only = profiles.first, only.hasPin, only.faceId == true,
+           pinFor == nil, edit == nil {
+            autoFaceTried = true
+            await choose(only)
+        }
     }
 
     private func tap(_ p: Profile) {
@@ -202,36 +216,61 @@ struct ProfilePickerView: View {
         Task { await choose(p) }
     }
 
+    /// Shows the PIN pad for [profile]'s PIN to open [target]; Face ID first when it's on for [profile].
+    private func ask(_ profile: Profile, opening target: Profile, switches: Bool = true, then: @escaping () -> Void) async {
+        let face = await Services.shared.profiles.faceIdReady(switches ? target.id : profile.id, switches: switches)
+        pinFor = PinAsk(profile: profile, target: target, switches: switches, faceId: face, then: then)
+    }
+
+    private func faceOffer(_ ask: PinAsk) -> PinPadView.FaceIdOffer {
+        let kind = FaceIdCheck.kind
+        return PinPadView.FaceIdOffer(label: FaceIdCheck.label(kind), symbol: FaceIdCheck.symbol(kind)) {
+            do {
+                try await Services.shared.profiles.unlockWithFaceId(ask.switches ? ask.target.id : ask.profile.id, switches: ask.switches)
+                ask.then()
+                return nil
+            } catch let e as DreamError {
+                return e.message
+            } catch {
+                return ""  // cancelled: the pad stays
+            }
+        }
+    }
+
     private func openEdit(_ p: Profile) {
         if p.hasPin && p.id != trustedId {
-            // Editing a locked profile checks its PIN first (select only verifies here; the edit sheet saves).
-            pinFor = PinAsk(profile: p, switches: false) { _ in edit = .existing(p) }
+            // Editing a locked profile checks its PIN first (only checked here; the edit sheet saves).
+            Task { await ask(p, opening: p, switches: false) { edit = .existing(p) } }
         } else {
             edit = .existing(p)
         }
     }
 
+    /// Whose PIN leaving the current Kids profile needs: the main profile's, else the first grown-up's with a PIN
+    /// (the same pick as `Profiles.pinNeeded`).
+    private func leaveGuard(_ cur: Profile) -> Profile? {
+        if let main = profiles.first, main.id != cur.id, main.hasPin { return main }
+        return profiles.first { $0.id != cur.id && !$0.isKids && $0.hasPin }
+    }
+
     private func choose(_ p: Profile) async {
+        // Already this profile (opened from Settings): nothing to switch or unlock.
+        if p.id == trustedId, p.id == current?.id { finish(p); return }
         if p.hasPin && p.id != trustedId {
-            pinFor = PinAsk(profile: p) { _ in finish(p) }
+            await ask(p, opening: p) { finish(p) }
             return
         }
-        // Leaving a Kids profile that asks for a PIN: a grown-up profile's PIN (ProfilePicker.leaveKids).
-        if let cur = current, cur.id != p.id, cur.isKids, cur.exitPin == true,
-           let guard_ = profiles.first(where: { $0.id != cur.id && !$0.isKids && $0.hasPin }) {
-            pinFor = PinAsk(profile: guard_, switches: false) { _ in
-                Task {
-                    try? await Services.shared.profiles.select(p.id, pin: nil)
-                    finish(p)
-                }
-            }
+        // Leaving a Kids profile that asks for a PIN: a grown-up profile's PIN (ProfilePicker.leaveKids); `select`
+        // checks it and switches.
+        if let cur = current, cur.id != p.id, cur.isKids, cur.exitPin == true, let guard_ = leaveGuard(cur) {
+            await ask(guard_, opening: p) { finish(p) }
             return
         }
         do {
             try await Services.shared.profiles.select(p.id, pin: nil)
             finish(p)
         } catch {
-            pinFor = PinAsk(profile: p) { _ in finish(p) }
+            await ask(p, opening: p) { finish(p) }
         }
     }
 
@@ -260,6 +299,10 @@ struct ProfileEditView: View {
     @State private var newPin: String?
     @State private var removePin = false
     @State private var choosingPin = false
+    /// Unlock With Face ID (on only after the PIN and a Face ID check), and what this phone has.
+    @State private var faceId = false
+    @State private var faceKind = FaceIdCheck.Kind.none
+    @State private var pinForFace = false
     @State private var confirmRemove = false
     @State private var error: String?
     @State private var ready = false
@@ -315,9 +358,14 @@ struct ProfileEditView: View {
                 PageSection(title: "Profile").padding(.top, PageSpace.group)
                 VStack(spacing: PageSpace.row) {
                     PageRow(title: "Lock With a PIN", caption: "Asks for a 4-digit PIN when this profile is chosen",
-                            toggle: (hasPin && !removePin) || newPin != nil) {
-                        if (hasPin && !removePin) || newPin != nil { newPin = nil; removePin = hasPin }
+                            toggle: lockOn) {
+                        if lockOn { newPin = nil; removePin = hasPin; faceId = false }
                         else { choosingPin = true }
+                    }
+                    if lockOn && faceKind != .none {
+                        let label = FaceIdCheck.label(faceKind)
+                        PageRow(title: "Unlock With \(label)", caption: "Asks for \(label) first; the PIN still works",
+                                toggle: faceId) { toggleFaceId(label) }
                     }
                     if let profile, !isFirst, !isCurrent {
                         PageRow(title: "Remove Profile", caption: "Also removes its list and history", chevron: true) { confirmRemove = true }
@@ -347,6 +395,41 @@ struct ProfileEditView: View {
                 PinPadView(title: name.isEmpty ? "This Profile" : name, mode: .choose(save: { pin in newPin = pin; removePin = false })) { _ in
                     choosingPin = false
                 }
+            } else if pinForFace, let profile {
+                // Turning Face ID on takes the profile's PIN once, so someone else can't turn it on.
+                PinPadView(title: "Enter PIN", mode: .verify(subtitle: "To turn on \(FaceIdCheck.label(faceKind))", check: { pin in
+                    do {
+                        try await Services.shared.profiles.checkPin(profile.id, pin: pin)
+                        return nil
+                    } catch let e as DreamError {
+                        return e.message
+                    } catch {
+                        return "Wrong PIN. Try again."
+                    }
+                })) { ok in
+                    pinForFace = false
+                    if ok { confirmFaceId(FaceIdCheck.label(faceKind)) }
+                }
+            }
+        }
+    }
+
+    private var lockOn: Bool { (hasPin && !removePin) || newPin != nil }
+
+    private func toggleFaceId(_ label: String) {
+        error = nil
+        if faceId { faceId = false; return }
+        // A PIN just chosen here was typed twice already; an existing one is asked once.
+        if newPin != nil { confirmFaceId(label) } else { pinForFace = true }
+    }
+
+    /// The Face ID check that turns the option on.
+    private func confirmFaceId(_ label: String) {
+        Task {
+            switch await FaceIdCheck.run(reason: "Confirm it's you to turn on \(label).") {
+            case .passed: PageHaptics.success(); faceId = true
+            case .cancelled: break
+            case .failed: PageHaptics.warning(); error = "Couldn't turn on \(label). Try again."
             }
         }
     }
@@ -354,7 +437,9 @@ struct ProfileEditView: View {
     private func fill() {
         guard !ready else { return }
         ready = true
+        faceKind = FaceIdCheck.kind
         guard let p = profile else { return }
+        faceId = p.faceId == true
         name = p.name
         emoji = p.avatar.isEmpty ? ProfileLook.emojis[0] : p.avatar
         color = p.color ?? ProfileLook.colors[0]
@@ -375,7 +460,8 @@ struct ProfileEditView: View {
         p.kidsLevel = level
         p.ratingLimit = level < KidsLevels.everyone ? KidsLevels.all[level].movie : nil
         p.exitPin = kids ? exitPin : false
-        p.hasPin = newPin != nil || (hasPin && !removePin)
+        p.hasPin = lockOn
+        p.faceId = lockOn && faceId ? true : nil
         do {
             // pin: a new PIN to set; "" removes the lock; nil keeps it as it is.
             try await Services.shared.profiles.save(p, pin: newPin ?? (removePin ? "" : nil))

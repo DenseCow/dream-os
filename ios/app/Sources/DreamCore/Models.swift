@@ -339,10 +339,13 @@ public struct Profile: Codable, Sendable, Hashable, Identifiable {
     public var kidsLevel: Int?
     /// A kids profile asks for a grown-up's PIN before switching away (KidsProfiles.exitPin).
     public var exitPin: Bool?
+    /// "Unlock With Face ID" (Touch ID on Touch ID phones): the phone's face / fingerprint check opens this PIN-locked
+    /// profile, the PIN pad stays the fallback. Read back from the Keychain like `hasPin`; nil = off.
+    public var faceId: Bool?
     public init(id: String, name: String, avatar: String = "", isKids: Bool = false, ratingLimit: String? = nil, hasPin: Bool = false,
-                color: Int? = nil, kidsLevel: Int? = nil, exitPin: Bool? = nil) {
+                color: Int? = nil, kidsLevel: Int? = nil, exitPin: Bool? = nil, faceId: Bool? = nil) {
         self.id = id; self.name = name; self.avatar = avatar; self.isKids = isKids; self.ratingLimit = ratingLimit; self.hasPin = hasPin
-        self.color = color; self.kidsLevel = kidsLevel; self.exitPin = exitPin
+        self.color = color; self.kidsLevel = kidsLevel; self.exitPin = exitPin; self.faceId = faceId
     }
 }
 

@@ -150,7 +150,9 @@ enum PageLead {
     case custom(AnyView)
 }
 
-/// The row's content: lead, title (one line, never broken mid-word), caption (two lines at most), value, switch or chevron.
+/// The row's content: lead, title, caption, value, switch or chevron. Nothing ends in "…" (owner, 2026-10-28): the
+/// title and caption wrap, and the value sits beside the title only while the title fits whole on one line next to
+/// it; otherwise it moves under the caption (`PageRowText`).
 struct PageRowContent: View {
     var title: String
     var caption: String? = nil
@@ -160,38 +162,36 @@ struct PageRowContent: View {
     var trailingMark: PageMark = .none
     var chevron = false
     var toggle: Bool? = nil
-    var captionLines = 2
     @Environment(\.pageRowLit) private var lit
 
     var body: some View {
         HStack(spacing: 0) {
             leadView
-            VStack(alignment: .leading, spacing: 4) {
+            PageRowText {
                 Text(title)
                     .font(.system(size: 17, weight: .medium))
                     .foregroundStyle(lit ? Palette.ink : Palette.text)
-                    .lineLimit(1)
-                    .truncationMode(.tail)
                 if let caption, !caption.isEmpty {
                     Text(caption)
                         .font(.system(size: 13.5))
                         .foregroundStyle(lit ? Palette.ink.opacity(0.62) : Palette.textSecondary)
-                        .lineLimit(captionLines)
-                        .fixedSize(horizontal: false, vertical: true)
+                        .layoutValue(key: PageRowText.RoleKey.self, value: .caption)
+                }
+                if hasValue, let value {
+                    // The mark travels with its value ("✓ Connected"), beside the title or under the caption.
+                    HStack(spacing: 10) {
+                        if trailingMark != .none { PageMarkGlyph(mark: trailingMark, size: 20) }
+                        Text(value)
+                            .font(.system(size: 15, weight: .medium))
+                            .foregroundStyle(lit ? Palette.ink.opacity(0.7) : (valueTone ?? Palette.text.opacity(0.82)))
+                            .multilineTextAlignment(.leading)
+                    }
+                    .layoutValue(key: PageRowText.RoleKey.self, value: .value)
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
-            if trailingMark != .none {
+            if trailingMark != .none && !hasValue {
                 PageMarkGlyph(mark: trailingMark, size: 20).padding(.leading, 12)
-            }
-            if let value, !value.isEmpty {
-                Text(value)
-                    .font(.system(size: 15, weight: .medium))
-                    .foregroundStyle(lit ? Palette.ink.opacity(0.7) : (valueTone ?? Palette.text.opacity(0.82)))
-                    .multilineTextAlignment(.trailing)
-                    .lineLimit(2)
-                    .frame(maxWidth: 170, alignment: .trailing)
-                    .padding(.leading, 12)
             }
             if let toggle {
                 PageSwitch(on: toggle, lit: lit).padding(.leading, 14)
@@ -203,6 +203,8 @@ struct PageRowContent: View {
         .padding(.leading, 14).padding(.trailing, 16).padding(.vertical, 11)
         .frame(minHeight: 60)
     }
+
+    private var hasValue: Bool { !(value ?? "").isEmpty }
 
     @ViewBuilder private var leadView: some View {
         switch lead {
@@ -223,6 +225,123 @@ struct PageRowContent: View {
                 .padding(.trailing, 14)
         case .custom(let v):
             v.frame(width: 40, height: 40).padding(.trailing, 14)
+        }
+    }
+}
+
+/// A row's words: the title, then its caption, then (role `.value`) the value. The value sits on the right, beside
+/// the title, when the title fits whole on one line next to it and the value takes at most half the row; otherwise
+/// the value goes under the caption, on the left. Title and caption always wrap onto more lines rather than end
+/// in "…" (STANDARDS §3), so nothing is cut on a 375 pt phone, a 440 pt phone or with larger text.
+struct PageRowText: Layout {
+    var gap: CGFloat = 12
+    var spacing: CGFloat = 4
+
+    enum Role { case title, caption, value }
+    struct RoleKey: LayoutValueKey { static let defaultValue = Role.title }
+
+    private struct Slot { var index: Int; var origin: CGPoint; var size: CGSize }
+
+    private func plan(_ proposed: CGFloat?, _ subviews: Subviews) -> (size: CGSize, slots: [Slot]) {
+        let width: CGFloat? = (proposed?.isFinite ?? false) ? proposed : nil
+        var text: [Int] = [], value: Int?
+        for i in subviews.indices {
+            if subviews[i][RoleKey.self] == .value { value = i } else { text.append(i) }
+        }
+        let valueIdeal = value.map { subviews[$0].sizeThatFits(.unspecified) } ?? .zero
+        var inline = true
+        if value != nil, let width, let t = text.first {
+            let titleIdeal = subviews[t].sizeThatFits(.unspecified).width
+            inline = titleIdeal + gap + valueIdeal.width <= width + 0.5 && valueIdeal.width <= width * 0.5
+        }
+        var slots: [Slot] = []
+        var y: CGFloat = 0
+        if inline {
+            let side = value == nil ? 0 : gap + valueIdeal.width
+            let textW = width.map { max(0, $0 - side) }
+            var widest: CGFloat = 0
+            for (n, i) in text.enumerated() {
+                if n > 0 { y += spacing }
+                let sz = subviews[i].sizeThatFits(ProposedViewSize(width: textW, height: nil))
+                slots.append(Slot(index: i, origin: CGPoint(x: 0, y: y), size: sz))
+                y += sz.height
+                widest = max(widest, sz.width)
+            }
+            let h = max(y, valueIdeal.height)
+            let dy = (h - y) / 2
+            for k in slots.indices { slots[k].origin.y += dy }
+            let w = width ?? (widest + side)
+            if let value {
+                slots.append(Slot(index: value, origin: CGPoint(x: w - valueIdeal.width, y: (h - valueIdeal.height) / 2), size: valueIdeal))
+            }
+            return (CGSize(width: w, height: h), slots)
+        }
+        // Stacked: only when the width is known (above).
+        let w = width ?? 0
+        for (n, i) in (text + (value.map { [$0] } ?? [])).enumerated() {
+            if n > 0 { y += i == value ? spacing + 2 : spacing }
+            let sz = subviews[i].sizeThatFits(ProposedViewSize(width: w, height: nil))
+            slots.append(Slot(index: i, origin: CGPoint(x: 0, y: y), size: CGSize(width: min(sz.width, w), height: sz.height)))
+            y += sz.height
+        }
+        return (CGSize(width: w, height: y), slots)
+    }
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        plan(proposal.width, subviews).size
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        for s in plan(bounds.width, subviews).slots {
+            subviews[s.index].place(at: CGPoint(x: bounds.minX + s.origin.x, y: bounds.minY + s.origin.y), proposal: ProposedViewSize(s.size))
+        }
+    }
+}
+
+/// Two (or more) buttons side by side in equal widths when every label fits whole that way; otherwise one above the
+/// other at full width. Never a squeezed "Open W…" (owner, 2026-10-28).
+struct PageButtonPair: Layout {
+    var spacing: CGFloat = 10
+
+    private func sideBySide(_ width: CGFloat, _ subviews: Subviews) -> Bool {
+        let n = CGFloat(subviews.count)
+        let widest = subviews.map { $0.sizeThatFits(.unspecified).width }.max() ?? 0
+        return widest * n + spacing * (n - 1) <= width + 0.5
+    }
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        guard !subviews.isEmpty else { return .zero }
+        let n = CGFloat(subviews.count)
+        guard let width = proposal.width, width.isFinite else {
+            let widest = subviews.map { $0.sizeThatFits(.unspecified).width }.max() ?? 0
+            let h = subviews.map { $0.sizeThatFits(.unspecified).height }.max() ?? 0
+            return CGSize(width: widest * n + spacing * (n - 1), height: h)
+        }
+        if sideBySide(width, subviews) {
+            let cw = (width - spacing * (n - 1)) / n
+            let h = subviews.map { $0.sizeThatFits(ProposedViewSize(width: cw, height: nil)).height }.max() ?? 0
+            return CGSize(width: width, height: h)
+        }
+        let hs = subviews.map { $0.sizeThatFits(ProposedViewSize(width: width, height: nil)).height }
+        return CGSize(width: width, height: hs.reduce(0, +) + spacing * (n - 1))
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        guard !subviews.isEmpty else { return }
+        let n = CGFloat(subviews.count)
+        if sideBySide(bounds.width, subviews) {
+            let cw = (bounds.width - spacing * (n - 1)) / n
+            for (k, s) in subviews.enumerated() {
+                s.place(at: CGPoint(x: bounds.minX + CGFloat(k) * (cw + spacing), y: bounds.minY),
+                        proposal: ProposedViewSize(width: cw, height: bounds.height))
+            }
+        } else {
+            var y = bounds.minY
+            for s in subviews {
+                let h = s.sizeThatFits(ProposedViewSize(width: bounds.width, height: nil)).height
+                s.place(at: CGPoint(x: bounds.minX, y: y), proposal: ProposedViewSize(width: bounds.width, height: h))
+                y += h + spacing
+            }
         }
     }
 }
@@ -362,7 +481,7 @@ struct PageResult: View {
             Text(headline)
                 .font(.system(size: 22, weight: .semibold))
                 .foregroundStyle(Palette.text)
-                .lineLimit(2)
+                .fixedSize(horizontal: false, vertical: true)
                 .frame(maxWidth: .infinity, alignment: .leading)
         }
     }
@@ -509,10 +628,21 @@ struct PageScaffold<Content: View>: View {
     @State private var bar = BarGlassModel(lead: 0, fade: 20)
 
     var body: some View {
+        let long = Self.titleTooLong(title)
         ZStack {
             DreamBackground()
             ScrollView {
                 VStack(alignment: .leading, spacing: 0) {
+                    if long {
+                        // iOS ends a large title that doesn't fit with "…": a long one is the page's own heading,
+                        // wrapping, in the same type (owner, 2026-10-28).
+                        Text(title)
+                            .font(.largeTitle.weight(.bold))
+                            .foregroundStyle(Palette.text)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .padding(.bottom, 16)
+                            .accessibilityAddTraits(.isHeader)
+                    }
                     if let subtitle {
                         PageNote(text: subtitle, size: 15).padding(.bottom, 22)
                     }
@@ -528,8 +658,55 @@ struct PageScaffold<Content: View>: View {
             .scrollIndicators(.hidden)
         }
         .navigationTitle(title)
-        .navigationBarTitleDisplayMode(.large)
+        .modifier(PageTitleMode(long: long, title: title, bar: bar))
         .barGlass(bar)
+    }
+
+    /// True when the large title wouldn't fit on one line in the bar (the bar's large title: Large Title type in bold,
+    /// at the viewer's text size, inside the bar's side margins).
+    static func titleTooLong(_ title: String) -> Bool {
+        let size = UIFont.preferredFont(forTextStyle: .largeTitle).pointSize
+        let font = UIFont.systemFont(ofSize: size, weight: .bold)
+        let w = (title as NSString).size(withAttributes: [.font: font]).width
+        let screen = UIApplication.shared.connectedScenes.compactMap { ($0 as? UIWindowScene)?.screen.bounds.width }.first ?? 375
+        let margin: CGFloat = screen >= 414 ? 20 : 16
+        return w > screen - 2 * margin - 6
+    }
+}
+
+/// A short title stays the bar's large title; a long one is the page's own heading, with a small name in the bar
+/// (scaled to fit, never "…") once the page scrolls under it.
+private struct PageTitleMode: ViewModifier {
+    let long: Bool
+    let title: String
+    let bar: BarGlassModel
+    func body(content: Content) -> some View {
+        if long {
+            content
+                .navigationBarTitleDisplayMode(.inline)
+                .toolbar {
+                    ToolbarItem(placement: .principal) {
+                        PageBarName(bar: bar, text: title)
+                    }
+                }
+        } else {
+            content.navigationBarTitleDisplayMode(.large)
+        }
+    }
+}
+
+private struct PageBarName: View {
+    let bar: BarGlassModel
+    let text: String
+    var body: some View {
+        Text(text)
+            .font(.headline)
+            .foregroundStyle(Palette.text)
+            .lineLimit(1)
+            .minimumScaleFactor(0.5)
+            .opacity(bar.amount >= 0.9 ? 1 : 0)
+            .animation(.easeOut(duration: 0.18), value: bar.amount >= 0.9)
+            .accessibilityHidden(bar.amount < 0.9)
     }
 }
 

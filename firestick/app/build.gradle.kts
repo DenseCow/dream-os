@@ -23,7 +23,7 @@ val signingProps: Properties? = (System.getenv("DREAMOS_SIGNING") ?: localProps.
     ?.takeIf { p -> listOf("storeFile", "storePassword", "keyAlias", "keyPassword").all { !p.getProperty(it).isNullOrBlank() } }
 
 /** Dream OS's version (major.minor[.patch]): the one place to change it for a release. See versionCode below. */
-val dreamVersion = "4.1"
+val dreamVersion = "4.2"
 
 /** A local.properties value as a Java string literal for BuildConfig (quotes and backslashes escaped). */
 fun localString(key: String): String =
@@ -45,6 +45,11 @@ android {
         // Self-updater: GitHub repository whose Releases carry Dream OS (local.properties update.repo=owner/name).
         // Empty = the updater hides itself (Settings › Updates and the daily check).
         buildConfigField("String", "UPDATE_REPO", localString("update.repo"))
+        // Build channel: "PUBLIC" only for builds published by dream-os-public's tools/release.sh (it writes
+        // build.channel=PUBLIC into its local.properties); every other build is "DEV". Shown after the version on the
+        // boot intro and in Settings › About.
+        buildConfigField("String", "BUILD_CHANNEL",
+            "\"" + (if (localProps.getProperty("build.channel", "").trim().equals("PUBLIC", ignoreCase = true)) "PUBLIC" else "DEV") + "\"")
         // Optional defaults for the user's own build. Empty = Dream OS asks for them in Settings (TMDB)
         // or simply hides Rotten Tomatoes / IMDb scores (OMDb). Anything set here ends up inside the APK.
         buildConfigField("String", "TMDB_KEY", localString("tmdb.key"))

@@ -54,7 +54,7 @@ struct KeyEntryView: View {
                     ErrorHelp(lines: kind.help)
                 default: EmptyView()
                 }
-                HStack(spacing: 10) {
+                PageButtonPair(spacing: 10) {
                     PageSecondaryButton(title: "Paste", systemImage: "doc.on.clipboard") {
                         if let s = UIPasteboard.general.string { key = s.trimmingCharacters(in: .whitespacesAndNewlines) }
                     }

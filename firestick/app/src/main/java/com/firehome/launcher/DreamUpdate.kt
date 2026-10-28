@@ -217,6 +217,70 @@ object DreamUpdate {
         }
     }
 
+    // ---- About's status line (Settings › About) ----
+
+    /** The public repository: About's read-only check in a build without an updater (update.repo empty, the owner's own build). */
+    const val PUBLIC_REPO = "DenseCow/dream-os"
+    private const val K_S_LATEST = "status_latest"
+    private const val K_S_LAST = "status_last"
+    private const val K_S_FAILED = "status_failed"
+    private const val STATUS_EVERY_MS = 6 * 60 * 60_000L
+
+    /** What About says: the newest version GitHub named (null = none known), when it was asked, and whether that try failed. */
+    class Status(val latest: String?, val checkedAt: Long, val failed: Boolean) {
+        val newer: Boolean get() = latest != null && DreamUpdate.newer(latest, DreamUpdate.currentVersion())
+    }
+
+    /** The updater's own answer when this build has one, else the read-only check's. */
+    fun status(ctx: Context): Status {
+        if (enabled(ctx)) return Status(latest(ctx)?.version, lastChecked(ctx), lastError(ctx) != null)
+        val p = prefs(ctx)
+        return Status(p.getString(K_S_LATEST, null), p.getLong(K_S_LAST, 0L), p.getBoolean(K_S_FAILED, false))
+    }
+
+    /** About opened and the last answer is over six hours old (or there's none). */
+    fun statusDue(ctx: Context): Boolean {
+        val last = status(ctx).checkedAt
+        val now = System.currentTimeMillis()
+        return !checking && (last == 0L || now - last >= STATUS_EVERY_MS || last > now)
+    }
+
+    /**
+     * About's check. With an updater: the normal [checkNow] (its notice, its download). Without one: a read-only look at
+     * [PUBLIC_REPO]'s latest release (only its version is kept; no notice, nothing downloaded or offered). Blocking.
+     */
+    fun checkStatus(ctx: Context) {
+        val app = ctx.applicationContext
+        if (enabled(app)) { checkNow(app) {}; return }
+        if (checking) return
+        checking = true
+        changed()
+        try {
+            val res = try { getText("https://api.github.com/repos/$PUBLIC_REPO/releases/latest", 15_000, json = true) }
+                catch (e: Exception) { Log.w(TAG, "Update: status check failed: $e"); null }
+            val e = prefs(app).edit().putLong(K_S_LAST, System.currentTimeMillis())
+            when {
+                res == null || (res.code !in 200..299 && res.code != 404) -> e.putBoolean(K_S_FAILED, true)
+                res.code == 404 -> e.remove(K_S_LATEST).putBoolean(K_S_FAILED, false)
+                else -> {
+                    val o = JSONObject(res.body)
+                    val v = VERSION.find(o.optString("tag_name"))?.value ?: VERSION.find(o.optString("name"))?.value
+                    if (v != null) e.putString(K_S_LATEST, v)
+                    e.putBoolean(K_S_FAILED, false)
+                }
+            }
+            e.apply()
+            Log.w(TAG, "Update: status check (read-only, $PUBLIC_REPO): v${currentVersion()} installed, latest ${prefs(app).getString(K_S_LATEST, null) ?: "none"}" +
+                if (prefs(app).getBoolean(K_S_FAILED, false)) ", no answer" else "")
+        } catch (e: Exception) {
+            Log.w(TAG, "Update: status check: $e")
+            prefs(app).edit().putLong(K_S_LAST, System.currentTimeMillis()).putBoolean(K_S_FAILED, true).apply()
+        } finally {
+            checking = false
+            changed()
+        }
+    }
+
     /** "4.1" out of "v4.1", "Dream OS 4.1.2", "4.1-beta". */
     private val VERSION = Regex("""\d+(?:\.\d+)*""")
 

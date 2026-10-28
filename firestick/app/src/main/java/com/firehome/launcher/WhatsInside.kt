@@ -28,7 +28,7 @@ import kotlin.math.cos
 import kotlin.math.sin
 
 /**
- * The "Dream OS 4.0 · What's Inside" card at the foot of the System page (added by [SystemHealth],
+ * The "Dream OS 4.1 · What's Inside" card (the version from BuildConfig) at the foot of the System page (added by [SystemHealth],
  * Dream Cinema's System page): what this release is, then a
  * grid of feature tiles, each a line glyph, a Title Case name and one line on what it does.
  *
@@ -106,7 +106,7 @@ class WhatsInside(private val ctx: Context) {
         }
     }
 
-    /** Brand mark, "Dream OS 4.0", the one-line pitch, and what is new in this release. */
+    /** Brand mark, "Dream OS 4.1" (BuildConfig), the one-line pitch, and what is new in this release. */
     private fun header() = LinearLayout(ctx).apply {
         orientation = LinearLayout.HORIZONTAL
         gravity = Gravity.CENTER_VERTICAL
@@ -201,12 +201,8 @@ class WhatsInside(private val ctx: Context) {
     private fun states(focused: Int, normal: Int) =
         ColorStateList(arrayOf(intArrayOf(android.R.attr.state_focused), IntArray(0)), intArrayOf(focused, normal))
 
-    /** The installed version ("4.0"), so the title can't drift from the build. */
-    private fun version() = try {
-        ctx.packageManager.getPackageInfo(ctx.packageName, 0).versionName
-    } catch (e: Exception) {
-        null
-    } ?: "4.0"
+    /** The installed version ("4.1", BuildConfig), so the title can't drift from the build. */
+    private fun version() = BuildConfig.VERSION_NAME
 
     companion object {
         private const val COLUMNS = 3

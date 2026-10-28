@@ -70,6 +70,7 @@ struct DreamCorePlayback: PlaybackService {
 
     func resolve(_ request: PlayRequest) async throws -> StreamLink {
         let t0 = Mono.now()
+        CellularSaver.logAtPlay(core.label(request))
         guard var found = await core.find(request, budgetMs: 8_000, purpose: DebridPurpose.play) else {
             let e = await PlayFlow.failure(request)
             plog.warning("Play flow: \(e.title ?? e.message, privacy: .public) (\(NativeResolver.secs(Mono.now() - t0), privacy: .public))")
@@ -78,6 +79,7 @@ struct DreamCorePlayback: PlaybackService {
         // Nothing passed the viewer's filters (only a CAM copy, say): played anyway, with a short note.
         if let rx = core.relaxed(request, found) { found.note = rx.cam ? PlayFlow.camNote : PlayFlow.bestNote }
         plog.info("Play flow: Dream Core stream (\(found.service.uppercased(), privacy: .public) \(found.quality, privacy: .public)) in \(NativeResolver.secs(Mono.now() - t0), privacy: .public)")
+        CellularSaver.mark(found) // Info's quiet "Cellular Data Saver" note, by the network at this Play
         core.handing(found) // the player loads it now: its first frame is timed from here
         return found
     }
@@ -85,6 +87,7 @@ struct DreamCorePlayback: PlaybackService {
     func resolveAll(_ request: PlayRequest) async throws -> StreamLink {
         guard var found = await core.findLoose(request) else { throw await PlayFlow.failure(request) }
         if let rx = core.relaxed(request, found), rx.cam { found.note = PlayFlow.camNote }
+        PictureNote.set(nil, hash: found.hash) // Search All Sources: every limit off, Cellular Data Saver too
         core.handing(found)
         return found
     }
@@ -102,6 +105,7 @@ struct DreamCorePlayback: PlaybackService {
 
     func link(for candidate: StreamCandidate, request: PlayRequest) async throws -> StreamLink {
         guard let f = await core.resolveCandidate(request, candidate) else { throw PlayFlow.sourceNotReadyText }
+        PictureNote.set(nil, hash: f.hash) // picked by hand: no Cellular Data Saver note
         return f
     }
 
@@ -150,6 +154,7 @@ extension DreamCorePlayback: PlaybackExtras {
     /// to it behind the curtain. Timed from here like a fresh hand-over.
     func nextLink(for request: PlayRequest) -> StreamLink? {
         guard let f = core.nextLink(request) else { return nil }
+        CellularSaver.mark(f)
         core.handing(f)
         return f
     }

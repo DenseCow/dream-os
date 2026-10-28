@@ -18,7 +18,7 @@ struct SetupTag: View {
         Text(text)
             .font(.system(size: 12.5, weight: .semibold))
             .foregroundStyle(strong ? Palette.text : Palette.textSecondary)
-            .lineLimit(1)
+            .fixedSize(horizontal: false, vertical: true)
             .padding(.horizontal, 11).padding(.vertical, 5)
             .background(Capsule().fill(Color.white.opacity(strong ? 0.14 : 0.06)))
             .overlay(Capsule().strokeBorder(Color.white.opacity(strong ? 0.30 : 0.14), lineWidth: 1))
@@ -113,12 +113,11 @@ private struct DisclosureHead: View {
                 Text(title)
                     .font(.system(size: 17, weight: .medium))
                     .foregroundStyle(lit ? Palette.ink : Palette.text)
-                    .lineLimit(1)
+                    .fixedSize(horizontal: false, vertical: true)
                 if let caption {
                     Text(caption)
                         .font(.system(size: 13.5))
                         .foregroundStyle(lit ? Palette.ink.opacity(0.62) : Palette.textSecondary)
-                        .lineLimit(2)
                         .fixedSize(horizontal: false, vertical: true)
                 }
             }
@@ -161,7 +160,8 @@ struct GuideSteps: View {
                         }
                         if s.keyArt { TMDBKeyArt().padding(.top, 6) }
                         if !s.links.isEmpty {
-                            WrapLayout(spacing: 10, lineSpacing: 10) {
+                            // MetaFlow: a button wider than the line gets the line's width and wraps its words.
+                            MetaFlow(spacing: 10, lineSpacing: 10) {
                                 ForEach(s.links, id: \.self) { l in
                                     Button {
                                         PageHaptics.tap()
@@ -169,7 +169,9 @@ struct GuideSteps: View {
                                     } label: {
                                         HStack(spacing: 8) {
                                             Image(systemName: "safari").font(.system(size: 14, weight: .semibold))
-                                            Text(l.title).font(.system(size: 15, weight: .semibold)).lineLimit(1)
+                                            Text(l.title).font(.system(size: 15, weight: .semibold))
+                                                .multilineTextAlignment(.leading)
+                                                .fixedSize(horizontal: false, vertical: true)
                                         }
                                     }
                                     .buttonStyle(PearlButtonStyle())
@@ -235,7 +237,7 @@ struct AddressExamples: View {
                     Text(a)
                         .font(.system(size: 14, weight: .medium, design: .monospaced))
                         .foregroundStyle(Palette.text.opacity(0.85))
-                        .lineLimit(1).minimumScaleFactor(0.75)
+                        .lineLimit(1).minimumScaleFactor(0.6)
                         .padding(.horizontal, 12).padding(.vertical, 8)
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(Color.white.opacity(0.06)))
@@ -266,7 +268,7 @@ struct TMDBKeyArt: View {
                     .lineLimit(1).padding(.leading, 6)
             }
             field(label: "API Key", value: "8f3a1c9e2b7d4f60a5e1c3b9d2f7a4e8", tag: "Copy This One", lit: true)
-            field(label: "API Read Access Token", value: "eyJhbGciOiJIUzI1NiJ9.eyJhdWQiOiI4ZjNhMWM5ZTJi…", tag: "Not This One", lit: false)
+            field(label: "API Read Access Token", value: "eyJhbGciOiJIUzI1NiJ9.eyJhdWQiOiI4ZjNhMWM5ZTJiN2Q0ZjYwYTVl", tag: "Not This One", lit: false)
         }
         .padding(12)
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -303,7 +305,10 @@ struct TMDBKeyArt: View {
             Text(value)
                 .font(.system(size: 12, weight: .medium, design: .monospaced))
                 .foregroundStyle(lit ? Palette.text : Palette.text.opacity(0.35))
-                .lineLimit(1).truncationMode(.tail)
+                // The short key shrinks to stay whole on one line; the long token wraps (it reads as "much longer").
+                .lineLimit(lit ? 1 : nil)
+                .minimumScaleFactor(lit ? 0.6 : 1)
+                .fixedSize(horizontal: false, vertical: true)
         }
         .padding(.horizontal, 12).padding(.vertical, 10)
         .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(Color.white.opacity(lit ? 0.07 : 0.03)))

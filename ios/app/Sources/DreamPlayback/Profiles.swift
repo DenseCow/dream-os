@@ -34,10 +34,11 @@ public final class Profiles: @unchecked Sendable {
 
     private func store(_ list: [Profile]) { lock.withLock { DreamStore.shared.set(list, "profiles.list") } }
 
-    /// The flags pages read: hasPin from the Keychain, ratingLimit from the kids level.
+    /// The flags pages read: hasPin and faceId from the Keychain, ratingLimit from the kids level.
     private func normalized(_ p0: Profile) -> Profile {
         var p = p0
         p.hasPin = hasPin(p.id)
+        p.faceId = p.hasPin && faceIdOn(p.id) ? true : nil
         let level = KidsLevels.level(of: p)
         p.ratingLimit = level < KidsLevels.everyone ? KidsLevels.all[level].movie : nil
         return p
@@ -95,9 +96,9 @@ public final class Profiles: @unchecked Sendable {
 
     public func hasPin(_ id: String) -> Bool { SecureStore.get("pin." + id) != nil }
 
-    /// Saves [pin] for profile [id] as "salt:sha256(salt+pin)", or removes the lock when nil.
+    /// Saves [pin] for profile [id] as "salt:sha256(salt+pin)", or removes the lock (and Face ID) when nil or "".
     public func setPin(_ id: String, _ pin: String?) {
-        guard let pin else { SecureStore.set("pin." + id, nil); return }
+        guard let pin, !pin.isEmpty else { SecureStore.set("pin." + id, nil); setFaceId(id, false); return }
         var salt = [UInt8](repeating: 0, count: 8)
         _ = SecRandomCopyBytes(kSecRandomDefault, salt.count, &salt)
         let s = salt.map { String(format: "%02x", $0) }.joined()
@@ -118,7 +119,8 @@ public final class Profiles: @unchecked Sendable {
         let a = Array(Self.hash(parts[0], pin).utf8), b = Array(parts[1].utf8)
         let ok = a.count == b.count && zip(a, b).reduce(0) { $0 | ($1.0 ^ $1.1) } == 0 // constant time
         if ok {
-            DreamStore.shared.set(nil as Int?, "pin.fails." + id); DreamStore.shared.set(nil as Int64?, "pin.wait." + id)
+            clearPinFails(id)
+            rearmFaceId(id)
         } else {
             let fails = (DreamStore.shared.get(Int.self, "pin.fails." + id) ?? 0) + 1
             let wait: Int64 = fails < Self.freeTries ? 0 : min(Int64(30_000) << Int64(min(fails - Self.freeTries, 5)), 15 * 60_000)
@@ -151,6 +153,42 @@ public final class Profiles: @unchecked Sendable {
         if let main = list.first, main.id != cur.id, main.hasPin { return main }
         return list.first { $0.id != cur.id && !$0.isKids && $0.hasPin }
     }
+
+    private func clearPinFails(_ id: String) {
+        DreamStore.shared.set(nil as Int?, "pin.fails." + id); DreamStore.shared.set(nil as Int64?, "pin.wait." + id)
+    }
+
+    // MARK: Face ID (owner pick, 2026-10-28)
+
+    /// Unlock With Face ID lives in the Keychain next to the PIN: "faceid.<id>" holds the phone's enrolled faces /
+    /// fingers when it was turned on (`FaceIdCheck.enrolledNow`), or "on" when the phone couldn't say. The PIN itself
+    /// is never stored any other way.
+    private static func faceKey(_ id: String) -> String { "faceid." + id }
+
+    public func faceIdOn(_ id: String) -> Bool { SecureStore.get(Self.faceKey(id)) != nil }
+
+    /// Turns Unlock With Face ID on (remembering today's enrolled faces) or off for profile [id].
+    public func setFaceId(_ id: String, _ on: Bool) {
+        SecureStore.set(Self.faceKey(id), on ? (FaceIdCheck.enrolledNow() ?? "on") : nil)
+    }
+
+    /// True when Face ID may open profile [id] now: it has a PIN, the option is on, the phone can check, and no face or
+    /// finger was added or removed since it was turned on (then the PIN is needed once, which turns it back on).
+    public func faceIdReady(_ id: String) -> Bool {
+        guard hasPin(id), let saved = SecureStore.get(Self.faceKey(id)), FaceIdCheck.ready else { return false }
+        guard saved != "on", let now = FaceIdCheck.enrolledNow() else { return true }
+        if saved != now { Log.core.info("Profiles: Face ID faces changed since it was turned on; PIN needed once"); return false }
+        return true
+    }
+
+    /// After the right PIN: Face ID that paused because the phone's faces changed works again with today's faces.
+    private func rearmFaceId(_ id: String) {
+        guard let saved = SecureStore.get(Self.faceKey(id)), let now = FaceIdCheck.enrolledNow(), saved != now else { return }
+        SecureStore.set(Self.faceKey(id), now)
+    }
+
+    /// Face ID passed for [id]: the wrong-PIN count starts over.
+    public func faceIdPassed(_ id: String) { clearPinFails(id) }
 }
 
 /// `ProfileService` for the app.
@@ -166,9 +204,45 @@ struct DreamProfileService: ProfileService {
         p.setCurrent(id)
     }
 
+    func checkPin(_ id: String, pin: String) async throws {
+        guard p.checkPin(id, pin) else { throw DreamError(title: "Enter PIN", p.pinError(id)) }
+    }
+
+    /// Whose Face ID opening [id] uses: switching, the profile `select` asks the PIN of; checking, [id] itself.
+    private func faceGuardian(_ id: String, switches: Bool) -> Profile? {
+        switches ? p.pinNeeded(toOpen: id) : p.all().first { $0.id == id && $0.hasPin }
+    }
+
+    func faceIdReady(_ id: String, switches: Bool) async -> Bool {
+        guard let g = faceGuardian(id, switches: switches) else { return false }
+        return p.faceIdReady(g.id)
+    }
+
+    func unlockWithFaceId(_ id: String, switches: Bool) async throws {
+        guard let g = faceGuardian(id, switches: switches) else {
+            if switches { p.setCurrent(id) }
+            return
+        }
+        guard p.faceIdReady(g.id) else { throw DreamError(title: "Enter PIN", "Enter the PIN.") }
+        switch await FaceIdCheck.run(reason: "Confirm it's you to open this profile.") {
+        case .passed:
+            Log.core.info("Profiles: opened with \(FaceIdCheck.label, privacy: .public)")
+            p.faceIdPassed(g.id)
+            if switches { p.setCurrent(id) }
+        case .cancelled:
+            throw CancellationError()
+        case .failed(let line):
+            throw DreamError(title: "Enter PIN", line)
+        }
+    }
+
     func save(_ profile: Profile, pin: String?) async throws {
         p.update(profile)
-        if let pin { p.setPin(profile.id, pin) } else if !profile.hasPin && p.hasPin(profile.id) { p.setPin(profile.id, nil) }
+        // pin: a new PIN to set; "" removes the lock; nil keeps it (or removes it when the profile no longer has one).
+        if let pin, !pin.isEmpty { p.setPin(profile.id, pin) }
+        else if pin == "" || (!profile.hasPin && p.hasPin(profile.id)) { p.setPin(profile.id, nil) }
+        let faceOn = profile.faceId == true && p.hasPin(profile.id)
+        if faceOn != p.faceIdOn(profile.id) { p.setFaceId(profile.id, faceOn) }
     }
 
     func delete(_ id: String) async throws {

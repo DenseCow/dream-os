@@ -61,6 +61,13 @@ struct RootView: View {
                     Palette.page.ignoresSafeArea()
                     Celebration(name: "")
                 }
+                // The installed version and build channel, small and still in the bottom-right corner, inside the safe
+                // area (read from the bundle: "Version 4.1 (DEV)", or "(PUBLIC)" in a release.sh build).
+                .overlay(alignment: .bottomTrailing) {
+                    VersionTag(size: 12.5)
+                        .padding(.trailing, 20)
+                        .padding(.bottom, 14)
+                }
                 .transition(.opacity)
                 .zIndex(1)
                 .task {

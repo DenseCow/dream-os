@@ -357,6 +357,7 @@ final class MPVEngine: PlayerEngine {
         if pipMode { return }
         // MPVKit: drawing into a hidden layer leaves a black picture after returning (and the GPU is off limits in
         // the background); switch video off meanwhile. Sound keeps playing.
+        if on { fitDrawable("back in front") }
         core.set("vid", on ? "auto" : "no")
     }
 
@@ -393,6 +394,8 @@ final class MPVEngine: PlayerEngine {
         core.command(["set", "sws-fast", "no"])
         if videoOn {
             awaitingMetal = true
+            // gpu-next reads the layer's drawable size once, when it comes up: make it the layer's real size first.
+            fitDrawable("back from Picture in Picture")
             core.command(["set", "vo", "gpu-next"], tag: MPVCore.tagPiPSwitch)
             resumeAfterSwitch()
             // Fallback in case "vo-configured" never flips (no video right now).
@@ -418,6 +421,75 @@ final class MPVEngine: PlayerEngine {
     func pipRenderSize(width: Int, height: Int) {
         pipW = width; pipH = height
         if pipMode { updateFeedSize() }
+    }
+
+    // MARK: Picture watch (mini player worker, 2026-10-28)
+
+    /// From the Metal layer's drawable requests (one per presented frame). The sample layer left in front without
+    /// Picture in Picture counts as no picture. nil while PiP runs, while the Metal switch is pending, or before
+    /// any frame was ever drawn (so a layer that never reports can't trigger redraws).
+    var secondsSincePicture: Double? {
+        if pipMode || awaitingMetal { return nil }
+        if container.samplesShowing { return 999 }
+        let last = (surface.layer as? MPVMetalLayer)?.frames.last ?? 0
+        guard last > 0 else { return nil }
+        return CACurrentMediaTime() - last
+    }
+
+    /// mpv's drawing size (osd-dimensions, pixels); zero until mpv reports it.
+    private var mpvSize: CGSize = .zero
+
+    /// The Metal layer's size in pixels (bounds x scale), what mpv should draw at.
+    private var layerPixels: CGSize {
+        let b = surface.bounds.size, s = surface.contentScaleFactor
+        return CGSize(width: (b.width * s).rounded(), height: (b.height * s).rounded())
+    }
+
+    private var sizeLine: String {
+        let b = surface.bounds.size, d = surface.metalLayer.drawableSize
+        return "layer \(Int(b.width))x\(Int(b.height)) pt @\(surface.contentScaleFactor)x, drawable \(Int(d.width))x\(Int(d.height)), mpv \(Int(mpvSize.width))x\(Int(mpvSize.height))"
+    }
+
+    func pictureSizeLine() -> String? { sizeLine }
+
+    /// The layer's pixels and mpv's drawing size (a corner box when far apart). The watch judges the tolerance.
+    var pictureSizes: (layer: CGSize, drawing: CGSize)? {
+        guard !pipMode, !awaitingMetal, videoOn, mpvSize.width > 1, mpvSize.height > 1 else { return nil }
+        let t = layerPixels
+        guard t.width > 1, t.height > 1 else { return nil }
+        return (t, mpvSize)
+    }
+
+    /// The drawable at the layer's real size (gpu-next reads it when it's configured).
+    private func fitDrawable(_ why: String) {
+        let t = layerPixels
+        guard t.width > 1, t.height > 1 else { return }
+        if surface.metalLayer.drawableSize != t { surface.metalLayer.drawableSize = t }
+        Log.player.info("Picture: size fitted, \(why, privacy: .public) (\(self.sizeLine, privacy: .public))")
+    }
+
+    /// mpv reconfigured at the layer's size: drawable fitted, then the same re-arm as `redrawPicture`.
+    func refitPicture() {
+        guard !pipMode, state.hasSource, !state.ended, videoOn else { return }
+        fitDrawable("mpv size didn't match")
+        awaitingMetal = false
+        container.samplesInFront(false)
+        core.command(["set", "vid", "no"])
+        core.command(["set", "vid", "auto"])
+        resumeAfterSwitch()
+    }
+
+    func redrawPicture() {
+        guard !pipMode, state.hasSource, !state.ended else { return }
+        Log.player.info("Picture: redraw (sample layer in front: \(self.container.samplesShowing, privacy: .public), picture on: \(self.videoOn, privacy: .public), in window: \(self.container.window != nil, privacy: .public))")
+        awaitingMetal = false
+        container.samplesInFront(false)
+        if !videoOn { return }
+        fitDrawable("redraw")
+        // The same re-arm as the return from the background (vid=no / vid=auto), then the exact seek.
+        core.command(["set", "vid", "no"])
+        core.command(["set", "vid", "auto"])
+        resumeAfterSwitch()
     }
 
     private func metalReady() {
@@ -562,6 +634,17 @@ final class MPVEngine: PlayerEngine {
             if pipMode { updateFeedSize() }
             noteHDRStream()
             fire(.format)
+            return false
+        case "osd-dimensions":
+            // The size mpv draws at (its vo's width / height in pixels). MPVKit's MoltenVK context only reads the
+            // layer's size when the vo is (re)configured, so a layer that changed size since then draws in a corner.
+            if case .map(let m) = v, let w = m["w"]?.int, let h = m["h"]?.int {
+                let s = CGSize(width: w, height: h)
+                if s != mpvSize {
+                    mpvSize = s
+                    Log.player.info("Picture: size mpv \(w, privacy: .public)x\(h, privacy: .public) (\(self.sizeLine, privacy: .public))")
+                }
+            }
             return false
         case "vo-configured":
             if v.bool == true, awaitingMetal {
@@ -1070,7 +1153,7 @@ final class MPVCore: @unchecked Sendable {
             ("duration", MPV_FORMAT_DOUBLE), ("demuxer-cache-time", MPV_FORMAT_DOUBLE), ("speed", MPV_FORMAT_DOUBLE),
             ("track-list", MPV_FORMAT_NODE), ("video-params", MPV_FORMAT_NODE), ("audio-params", MPV_FORMAT_NODE),
             ("video-codec", MPV_FORMAT_STRING), ("audio-codec-name", MPV_FORMAT_STRING),
-            ("vo-configured", MPV_FORMAT_FLAG),
+            ("vo-configured", MPV_FORMAT_FLAG), ("osd-dimensions", MPV_FORMAT_NODE),
         ]
         for (name, fmt) in props { mpv_observe_property(h, 0, name, fmt) }
         mpv_set_wakeup_callback(h, { ctx in
@@ -1193,6 +1276,13 @@ final class MPVMetalLayer: CAMetalLayer {
     enum HDRKind: Sendable { case sdr, pq, hlg, linear }
 
     let hdr = LayerHDR()
+    /// When MoltenVK last asked for a drawable (one per presented frame; any thread). The picture watch reads it.
+    let frames = FrameStamp()
+
+    override func nextDrawable() -> (any CAMetalDrawable)? {
+        frames.mark()
+        return super.nextDrawable()
+    }
 
     override var drawableSize: CGSize {
         get { super.drawableSize }
@@ -1291,6 +1381,19 @@ final class MPVContainerView: UIView {
         guard let s = samples, let m = metal else { return }
         if front { bringSubviewToFront(s) } else { bringSubviewToFront(m) }
     }
+    /// The sample (Picture in Picture) layer is the one showing.
+    var samplesShowing: Bool {
+        guard let s = samples else { return false }
+        return subviews.last === s
+    }
+}
+
+/// A frame time stamp written from MoltenVK's thread and read on the main thread.
+final class FrameStamp: @unchecked Sendable {
+    private let lock = NSLock()
+    private var t: CFTimeInterval = 0
+    func mark() { lock.lock(); t = CACurrentMediaTime(); lock.unlock() }
+    var last: CFTimeInterval { lock.lock(); defer { lock.unlock() }; return t }
 }
 
 final class MPVSurfaceView: UIView {

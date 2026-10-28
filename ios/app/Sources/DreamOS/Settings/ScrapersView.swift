@@ -122,7 +122,7 @@ struct AddRepoView: View {
                 } else {
                     PageNote(text: "Paste the repository's address exactly as you got it. It usually starts with https:// and often has github in it, such as https://someone.github.io/repo.")
                     PageTextField(placeholder: "https://yourname.github.io/repo", text: $url, keyboard: .URL) { Task { await add() } }
-                    HStack(spacing: 10) {
+                    PageButtonPair(spacing: 10) {
                         PageSecondaryButton(title: "Paste", systemImage: "doc.on.clipboard") {
                             if let s = UIPasteboard.general.string { url = s.trimmingCharacters(in: .whitespacesAndNewlines) }
                         }

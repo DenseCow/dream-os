@@ -2299,7 +2299,8 @@ class MainActivity : Activity() {
         val qIdx = qualities.indexOfFirst { it.first == stored["quality.max"] }
         val subLangs = listOfNotNull(stored["subs.lang1"], stored["subs.lang2"]).filter { it.isNotBlank() }.distinct()
         val profile = Profiles.current(this)
-        val version = try { packageManager.getPackageInfo(packageName, 0).versionName } catch (e: Exception) { null } ?: "4.0"
+        // About's update line: asked again in the background when it's over six hours old (AboutPage, DreamUpdate.status).
+        AboutPage.refreshIfDue(this) { refreshSettings() }
         return listOfNotNull(
             PremiumSettings.Section("Profiles", SettingsGlyph.PERSON, listOf(
                 I(if (Profiles.all(this).size > 1) "Switch Profile" else "Profiles", profile.name.takeIf { it.isNotBlank() }, R.drawable.ic_home, null,
@@ -2463,17 +2464,27 @@ class MainActivity : Activity() {
             PremiumSettings.Section("Updates", SettingsGlyph.SPARKLE, UpdatePage.settingsItems(this) { refreshSettings() },
                 badge = DreamUpdate.available(this) != null).takeIf { DreamUpdate.enabled(this) },
             PremiumSettings.Section("About", SettingsGlyph.INFO, listOf(
-                I("What's Inside", "Dream OS $version", R.drawable.ic_info, null, "Every Feature at a Glance, With System Details") {
+                // AboutPage.kt: the version (BuildConfig), whether it's up to date, source code and disclaimer as QR codes, credits.
+                I("About Dream OS", "Version ${BuildConfig.VERSION_NAME}", R.drawable.ic_info, null, AboutPage.statusText(this)) {
+                    AboutPage.open(this) { refreshSettings() }
+                },
+                I("What's Inside", "Version ${BuildConfig.VERSION_NAME}", R.drawable.ic_info, null, "Every Feature at a Glance, With System Details") {
                     closeSettings { showPage(Tab.SYSTEM, focusContent = true) }
                 },
                 I("Replay Intro", null, R.drawable.ic_play, null, "The Dream OS Opening, Once More") { closeSettings { maybeShowSplash(force = true) } },
+                I("Source Code", "GitHub", R.drawable.ic_info, null, "Open Source  ·  GPL-3.0  ·  QR Code in About") {
+                    AboutPage.open(this) { refreshSettings() }
+                },
                 // TMDB's terms: attribution wherever its data is used.
                 // A legal credit: TMDB's own sentence, in sentence case and shown whole (two lines, not cut off).
                 PremiumSettings.Item("Movie and Show Data", "TMDB", R.drawable.ic_movie, null,
                     "This product uses the TMDB API but is not endorsed or certified by TMDB.", wrapCaption = true) {},
-                // JustWatch's terms: credit for the where-to-watch data TMDB passes on.
-                PremiumSettings.Item("Streaming Availability", "JustWatch", R.drawable.ic_movie, null,
-                    "Where to Watch and the services' rows use data from JustWatch.", wrapCaption = true) {},
+                // JustWatch's terms: credit for the where-to-watch data TMDB passes on (STANDARDS §4).
+                PremiumSettings.Item("Where to Watch", "JustWatch", R.drawable.ic_movie, null,
+                    "Streaming Availability From JustWatch", wrapCaption = true) {},
+                // Rotten Tomatoes and IMDb scores (Ratings.kt) come from OMDb.
+                PremiumSettings.Item("Scores", "OMDb", R.drawable.ic_movie, null,
+                    "Rotten Tomatoes and IMDb Scores From OMDb", wrapCaption = true) {},
             )),
         )
     }
@@ -2734,12 +2745,18 @@ class MainActivity : Activity() {
         }
     }
 
-    /** "Dream OS \u00b7 Version 4.0" with the number in the Dream rainbow. */
+    /** "Dream OS \u00b7 Version 4.1 (DEV)" (BuildConfig, never written in code): the number in the Dream rainbow, the channel in its status color. */
     private fun introVersion() = TextView(this).apply {
         val name = BuildConfig.VERSION_NAME
         val line = "Dream OS  \u00b7  Version $name"
-        text = SpannableString(Rainbow.still(line, line.length - name.length, line.length, 36.dp.toFloat())).apply {
+        text = android.text.SpannableStringBuilder(Rainbow.still(line, line.length - name.length, line.length, 36.dp.toFloat())).apply {
             setSpan(StyleSpan(Typeface.BOLD), length - name.length, length, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+            // The build channel: (PUBLIC) in green for builds published by tools/release.sh, (DEV) in red for every other.
+            append(" ")
+            val at = length
+            append(AboutPage.channelTag())
+            setSpan(ForegroundColorSpan(AboutPage.channelColor()), at, length, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+            setSpan(StyleSpan(Typeface.BOLD), at, length, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
         }
         textSize = 13f
         typeface = font

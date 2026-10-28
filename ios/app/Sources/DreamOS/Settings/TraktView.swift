@@ -157,11 +157,13 @@ struct TraktAccountHeader: View {
             .frame(width: 56, height: 56)
             .clipShape(Circle())
             VStack(alignment: .leading, spacing: 6) {
-                Text(name).font(.system(size: 20, weight: .semibold)).foregroundStyle(Palette.text).lineLimit(1)
+                Text(name).font(.system(size: 20, weight: .semibold)).foregroundStyle(Palette.text)
+                    .fixedSize(horizontal: false, vertical: true)
                 HStack(spacing: 8) {
                     PageMarkGlyph(mark: .ok, size: 16)
                     Text([user.map { "@\($0.username)" }, "Connected"].compactMap { $0 }.joined(separator: "  ·  "))
-                        .font(.system(size: 14)).foregroundStyle(Palette.textSecondary).lineLimit(1)
+                        .font(.system(size: 14)).foregroundStyle(Palette.textSecondary)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
             }
             Spacer(minLength: 0)
@@ -264,8 +266,10 @@ struct TraktSignInView: View {
                 .lineLimit(1)
                 .minimumScaleFactor(0.6)
             Text(dc.site)
-                .font(.system(size: 15, weight: .medium)).foregroundStyle(Palette.text.opacity(0.8)).lineLimit(1)
-            HStack(spacing: 12) {
+                .font(.system(size: 15, weight: .medium)).foregroundStyle(Palette.text.opacity(0.8))
+                .fixedSize(horizontal: false, vertical: true)
+            // Side by side only when "Open Website" and "Copy Code" both fit whole; stacked on a narrow phone.
+            PageButtonPair(spacing: 12) {
                 PagePrimaryButton(title: "Open Website", systemImage: "safari") {
                     UIPasteboard.general.string = dc.userCode
                     copied = true
@@ -395,7 +399,8 @@ struct TraktOwnAppView: View {
                 PageSection(title: "Your App Keys").padding(.top, PageSpace.group)
                 VStack(alignment: .leading, spacing: 12) {
                     PageTextField(placeholder: "Client ID", text: $id)
-                    PageTextField(placeholder: "Client Secret (Only if Your App Has One)", text: $secret, secure: true) { submit() }
+                    // A placeholder can't wrap: kept short enough to fit any iPhone (it ended in "…" at 375 pt).
+                    PageTextField(placeholder: "Client Secret (If Any)", text: $secret, secure: true) { submit() }
                     if let error {
                         HStack(alignment: .top, spacing: 10) {
                             PageMarkGlyph(mark: .warn, size: 18)

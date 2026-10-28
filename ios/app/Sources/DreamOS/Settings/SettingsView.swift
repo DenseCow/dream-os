@@ -27,6 +27,7 @@ struct SettingsView: View {
     @State private var choosingProfile = false
     @State private var runningSetup = false
     @State private var trakt = (value: TraktWords.value, caption: TraktWords.caption, tone: TraktWords.tone)
+    private var updates = DreamUpdates.shared
 
     var body: some View {
         PageScaffold(title: "Settings") {
@@ -93,9 +94,10 @@ struct SettingsView: View {
                                 lead: .symbol("star.leadinghalf.filled")) { KeyEntryView(kind: .omdb) }
                 }
                 group("About") {
-                    PageInfoRow(title: "Dream OS", caption: "For iPhone", value: AppVersion.text, lead: .symbol("info.circle"))
+                    // AboutView.swift: version (from the bundle), update status, source code, disclaimer, credits.
+                    PageLinkRow(title: "About Dream", caption: updates.rowCaption ?? "Version, Updates and Credits",
+                                value: AppVersion.text, lead: .symbol("info.circle")) { AboutView() }
                     // TMDB's terms: attribution wherever its data is used, its own sentence, shown whole.
-                    PageInfoRow(title: "Movie and Show Data", caption: nil, value: "TMDB", lead: .symbol("film.stack"))
                     PageNote(text: "This product uses the TMDB API but is not endorsed or certified by TMDB.", size: 13.5)
                         .padding(.top, 4)
                 }
@@ -199,13 +201,6 @@ struct SettingsSheet: View {
                 .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } } }
         }
         .dreamNavigationLook()
-    }
-}
-
-enum AppVersion {
-    static var text: String {
-        let v = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "1.0"
-        return "Version \(v)"
     }
 }
 

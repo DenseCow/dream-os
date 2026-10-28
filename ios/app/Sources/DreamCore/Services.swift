@@ -109,10 +109,20 @@ public protocol ProfileService: Sendable {
     /// Throws a DreamError with the plain reason ("Wrong PIN, try again", "Too many tries..."). Added by the Pages
     /// worker; the default falls back to `select`, so implementations should override it.
     func checkPin(_ id: String, pin: String) async throws
+    /// Face ID for profile PINs (owner pick, 2026-10-28). True when opening [id] may use the phone's Face ID / Touch ID:
+    /// the profile whose PIN it needs (with `switches`, the one `select` asks for; without, [id]'s own) has Unlock With
+    /// Face ID on, the phone can check, and its enrolled faces haven't changed since. Default: false.
+    func faceIdReady(_ id: String, switches: Bool) async -> Bool
+    /// Runs the phone's Face ID / Touch ID check for [id] (as in `faceIdReady`) and, when it passes, switches to it
+    /// (`switches`) or only confirms. Throws a DreamError with the plain reason when it fails, CancellationError when
+    /// the viewer cancelled (the PIN pad just stays). Default: throws (no Face ID).
+    func unlockWithFaceId(_ id: String, switches: Bool) async throws
 }
 
 public extension ProfileService {
     func checkPin(_ id: String, pin: String) async throws { try await select(id, pin: pin) }
+    func faceIdReady(_ id: String, switches: Bool) async -> Bool { false }
+    func unlockWithFaceId(_ id: String, switches: Bool) async throws { throw DreamError("Enter the PIN.") }
 }
 
 /// Watch history + Continue Watching (DreamPlayback; Trakt sync plugs in behind it).

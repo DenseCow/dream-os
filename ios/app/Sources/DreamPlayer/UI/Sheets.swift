@@ -374,6 +374,10 @@ private struct InfoSheet: View {
     /// "Dolby Vision  ·  Shown in HDR", "HDR10  ·  Shown in Standard Range" (this screen or the output can't), "Standard Range".
     private var pictureLine: String {
         let b = StreamBadges.make(session.engine.facts(), fileName: session.link?.fileName, sizeBytes: session.link?.sizeBytes ?? 0)
+        // Cellular Data Saver chose this copy (Dream Core, by the network at Play): "1080p  ·  Cellular Data Saver".
+        if let saver = PictureNote.note(hash: session.link?.hash) {
+            return [session.link?.quality.nilIfEmpty, b?.hdrName, saver].compactMap { $0 }.joined(separator: "  ·  ")
+        }
         guard let hdr = b?.hdrName else { return "Standard Range" }
         return hdr + "  ·  " + (session.engine.hdrOnScreen ? "Shown in HDR" : "Shown in Standard Range")
     }

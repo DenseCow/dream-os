@@ -26,6 +26,8 @@ enum NoticeSources {
             Task { await startupSummary() }
         }
         NewEpisodeSpot.shared.refreshIfStale()
+        // Settings > About's update line (GitHub's latest release, every six hours at most; a notice once per version).
+        DreamUpdates.shared.checkIfDue()
     }
 
     /// DebridExpiry / Dream Core's notice: one live notice per service (a newer threshold replaces the earlier one).

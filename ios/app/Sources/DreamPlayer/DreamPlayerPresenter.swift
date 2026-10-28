@@ -22,10 +22,21 @@ public final class DreamPlayerPresenter {
     private var session: PlayerSession?
     /// Held while Picture in Picture floats and the player is out of the way (started from the button).
     private var parked: PlayerHostController?
+    /// Held while the player is minimized into the mini player above the tab bar (PlayerPresentation).
+    private var minimized: PlayerHostController?
 
-    public var isShowing: Bool { controller != nil }
-    /// A title floats in Picture in Picture while the viewer browses.
-    public var isFloating: Bool { parked != nil }
+    /// The player is up full screen (not minimized).
+    public var isShowing: Bool { controller != nil && minimized == nil }
+    /// A title plays while the viewer browses: floating in Picture in Picture, or in the mini player.
+    public var isFloating: Bool { parked != nil || minimized != nil }
+    /// The player is minimized into the mini player.
+    public var isMinimized: Bool { minimized != nil }
+    /// Floating in Picture in Picture (the player is out of the way).
+    public var isInPictureInPicture: Bool { parked != nil }
+    /// The open player's session (nil when closed): Cellular Data Saver pauses it and switches its copy (DreamOS).
+    public var currentSession: PlayerSession? { controller != nil ? session : nil }
+    /// Full screen and in front, so the pull-down / chevron may minimize it.
+    var canMinimize: Bool { controller?.presentingViewController != nil && parked == nil && minimized == nil }
 
     public func play(_ request: PlayRequest) {
         present().play(request)
@@ -42,10 +53,14 @@ public final class DreamPlayerPresenter {
         if let s = session, controller != nil {
             // Something new from the app while a title floats: the player comes back, the window closes.
             if parked != nil { unpark {}; s.pip.stop() }
+            // Something new from the app while minimized: the player comes back full screen and plays it.
+            if minimized != nil { expand() }
             return s
         }
         let s = PlayerSession()
         session = s
+        VideoDock.shared.spot = .full
+        PlayerPresentation.shared.attach(s)
         s.pip.parkPlayer = { [weak self] in self?.park() }
         s.pip.restorePlayer = { [weak self] done in
             if let self { self.unpark(done) } else { done() }
@@ -71,7 +86,65 @@ public final class DreamPlayerPresenter {
         session = nil
         controller = nil
         parked = nil
+        if minimized != nil {
+            // Closed from the mini player: the full screen's onDisappear already ran, so Auto-Lock comes back here.
+            minimized = nil
+            UIApplication.shared.isIdleTimerDisabled = false
+        }
+        VideoDock.shared.spot = .full
+        PlayerPresentation.shared.detach()
         PlayerHostController.unlock()
+    }
+
+    /// The pull-down / chevron (PlayerMinimize): the player steps aside into the mini player, still playing, and the
+    /// app turns back to portrait. The picture moves into the mini player's slot (VideoDock); nothing restarts.
+    func minimize() {
+        guard let vc = controller, vc.presentingViewController != nil, parked == nil, minimized == nil else {
+            Log.player.info("Mini player: minimize skipped")
+            PlayerPresentation.shared.resetPull()
+            return
+        }
+        Log.player.info("Mini player: player steps aside")
+        minimized = vc
+        VideoDock.shared.spot = .mini
+        PlayerPresentation.shared.didMinimize()
+        vc.presentingViewController?.dismiss(animated: false) {
+            PlayerHostController.unlock()
+            PlayerPresentation.shared.resetPull()
+            // The screen never sleeps while the player is open (owner), minimized included. Again on the next turn,
+            // after the full screen's onDisappear handed Auto-Lock back.
+            UIApplication.shared.isIdleTimerDisabled = true
+            DispatchQueue.main.async {
+                UIApplication.shared.isIdleTimerDisabled = true
+                Log.player.info("Mini player: minimized (\(VideoDock.shared.owner, privacy: .public))")
+            }
+        }
+    }
+
+    /// The mini player tapped (or a new Play while minimized): the same player, full screen and landscape again.
+    func expand() {
+        guard let vc = minimized else { return }
+        guard vc.presentingViewController == nil, let top = Self.topController() else {
+            Log.player.error("Mini player: can't bring the player back (presented: \(vc.presentingViewController != nil, privacy: .public))")
+            return
+        }
+        Log.player.info("Mini player: player comes back (\(VideoDock.shared.owner, privacy: .public))")
+        // Floating in Picture in Picture (software frames): the window closes first, so mpv is back on the Metal
+        // picture by the time the full screen shows (the picture watch redraws if it isn't).
+        if let s = session, s.pip.isActive {
+            Log.player.info("Mini player: closing the Picture in Picture window before full screen")
+            s.pip.stop()
+        }
+        minimized = nil
+        // The full surface takes the picture back once it's in the window (the mini player keeps it until then).
+        VideoDock.shared.spot = .full
+        PlayerPresentation.shared.didExpand()
+        // The controller is held by the presentation from here on (`controller` is weak).
+        top.present(vc, animated: true) {
+            vc.lockLandscape()
+            VideoDock.shared.place()
+            Log.player.info("Mini player: full screen again (\(VideoDock.shared.owner, privacy: .public))")
+        }
     }
 
     /// Picture in Picture started from the button: the player steps aside (the session keeps playing).

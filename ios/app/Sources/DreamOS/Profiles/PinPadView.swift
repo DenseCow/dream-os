@@ -12,8 +12,21 @@ struct PinPadView: View {
         case choose(save: (String) async -> Void)
     }
 
+    /// Face ID on the pad (a profile with Unlock With Face ID on): tried by itself once when the pad opens, then again
+    /// from the small button next to Cancel. The PIN always works too.
+    struct FaceIdOffer {
+        /// "Face ID" / "Touch ID".
+        var label: String
+        /// "faceid" / "touchid".
+        var symbol: String
+        var auto = true
+        /// nil = passed; "" = cancelled (the pad just stays); else the plain line to show.
+        var run: () async -> String?
+    }
+
     var title: String
     var mode: Mode
+    var faceId: FaceIdOffer? = nil
     var done: (Bool) -> Void
 
     @State private var digits = ""
@@ -21,6 +34,7 @@ struct PinPadView: View {
     @State private var error: String?
     @State private var shake = 0
     @State private var busy = false
+    @State private var triedFaceId = false
 
     var body: some View {
         ZStack {
@@ -48,14 +62,47 @@ struct PinPadView: View {
                 .modifier(Shake(amount: CGFloat(shake)))
                 .padding(.vertical, 24)
                 keypad
-                Button("Cancel") { done(false) }
-                    .buttonStyle(PearlButtonStyle())
-                    .padding(.top, 18)
+                HStack(spacing: 14) {
+                    Button("Cancel") { done(false) }
+                        .buttonStyle(PearlButtonStyle())
+                    if let faceId {
+                        Button { PageHaptics.tap(); runFaceId(faceId) } label: {
+                            Image(systemName: faceId.symbol).font(.system(size: 22, weight: .regular))
+                        }
+                        .buttonStyle(RoundButtonStyle(size: 46))
+                        .disabled(busy)
+                        .accessibilityLabel("Use \(faceId.label)")
+                    }
+                }
+                .padding(.top, 18)
             }
             .padding(.horizontal, 30).padding(.vertical, 28)
             .background(RoundedRectangle(cornerRadius: 26, style: .continuous).fill(Palette.surfaceRaised))
             .overlay(RoundedRectangle(cornerRadius: 26, style: .continuous).strokeBorder(Palette.hairline, lineWidth: 1))
             .padding(20)
+        }
+        .task {
+            guard let faceId, faceId.auto, !triedFaceId else { return }
+            triedFaceId = true
+            // A moment for the pad to settle (and the app to be active at launch) before the system sheet comes up.
+            try? await Task.sleep(for: .milliseconds(350))
+            guard !Task.isCancelled else { return }
+            runFaceId(faceId)
+        }
+    }
+
+    private func runFaceId(_ offer: FaceIdOffer) {
+        guard !busy else { return }
+        busy = true
+        error = nil
+        Task {
+            let line = await offer.run()
+            busy = false
+            switch line {
+            case nil: PageHaptics.success(); done(true)
+            case ""?: break
+            case let e?: PageHaptics.warning(); error = e
+            }
         }
     }
 

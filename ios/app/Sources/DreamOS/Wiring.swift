@@ -10,7 +10,9 @@ enum Wiring {
     static func install() {
         PagesServices.debrid = RealDebrid()
         PagesServices.scrapers = RealScrapers()
-        PagesServices.play = { DreamPlayerPresenter.shared.play($0) }
+        // Cellular Data Saver: on mobile data with the answer due, the question comes first (Shell/CellularPrompt.swift).
+        PagesServices.play = { r in CellularPrompt.beforePlay { DreamPlayerPresenter.shared.play(r) } }
+        CellularPrompt.install()
         // An empty key (the title has no trailer): the player says "Trailer Unavailable" (card menu › Play Trailer).
         PagesServices.playTrailer = { t, key in DreamPlayerPresenter.shared.playTrailer(of: t, keys: key.isEmpty ? [] : [key]) }
         // Instant Play: Python and the providers are warm before the first title page asks for a scrape.

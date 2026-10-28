@@ -269,6 +269,21 @@ struct SourcesQualityRows: View {
                             lead: .symbol("sun.max"), toggle: HDRPreference.chosen) {
                         HDRPreference.set(!HDRPreference.chosen); tick += 1
                     }
+                    // Cellular Data Saver (DreamPlayback CellularSaver): Ask Me / Always On / Off, and its quality limit.
+                    PageLinkRow(title: "Cellular Data Saver", caption: "Plays smaller copies on mobile data; turns off by itself on Wi-Fi",
+                                value: CellularSaver.modeLabel, lead: .symbol("antenna.radiowaves.left.and.right")) {
+                        PageChoiceList(title: "Cellular Data Saver",
+                                       note: "On mobile data, a personal hotspot or Low Data Mode, Data Saver plays a smaller copy so you use less data. Ask Me asks the first time Dream sees mobile data. Wi-Fi always uses Maximum Quality.",
+                                       options: CellularSaver.modeChoices.map { .init(id: $0.id, label: $0.label) },
+                                       current: { CellularSaver.mode.rawValue }) { CellularSaver.setMode(id: $0) }
+                    }
+                    PageLinkRow(title: "Data Saver Quality", caption: "The highest quality Data Saver plays",
+                                value: CellularSaver.limit, lead: .symbol("dial.low")) {
+                        PageChoiceList(title: "Data Saver Quality",
+                                       note: "On mobile data with Data Saver on, videos play up to this quality, smaller files first.",
+                                       options: CellularSaver.limitChoices.map { .init(id: $0.id, label: $0.label) },
+                                       current: { CellularSaver.limit }) { CellularSaver.setLimit($0) }
+                    }
                 }
                 .padding(.top, 10)
 
@@ -513,6 +528,11 @@ struct PlaybackSettingsGroups: View {
             PageRow(title: "Skip Intros Automatically", caption: "When Dream Player Knows Where the Intro Ends",
                     lead: .symbol("forward"), toggle: PlaybackSettings.autoSkipIntros) {
                 PlaybackSettings.autoSkipIntros.toggle(); tick += 1
+            }
+            // Dream Player's level swipes (DreamPlayer/UI/LevelSwipes.swift), per profile.
+            PageRow(title: "Swipe for Brightness and Volume", caption: "Left Side for Brightness, Right Side for Volume",
+                    lead: .symbol("sun.max"), toggle: PlayerPrefs.levelSwipes) {
+                PlayerPrefs.levelSwipes.toggle(); tick += 1
             }
             PageRow(title: "Subtitles", caption: "Turns On Subtitles in Your Language", lead: .symbol("captions.bubble"),
                     toggle: PlaybackPrefs.subsOn) {

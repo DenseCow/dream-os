@@ -156,8 +156,13 @@ because something broke or looked wrong before. Check new work against the **che
 ## 8. Process
 
 - **Git:** local repo. Commit a checkpoint before big changes; never commit `local.properties`, keystores or APKs.
-- **Releases:** bump `dreamVersion` in `app/build.gradle.kts`, notes in `docs/releases/<version>.md`, run
-  `tools/release.sh` (signed with the release key; back up `~/.android/dreamos-release.*`).
+- **Releases:** one version for both apps. `tools/set-version.sh <version>` here (`dreamVersion` in
+  `app/build.gradle.kts`) and the same command in DreamOS-iOS (its `app/Info.plist`); commit both. Notes in
+  `docs/releases/<version>.md`, then dream-os-public's `tools/release.sh` (signed with the release key; back up
+  `~/.android/dreamos-release.*`). It refuses to publish while the two versions differ, and marks what it builds
+  PUBLIC (every other build shows "(DEV)" after its version).
+- **Versions on screen** always come from the build (`BuildConfig.VERSION_NAME` / `VERSION_CODE` /
+  `BUILD_CHANNEL`; on iPhone the bundle), never a number written in code or art.
 - **Bugs and ideas:** GitHub issues.
 - **Edits:** small, targeted edits; no bulk rewrite scripts across many files; keep LF line endings.
 

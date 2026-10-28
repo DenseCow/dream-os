@@ -18,6 +18,7 @@ struct PlayerScreen: View {
     @State private var tapCommit: Task<Void, Never>?
     @State private var flash: Bool?
     @State private var xray = false
+    @State private var levels = LevelSwipeStatus()
 
     static let hideAfter: Double = 4
     /// The controls fade in and out with the same curve and length.
@@ -36,6 +37,12 @@ struct PlayerScreen: View {
                 Color.black.opacity(dim).ignoresSafeArea().animation(.easeInOut(duration: pauseCard ? 0.7 : 0.3), value: dim)
                     .allowsHitTesting(false)
                 gestureLayer(geo.size)
+                    // Brightness (left third) / volume (right third) swipes and their bar (UI/LevelSwipes.swift).
+                    .levelSwipes(enabled: ready && sheet == nil && !xray && !pauseCard && session.postPlay == .none,
+                                 minimized: PlayerPresentation.shared.mode == .mini || PlayerPresentation.shared.leaving,
+                                 controlsUp: controls, scrubbing: scrubTarget != nil, status: $levels)
+                    // Pull down from the middle third: the mini player (UI/PlayerMinimize.swift).
+                    .minimizeSwipe(session, size: geo.size)
                 // Every view that comes and goes has a fixed zIndex: without one SwiftUI draws a view that is being
                 // removed at the back of the ZStack, under the opaque video surface, so it vanished instead of fading.
                 if ready { bubbles(geo.size).allowsHitTesting(false).zIndex(2) }
@@ -73,6 +80,7 @@ struct PlayerScreen: View {
             }
             .animation(Self.fade, value: controls)
             .animation(.easeOut(duration: 0.38), value: session.phase)
+            .minimizeShrink(height: geo.size.height)
         }
         .statusBarHidden()
         .persistentSystemOverlays(.hidden)
@@ -87,6 +95,8 @@ struct PlayerScreen: View {
         }
         .onChange(of: session.phase) { _, p in if p != .playing { controls = false; pauseCard = false; xray = false } }
         .onChange(of: controls) { _, c in session.controlsShown(c) }
+        // The level bar never shares the screen with the controls (nothing touches the skip pill or the bars).
+        .onChange(of: levels.shown) { _, on in if on { hide() } }
         // The session handles background / foreground itself (sound on, picture off or floating).
         .onReceive(NotificationCenter.default.publisher(for: UIApplication.willEnterForegroundNotification)) { _ in
             UIApplication.shared.isIdleTimerDisabled = true
@@ -117,7 +127,7 @@ struct PlayerScreen: View {
             .gesture(
                 DragGesture(minimumDistance: 18)
                     .onChanged { v in
-                        guard ready, s.duration > 0, abs(v.translation.width) > abs(v.translation.height) else { return }
+                        guard ready, s.duration > 0, !levels.swiping, abs(v.translation.width) > abs(v.translation.height) else { return }
                         if scrubTarget == nil { dragBase = s.position; show(); haptic(.light) }
                         // A full-width swipe covers ~10 minutes, finer near the start of the drag.
                         let span = min(600, s.duration)
@@ -239,15 +249,13 @@ enum PlayerSheet: Equatable {
     UIImpactFeedbackGenerator(style: style).impactOccurred()
 }
 
-/// The engine's UIView in SwiftUI.
+/// The engine's UIView in SwiftUI. The host takes the view back when the player returns from the mini player
+/// (VideoDock, Session/PlayerPresentation.swift).
 struct VideoSurface: UIViewRepresentable {
     let view: UIView
     func makeUIView(context: Context) -> UIView {
-        let host = UIView()
-        host.backgroundColor = .black
-        view.frame = host.bounds
-        view.autoresizingMask = [.flexibleWidth, .flexibleHeight]
-        host.addSubview(view)
+        let host = DockHostView(video: view, spot: .full)
+        VideoDock.shared.register(host)
         return host
     }
     func updateUIView(_ uiView: UIView, context: Context) {}
@@ -304,6 +312,10 @@ struct ControlsOverlay: View {
 
     private var topBar: some View {
         HStack(alignment: .top, spacing: 16) {
+            // Minimize: the mini player above the tab bar (UI/PlayerMinimize.swift).
+            if PlayerMinimize.canMinimize(session) {
+                RoundIcon(system: "chevron.down", label: "Minimize") { PlayerMinimize.minimize(session) }
+            }
             VStack(alignment: .leading, spacing: 8) {
                 NowPlayingLabel()
                 TitleBlock(session: session, logoHeight: 44, titleSize: 24)

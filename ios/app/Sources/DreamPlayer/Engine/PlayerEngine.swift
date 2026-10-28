@@ -191,6 +191,19 @@ public protocol PlayerEngine: AnyObject {
     var thumbnails: ScrubThumbnails? { get }
     /// The screen is showing this stream in HDR right now (EDR on). False = standard range (or not known).
     var hdrOnScreen: Bool { get }
+
+    /// Seconds since the on-screen picture last drew a frame; nil when not known (or Picture in Picture / a switch
+    /// back from it is running). The picture watch (PlayerPresentation) uses it.
+    var secondsSincePicture: Double? { get }
+    /// Puts the picture back on screen: the right layer in front, the video chain re-armed, an exact seek to the spot.
+    func redrawPicture()
+    /// The picture's sizes for the log (layer, drawable, the size the engine draws at); nil when not known.
+    func pictureSizeLine() -> String?
+    /// The layer's size and the size the engine draws at, in pixels (nil: not known, PiP or a switch running). Far
+    /// apart means a picture in a corner box (or cropped).
+    var pictureSizes: (layer: CGSize, drawing: CGSize)? { get }
+    /// Reconfigures drawing at the layer's real size.
+    func refitPicture()
 }
 
 /// What Picture in Picture floats for an engine.
@@ -207,6 +220,11 @@ public extension PlayerEngine {
     var onPiPFrame: (() -> Void)? { get { nil } set {} }
     var thumbnails: ScrubThumbnails? { nil }
     var hdrOnScreen: Bool { false }
+    var secondsSincePicture: Double? { nil }
+    func redrawPicture() {}
+    func pictureSizeLine() -> String? { nil }
+    var pictureSizes: (layer: CGSize, drawing: CGSize)? { nil }
+    func refitPicture() {}
 }
 
 /// Makes the best engine this build has.

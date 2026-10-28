@@ -33,8 +33,13 @@ struct AppShell: View {
             }
         }
         .safeAreaInset(edge: .bottom, spacing: 0) {
-            DreamTabBar(selected: model.tab) { model.select($0) }
-                .onGeometryChange(for: CGFloat.self) { $0.frame(in: .global).minY.rounded() } action: { model.tabBarTop = $0 }
+            // The mini player (Dream Player minimized, Shell/MiniPlayer.swift) rides above the tab bar in the same
+            // inset, so pages keep room for both; `tabBarTop` is the top of the two together.
+            VStack(spacing: 0) {
+                MiniPlayerDock()
+                DreamTabBar(selected: model.tab) { model.select($0) }
+            }
+            .onGeometryChange(for: CGFloat.self) { $0.frame(in: .global).minY.rounded() } action: { model.tabBarTop = $0 }
         }
         // Dream Notices: banners over the shell and the Notifications sheet (Notices/NoticeBanner.swift).
         .overlay(alignment: .top) { NoticeHost() }

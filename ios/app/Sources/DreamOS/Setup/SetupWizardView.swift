@@ -168,6 +168,7 @@ struct SetupWizardView: View {
                     .font(.system(size: 14))
                     .foregroundStyle(Palette.textSecondary)
                     .multilineTextAlignment(.center)
+                    .fixedSize(horizontal: false, vertical: true)
                     .modifier(Shake(amount: CGFloat(shake)))
                     .transition(.opacity)
             }
@@ -516,7 +517,7 @@ private struct StepHead: View {
             Text(title).font(.system(size: 30, weight: .bold)).tracking(-0.3).foregroundStyle(Palette.text).padding(.top, 8)
                 .fixedSize(horizontal: false, vertical: true)
             if !tags.isEmpty {
-                WrapLayout(spacing: 8, lineSpacing: 8) {
+                MetaFlow(spacing: 8, lineSpacing: 8) {
                     ForEach(Array(tags.enumerated()), id: \.offset) { i, t in
                         SetupTag(text: t, strong: i == 0 && t == "Required")
                     }
@@ -668,11 +669,12 @@ private struct SpeedGauge: View, Animatable {
 private struct DoneChecks: View {
     @State private var items: [(String, Bool)] = []
     var body: some View {
-        WrapLayout(spacing: 10, lineSpacing: 10) {
+        MetaFlow(spacing: 10, lineSpacing: 10) {
             ForEach(items, id: \.0) { it in
                 HStack(spacing: 8) {
                     PageMarkGlyph(mark: it.1 ? .ok : .off, size: 15)
                     Text(it.0).font(.system(size: 13.5, weight: .medium)).foregroundStyle(it.1 ? Palette.text : Palette.textSecondary)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
                 .padding(.horizontal, 14).padding(.vertical, 8)
                 .background(Capsule().fill(Color.white.opacity(0.06)))

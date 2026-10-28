@@ -91,8 +91,16 @@ public final class NativeResolver: @unchecked Sendable {
     private var gathers: [String: (job: Gather, at: Int64)] = [:]
     private var handedAt: [String: Int64] = [:]
     private var aheadRunning = Set<String>()
+    /// Cellular Data Saver: titles whose remembered link was found under it (dropped when Wi-Fi is back), and when a
+    /// lookup within its limit last found nothing ready (the remembered bigger link then plays at once for a while).
+    private var saverKeys = Set<String>()
+    private var saverMiss: [String: Int64] = [:]
+    /// How long a Play waits for a copy within the saver's limit while a bigger remembered link is ready.
+    static let saverWaitMs: Int64 = 4_500
+    static let saverMissTTL: Int64 = 10 * 60_000
 
     private init() {
+        _ = PlaybackPath.shared // the network monitor runs from the start (Cellular Data Saver, `networkChanged`)
         DebridLedger.shared.setInUse { [weak self] in
             guard let self else { return [] }
             let now = Mono.now()
@@ -246,9 +254,26 @@ public final class NativeResolver: @unchecked Sendable {
 
     func find(_ req: PlayRequest, budgetMs: Int64 = 8_000, purpose: DebridPurpose) async -> StreamLink? {
         let k = key(req)
-        let deadline = Mono.now() + budgetMs
+        var deadline = Mono.now() + budgetMs
         if purpose == .play { _ = lock.withLock { misses.removeValue(forKey: k) } }
-        if let p = peek(req) { return p }
+        // Cellular Data Saver: a remembered link above the limit (an Instant Play / Wi-Fi find) waits while this lookup
+        // (Play or look-ahead) looks for one within it, on the scrape already kept for the title (only the ranking and
+        // the debrid step run again), at most `saverWaitMs` for a Play; it still plays when nothing within the limit
+        // is ready (never "no streams"). Found nothing a moment ago: it plays at once.
+        var spare: StreamLink?
+        var saverCap: Int?
+        if let p = peek(req) {
+            guard let cap = DreamFilters.current().cellCap, qi(p.quality) < cap else { return p }
+            let what = "the remembered \(p.quality) \(Self.size(p.sizeBytes)) link"
+            if let at = lock.withLock({ saverMiss[k] }), Mono.now() - at < Self.saverMissTTL {
+                plog.info("Sources: cellular saver: nothing within \(Self.capLabel(cap), privacy: .public) was ready for \(self.label(req), privacy: .public) \(Self.secs(Mono.now() - at), privacy: .public) ago; \(purpose == .play ? "playing" : "keeping", privacy: .public) \(what, privacy: .public)")
+                return p
+            }
+            spare = p
+            saverCap = cap
+            if purpose == .play { deadline = min(deadline, Mono.now() + Self.saverWaitMs) }
+            plog.info("Sources: cellular saver looks for a copy within \(Self.capLabel(cap), privacy: .public) for \(self.label(req), privacy: .public)\(purpose == .play ? "" : " (look-ahead)", privacy: .public); \(what, privacy: .public) waits")
+        }
         if purpose == .play { preempt(k) }
         var res: StreamLink?
         for _ in 0..<2 {
@@ -271,6 +296,7 @@ public final class NativeResolver: @unchecked Sendable {
             if !started && purpose == .play { l.tighten(to: deadline); Services.shared.sources.promote(req) }
             let w = await l.promise.wait(timeoutMs: max(deadline - Mono.now(), 1))
             if w.timedOut {
+                if let spare { return keepSpare(req, k, spare, purpose) }
                 plog.warning("Dream Core: \(self.label(req), privacy: .public) → nothing yet (budget of \(Self.secs(budgetMs), privacy: .public) over; the lookup goes on and remembers what it finds)")
                 return nil
             }
@@ -283,7 +309,62 @@ public final class NativeResolver: @unchecked Sendable {
                 misses[k] = nil // the joined lookup's answer isn't this Play's
             }
         }
+        if let spare, let cap = saverCap {
+            if let res, qi(res.quality) >= cap { _ = lock.withLock { saverMiss.removeValue(forKey: k) }; return res }
+            // The lookup's own fallback above the limit. Only a Play (every linked service asked) counts as "nothing ready".
+            if let res { if purpose == .play { lock.withLock { saverMiss[k] = Mono.now() } }; return res }
+            return keepSpare(req, k, spare, purpose)
+        }
         return res
+    }
+
+    /// Cellular Data Saver found nothing within the limit: the remembered link above it plays after all.
+    private func keepSpare(_ req: PlayRequest, _ k: String, _ link: StreamLink, _ purpose: DebridPurpose) -> StreamLink {
+        plog.info("Sources: cellular saver found nothing smaller ready for \(self.label(req), privacy: .public); \(purpose == .play ? "playing" : "keeping", privacy: .public) the remembered \(link.quality, privacy: .public) \(Self.size(link.sizeBytes), privacy: .public) link")
+        lock.withLock {
+            misses[k] = nil
+            if purpose == .play { saverMiss[k] = Mono.now() }
+            // Remembered again (a fresh lookup may have dropped it): the next Play takes it at once.
+            if links[k] == nil { links[k] = (link, Mono.now()) }
+        }
+        return link
+    }
+
+    /// The remembered link a look-ahead may stop at: nil when Cellular Data Saver applies now and it's above the limit
+    /// (then the look-ahead runs, within the limit; Instant Play on Wi-Fi is unchanged).
+    public func peekUsable(_ req: PlayRequest) -> StreamLink? {
+        guard let p = peek(req) else { return nil }
+        guard let cap = DreamFilters.current().cellCap, qi(p.quality) < cap else { return p }
+        if let at = lock.withLock({ saverMiss[key(req)] }), Mono.now() - at < Self.saverMissTTL { return p }
+        return nil
+    }
+
+    /// The network flipped between Wi-Fi and a metered one (`PlaybackPath`). To Wi-Fi: links found under Cellular Data
+    /// Saver are dropped (the next Play ranks at full quality again). To mobile data: links above the limit stay as
+    /// fallbacks while the next Play (or look-ahead) looks within it (`find`).
+    func networkChanged(unmetered: Bool) {
+        if unmetered {
+            let n: Int = lock.withLock {
+                let ks = saverKeys.filter { links[$0] != nil }
+                for k in ks { links[k] = nil; alternates[k] = nil }
+                saverKeys.removeAll()
+                saverMiss.removeAll()
+                return ks.count
+            }
+            plog.info("Sources: cellular saver: off the metered network; \(n) links found under the saver dropped (the next Play ranks at full quality)")
+        } else {
+            guard let cap = DreamFilters.current().cellCap else {
+                plog.info("Sources: cellular saver: on a metered network, saver not in use (\(CellularSaver.modeLabel, privacy: .public), answer \(CellularSaver.answer.rawValue, privacy: .public)); remembered links unchanged")
+                return
+            }
+            let n: Int = lock.withLock {
+                let ks = links.filter { qi($0.value.link.quality) < cap }.map(\.key)
+                for k in ks { alternates[k] = nil } // a failover never jumps to a big copy behind the curtain
+                saverMiss.removeAll()
+                return ks.count
+            }
+            plog.info("Sources: cellular saver: on a metered network; \(n) remembered links above \(Self.capLabel(cap), privacy: .public) wait while the next Play looks within it")
+        }
     }
 
     /// A real Play for [k] starts: look-aheads for other titles (Instant Play's `.page` / `.browse` lookups) give up
@@ -305,7 +386,7 @@ public final class NativeResolver: @unchecked Sendable {
     /// The next episode's link while one plays (PreResolve.ahead): a torrent or two at the debrid service; the play that
     /// follows finds it remembered (`peek`) or joins the lookup. Returns at once.
     public func ahead(_ req: PlayRequest) {
-        if !available() || peek(req) != nil { return }
+        if !available() || peekUsable(req) != nil { return }
         let k = key(req)
         let go = lock.withLock { aheadRunning.insert(k).inserted }
         guard go else { return }
@@ -448,7 +529,12 @@ public final class NativeResolver: @unchecked Sendable {
     }
 
     /// Best tier the viewer's filters can give at all (what "a good result" means for the early exit).
-    private func bestTier(_ f: DreamFilters.Values) -> Int { f.known ? min(f.cap, 3) : 0 }
+    private func bestTier(_ f: DreamFilters.Values) -> Int {
+        let b = f.known ? min(f.cap, 3) : 0
+        // Cellular Data Saver: the best grade within its limit.
+        guard let c = f.cellCap else { return b }
+        return max(b, tier(Self.capLabel(c), f))
+    }
 
     /// [req] resumes (Continue Watching has a spot for it): an MP4 costs more.
     private func resuming(_ req: PlayRequest) -> Bool { !req.fromStart && WatchHistory.shared.historyStartMs(req).map { $0 > 0 } == true }
@@ -500,7 +586,7 @@ public final class NativeResolver: @unchecked Sendable {
                 if !kept.isEmpty {
                     if round > 0 { break } // later rounds: whatever new arrives goes at once
                     let since = t - job.startedAt - job.firstMs
-                    let good = kept.contains { tier($0.c.quality, f) <= best }
+                    let good = kept.contains { tier($0.c.quality, f) <= best && !overCell($0.c.quality, f) }
                     if purpose == .page {
                         // A look-ahead ends early too (a slot and the scraper lanes free again; the scrape itself goes
                         // on and Play ranks whatever has arrived by then), with a longer grace than a Play for a better
@@ -549,9 +635,11 @@ public final class NativeResolver: @unchecked Sendable {
             }
             if let (found, others) = await race(k, svcs, topList.map(\.c), purpose: p, deadline: deadline) {
                 remember(k, found)
+                lock.withLock { () -> Void in if f.cellCap != nil { _ = saverKeys.insert(k) } else { _ = saverKeys.remove(k) } }
                 addAlternates(k, others)
                 noteRelaxed(req, k, found, kept, level)
                 if p == .play { noteHDR(req, found, kept, f) }
+                noteCellular(req, found, kept, f, lookAhead: p != .play)
                 plog.warning("Dream Core: \(self.label(req), privacy: .public) → \(found.service.uppercased(), privacy: .public) \(found.quality, privacy: .public) \(Self.size(found.sizeBytes), privacy: .public) in \(Self.secs(Mono.now() - t0), privacy: .public) (scrapers: \(job.count) sources so far, \(kept.count) kept, round \(round + 1)\(others.isEmpty ? "" : ", \(others.count) more ready", privacy: .public)\(p <= .page ? ", look-ahead" : "", privacy: .public))")
                 return found
             }
@@ -657,6 +745,7 @@ public final class NativeResolver: @unchecked Sendable {
         let k = key(req)
         if let (f, others) = await race(k, svcs, cands, purpose: why == "test" ? .list : .play, deadline: deadline) {
             remember(k, f)
+            _ = lock.withLock { saverKeys.remove(k) } // picked by hand / Search All Sources: not a saver choice
             addAlternates(k, others)
             plog.warning("Dream Core: \(self.label(req), privacy: .public) → \(f.service.uppercased(), privacy: .public) \(f.quality, privacy: .public) \(Self.size(f.sizeBytes), privacy: .public) in \(Self.secs(Mono.now() - t0), privacy: .public) (\(why, privacy: .public)\(others.isEmpty ? "" : ", \(others.count) more ready", privacy: .public))")
             return f
@@ -944,6 +1033,9 @@ public final class NativeResolver: @unchecked Sendable {
     }
 
     private func qi(_ q: String) -> Int { switch q { case "4K": 0; case "1080p": 1; case "720p": 2; default: 3 } }
+    static func capLabel(_ c: Int) -> String { ["4K", "1080p", "720p", "SD"][max(0, min(3, c))] }
+    /// A copy above Cellular Data Saver's limit (only while it applies to this lookup).
+    private func overCell(_ q: String, _ f: DreamFilters.Values) -> Bool { f.cellCap.map { qi(q) < $0 } ?? false }
 
     /// Rank of a quality: best allowed first; with no settings, 1080p before 4K (streams on any network).
     private func tier(_ q: String, _ f: DreamFilters.Values) -> Int {
@@ -1043,6 +1135,22 @@ public final class NativeResolver: @unchecked Sendable {
         }
     }
 
+    /// After a Play's link: what Cellular Data Saver did (log only; the Info note is set at hand-over, `CellularSaver.mark`).
+    private func noteCellular(_ req: PlayRequest, _ found: StreamLink, _ kept: [Parsed], _ f: DreamFilters.Values, lookAhead: Bool = false) {
+        guard let c = f.cellCap else {
+            if !lookAhead && CellularSaver.onMeteredNetwork { plog.info("Sources: cellular saver not in use for \(self.label(req), privacy: .public) on mobile data (\(CellularSaver.modeLabel, privacy: .public), answer \(CellularSaver.answer.rawValue, privacy: .public))") }
+            return
+        }
+        let cap = Self.capLabel(c)
+        let above = kept.filter { overCell($0.c.quality, f) }.count
+        let tag = lookAhead ? " (look-ahead)" : ""
+        if overCell(found.quality, f) {
+            plog.info("Sources: cellular saver found nothing within \(cap, privacy: .public) ready for \(self.label(req), privacy: .public)\(tag, privacy: .public); \(lookAhead ? "keeping" : "playing", privacy: .public) the smallest above it (\(found.quality, privacy: .public) \(Self.size(found.sizeBytes), privacy: .public))")
+        } else {
+            plog.info("Sources: cellular saver kept \(self.label(req), privacy: .public) within \(cap, privacy: .public) on mobile data\(tag, privacy: .public) (\(found.quality, privacy: .public) \(Self.size(found.sizeBytes), privacy: .public); \(above) bigger copies ranked after)")
+        }
+    }
+
     /// After a link was found: when the filters were relaxed ([level] > 0), the log line and the note the loading screen shows.
     private func noteRelaxed(_ req: PlayRequest, _ k: String, _ found: StreamLink, _ kept: [Parsed], _ level: Int) {
         if level <= 0 { lock.withLock { relaxedLinks[k] = nil }; return }
@@ -1085,9 +1193,15 @@ public final class NativeResolver: @unchecked Sendable {
         func learned(_ p: Parsed) -> Int {
             mem.isEmpty ? 0 : mem.nudge(SourceMemory.traits(name: p.c.torrentName, fileName: p.c.fileName, provider: p.provider, sizeBytes: p.c.sizeBytes))
         }
+        // Cellular Data Saver (`CellularSaver`, only while it applies): copies above its limit after every copy within
+        // it, the lowest grade and smallest file of them first; within it, a smaller file wins a tie (256 MB steps).
+        let saver = f.cellCap != nil
+        func over(_ p: Parsed) -> Bool { overCell(p.c.quality, f) }
+        func sizeStep(_ p: Parsed) -> Int { p.c.sizeBytes > 0 ? Int(p.c.sizeBytes >> 28) : Int.max / 4 }
         let keyed = list.enumerated().map { (i, p) -> ([Int], Parsed) in
-            ([b(sink(p)), b(camsIn && camGrade(p)), langMiss(p), tier(p.c.quality, f), b(resume && slow(p)), b(p.pack),
-              b(p.c.sizeBytes > heavy), penalty(p), learned(p), b(slow(p)), -p.c.seeders, i], p)
+            ([b(sink(p)), b(camsIn && camGrade(p)), langMiss(p), b(over(p)), over(p) ? -qi(p.c.quality) : tier(p.c.quality, f),
+              b(resume && slow(p)), b(p.pack), b(p.c.sizeBytes > heavy), over(p) ? sizeStep(p) : 0, penalty(p), learned(p),
+              b(slow(p)), saver ? sizeStep(p) : 0, -p.c.seeders, i], p)
         }
         return keyed.sorted { $0.0.lexicographicallyPrecedes($1.0) }.map(\.1)
     }
