@@ -41,6 +41,17 @@ struct DetailStatusPill: View {
     }
 }
 
+/// The attribution TMDB's where-to-watch data requires (it comes from JustWatch): a small dim line under every place
+/// that shows it (the title page's Where to Watch, a service page's rows). Words only, no logo.
+struct JustWatchCredit: View {
+    var body: some View {
+        Text("Streaming Availability From JustWatch")
+            .font(.system(size: 11.5, weight: .medium))
+            .foregroundStyle(Palette.textTertiary)
+            .fixedSize(horizontal: false, vertical: true)
+    }
+}
+
 /// Lays children out left to right and wraps to a new line when they don't fit (the meta line on a narrow phone).
 struct WrapLayout: Layout {
     var spacing: CGFloat = 10

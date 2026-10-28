@@ -878,7 +878,7 @@ class MainActivity : Activity() {
         return if (model == "AirPods") "AirPods Connected" else "AirPods Connected · $model"
     }
 
-    /** The AirPods card (AirPodsPanel): battery, send to iPhone / bring to TV, options and listening stats. */
+    /** The AirPods card (AirPodsPanel): send to iPhone / bring to TV, options and listening stats (battery only with a real reading). */
     private fun showHeadphones() {
         if (headphonesOverlay != null) return
         val panel = AirPodsPanel(this, airPods, accent, selectColor, font, fontBold) { msg -> showBanner(msg) }
@@ -1733,23 +1733,6 @@ class MainActivity : Activity() {
         pageHost.post { pageHost.findViewWithTag<View>(tag)?.requestFocus() }
     }
 
-    private fun askTmdbKey() {
-        val input = EditText(this).apply {
-            setText(Tmdb.key(this@MainActivity))
-            isSingleLine = true
-            hint = "Paste your TMDB key"
-        }
-        AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
-            .setTitle("TMDB Key")
-            .setView(input)
-            .setPositiveButton("Save") { _, _ ->
-                Tmdb.setKey(this, input.text.toString())
-                showPage(page, force = true)
-            }
-            .setNegativeButton("Cancel", null)
-            .show()
-    }
-
     /** A mic key that reaches Dream OS (other remotes / keyboards; Fire OS keeps its own for Alexa). */
     private fun onVoiceKey(e: KeyEvent) {
         if (e.action == KeyEvent.ACTION_UP) return
@@ -2439,7 +2422,7 @@ class MainActivity : Activity() {
             // TimeSettings.kt: every time Dream OS shows follows this zone and clock format (DreamTime).
             PremiumSettings.Section("Time & Region", SettingsGlyph.CLOCK, TimeSettings.settingsItems(this) { refreshSettings() }),
             PremiumSettings.Section("Devices", LineIcon.HEADPHONES, listOf(
-                I("AirPods", airPodsChipLabel() ?: "Not Paired", R.drawable.ic_headphones, null, "Pair, Connect and Battery") { showHeadphones() },
+                I("AirPods", airPodsChipLabel() ?: "Not Paired", R.drawable.ic_headphones, null, "Pair and Connect") { showHeadphones() },
                 I("Phone Remote", remote.pairedPhones().size.let { n -> if (n == 0) null else if (remote.enabled()) "On" else "Off" }, R.drawable.ic_phone, null,
                     "Use Your iPhone or Android Phone") { showPhoneRemote() },
                 I("AirPlay from iPhone", null, R.drawable.ic_tv, null, "Mirror Your iPhone With AirScreen") { openAirPlay() },
@@ -2467,10 +2450,13 @@ class MainActivity : Activity() {
             )),
             // Advanced: API keys for title data and ratings.
             PremiumSettings.Section("Advanced", LineIcon.GEAR, listOf(
-                I("TMDB Key", if (Tmdb.hasKey(this)) "Set" else "Not Set", R.drawable.ic_movie, null, "Titles, Artwork and Search") { askTmdbKey() },
+                // The key pages (KeyPages.kt): Added / Not Added, Show Me How, If Something Goes Wrong, What to Try.
+                I("TMDB Key", if (Tmdb.hasKey(this)) "Added" else "Not Added", R.drawable.ic_movie, null, "Titles, Artwork and Search") {
+                    DreamPanelPage.openKey(this, KeyPages.Kind.TMDB) { refreshSettings(); showPage(page, force = true) }
+                },
                 // Rotten Tomatoes and IMDb scores (Ratings.kt); without a key those badges just stay hidden.
-                I("OMDb Key", if (Ratings.omdbEnabled(this)) "Set" else "Not Set", R.drawable.ic_movie, null, "Rotten Tomatoes and IMDb Scores") {
-                    Ratings.askKey(this) { refreshSettings(); showPage(page, force = true) }
+                I("OMDb Key", if (Ratings.omdbEnabled(this)) "Added" else "Not Added", R.drawable.ic_movie, null, "Rotten Tomatoes and IMDb Scores") {
+                    DreamPanelPage.openKey(this, KeyPages.Kind.OMDB) { refreshSettings(); showPage(page, force = true) }
                 },
             )),
             // UpdatePage.kt: Dream OS's own updates; hidden when the build has no releases repository. The dot: a new version waits.
@@ -2485,6 +2471,9 @@ class MainActivity : Activity() {
                 // A legal credit: TMDB's own sentence, in sentence case and shown whole (two lines, not cut off).
                 PremiumSettings.Item("Movie and Show Data", "TMDB", R.drawable.ic_movie, null,
                     "This product uses the TMDB API but is not endorsed or certified by TMDB.", wrapCaption = true) {},
+                // JustWatch's terms: credit for the where-to-watch data TMDB passes on.
+                PremiumSettings.Item("Streaming Availability", "JustWatch", R.drawable.ic_movie, null,
+                    "Where to Watch and the services' rows use data from JustWatch.", wrapCaption = true) {},
             )),
         )
     }

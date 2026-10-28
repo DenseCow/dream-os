@@ -144,28 +144,25 @@ struct TitleDetailsView: View {
 
     private var headline: some View {
         VStack(alignment: .leading, spacing: 12) {
-            WrapLayout(spacing: 10, lineSpacing: 8) {
+            // Every part whole (STANDARDS §3): a part that doesn't fit starts the next line, and a dot never starts or
+            // ends a line (MetaFlow leaves those out).
+            MetaFlow(spacing: 9, lineSpacing: 8) {
                 ForEach(Array(metaParts.enumerated()), id: \.offset) { i, part in
-                    if i > 0 {
-                        Text("·").font(.system(size: 14, weight: .medium)).foregroundStyle(Palette.textTertiary)
-                    }
+                    if i > 0 { MetaDot(color: Palette.textTertiary) }
                     part
                 }
             }
             if WatchedState.shared.title(model.shown) {
-                // Watched replaces the availability pill; a show keeps its next-episode note beside it.
-                HStack(spacing: 12) {
+                // Watched replaces the availability pill; a show keeps its next-episode note beside it (or under it
+                // when the line is short; the note wraps whole, never cut).
+                MetaFlow(spacing: 12, lineSpacing: 8) {
                     WatchedPill(large: true)
-                    if model.isShow, let note = model.availability?.note, !note.isEmpty {
-                        Text(note).font(.system(size: 13.5, weight: .medium)).foregroundStyle(Palette.textSecondary).lineLimit(1)
-                    }
+                    if model.isShow, let note = model.availability?.note, !note.isEmpty { statusNote(note) }
                 }
             } else if let a = model.availability {
-                HStack(spacing: 12) {
+                MetaFlow(spacing: 12, lineSpacing: 8) {
                     DetailStatusPill(state: a.state, text: a.pageLabels.first, large: true)
-                    if let note = a.note, !note.isEmpty {
-                        Text(note).font(.system(size: 13.5, weight: .medium)).foregroundStyle(Palette.textSecondary).lineLimit(1)
-                    }
+                    if let note = a.note, !note.isEmpty { statusNote(note) }
                 }
             }
         }
@@ -173,10 +170,16 @@ struct TitleDetailsView: View {
         .animation(.easeOut(duration: 0.24), value: model.scores)
     }
 
+    private func statusNote(_ note: String) -> some View {
+        Text(note).font(.system(size: 13.5, weight: .medium)).foregroundStyle(Palette.textSecondary)
+            .fixedSize(horizontal: false, vertical: true)
+    }
+
     private var metaParts: [AnyView] {
         var out: [AnyView] = []
         func text(_ s: String) -> AnyView {
-            AnyView(Text(s).font(.system(size: 14, weight: .medium)).foregroundStyle(Palette.textSecondary).lineLimit(1))
+            AnyView(Text(s).font(.system(size: 14, weight: .medium)).foregroundStyle(Palette.textSecondary)
+                .fixedSize(horizontal: false, vertical: true))
         }
         if let y = model.metaYear { out.append(text(y)) }
         if let c = model.cert { out.append(AnyView(CertBox(cert: c))) }
@@ -417,6 +420,7 @@ struct TitleDetailsView: View {
                             }
                         }
                     }
+                    JustWatchCredit().padding(.top, 2)
                 }
                 .padding(.top, 32)
             }

@@ -260,7 +260,7 @@ final class TitleDetailsModel {
 
     var cert: String? { details?.info?.cert.isEmpty == false ? details?.info?.cert : nil }
 
-    /// Where to Watch names, never YouTube.
+    /// Where to Watch names, never YouTube (YouTube TV allowed).
     var watchNames: [String] {
         if let i = details?.info {
             let all = InfoWords.cleanProviders(i.streaming + i.free)

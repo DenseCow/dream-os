@@ -269,7 +269,8 @@ class CinemaSearch(shell: CinemaShell) : CPage(shell) {
         resultsTitle.text = "Trending Now"
         trending?.let { addPosters(it); return }
         val g = gen
-        Net.background({ Tmdb.trending(ctx).filter { it.posterPath != null }.take(MAX_TILES) }) { list ->
+        // No anime outside the anime sections (STANDARDS §5), nothing adult, nothing not out yet.
+        Net.background({ Tmdb.trending(ctx).filter { it.posterPath != null && !RowMix.isAnime(it) && !it.adult && RowMix.released(it) }.take(MAX_TILES) }) { list ->
             if (list.isNullOrEmpty() || g != gen) return@background
             trending = list
             resetWall("trending")

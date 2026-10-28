@@ -189,6 +189,8 @@ public protocol PlayerEngine: AnyObject {
 
     /// Scrub previews for the playing stream (nil: this engine has none).
     var thumbnails: ScrubThumbnails? { get }
+    /// The screen is showing this stream in HDR right now (EDR on). False = standard range (or not known).
+    var hdrOnScreen: Bool { get }
 }
 
 /// What Picture in Picture floats for an engine.
@@ -204,6 +206,7 @@ public extension PlayerEngine {
     func pipRenderSize(width: Int, height: Int) {}
     var onPiPFrame: (() -> Void)? { get { nil } set {} }
     var thumbnails: ScrubThumbnails? { nil }
+    var hdrOnScreen: Bool { false }
 }
 
 /// Makes the best engine this build has.

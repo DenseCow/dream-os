@@ -10,6 +10,11 @@ public struct StreamBadges: Equatable {
     public var badges: [Badge]
     public var size: String?
 
+    /// The HDR kinds a badge can name.
+    public static let hdrNames: Set<String> = ["Dolby Vision", "HDR10+", "HDR10", "HLG"]
+    /// This stream's HDR kind ("Dolby Vision", "HDR10+", "HDR10", "HLG"), nil for a standard picture.
+    public var hdrName: String? { badges.first { Self.hdrNames.contains($0.text) }?.text }
+
     public static func make(_ f: StreamFacts, fileName: String?, sizeBytes: Int64) -> StreamBadges? {
         let tag = Self.tag(fileName ?? "")
         func has(_ w: String) -> Bool { tag.contains(" \(w) ") }

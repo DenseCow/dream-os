@@ -86,9 +86,23 @@ object Tmdb {
     /** [search] is a deep link (with %s for the title) that opens the app on that title; null = just launch. */
     class Service(val providerId: Int, val name: String, val pkg: String, val search: String? = null)
 
-    fun key(ctx: Context): String =
-        ctx.getSharedPreferences("tmdb", Context.MODE_PRIVATE).getString("key", null)
-            ?.takeIf { it.isNotBlank() } ?: BuildConfig.TMDB_KEY
+    /**
+     * The viewer's own TMDB key (owner, 2026-10-28, same as the iPhone: no built-in key option; the public build
+     * ships with no keys). A build that carries the owner's key (local.properties) hands it over once, as if the
+     * owner had typed it in, so it shows as their saved key; it never overwrites or comes back after a key the
+     * viewer entered or removed. Every TMDB call reads this.
+     */
+    fun key(ctx: Context): String {
+        val p = ctx.getSharedPreferences("tmdb", Context.MODE_PRIVATE)
+        p.getString("key", null)?.takeIf { it.isNotBlank() }?.let { return it }
+        if (!p.getBoolean("adopted", false)) {
+            val built = BuildConfig.TMDB_KEY.trim()
+            val e = p.edit().putBoolean("adopted", true)
+            if (built.isNotEmpty() && !p.contains("key")) e.putString("key", built)
+            e.apply() // the in-memory copy updates at once
+        }
+        return p.getString("key", null)?.takeIf { it.isNotBlank() }.orEmpty()
+    }
 
     fun setKey(ctx: Context, key: String) =
         ctx.getSharedPreferences("tmdb", Context.MODE_PRIVATE).edit().putString("key", key.trim()).apply()

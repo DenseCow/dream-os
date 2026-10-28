@@ -79,23 +79,36 @@ public struct HeroLogo: View {
     }
 }
 
-/// The meta line with the title's scores after it, fixed height so nothing moves while scores land.
+/// The meta line with the title's scores and pill after it (one line when it all fits; at least 22 pt high so nothing
+/// moves while scores land). Nothing in it is ever cut or squeezed (STANDARDS §3): the words, the scores and the pill
+/// are whole parts of a `MetaFlow`, so on a narrow phone the scores and the pill wrap to the next line ("2026 · Movie ·
+/// Thriller" / "31%  IMDb 6.4  Available Now"). The words drop genres (two, one, none) rather than show "...".
 public struct MetaLine: View {
     let title: Title
     let availability: Availability?
     @State private var scores: Scores?
     public init(_ title: Title, availability: Availability? = nil) { self.title = title; self.availability = availability }
     public var body: some View {
-        HStack(spacing: 14) {
-            Text(TitleMeta.meta(title)).font(Cinema.Fonts.meta).foregroundStyle(.white.opacity(0.86)).lineLimit(1)
+        MetaFlow(spacing: 14, lineSpacing: 8) {
+            ViewThatFits(in: .horizontal) {
+                words(genres: 2)
+                words(genres: 1)
+                words(genres: 0)
+            }
             if let s = scores ?? TitleExtras.shared.cached(title)?.scores { ScoreBadges(s).transition(.opacity) }
             CardPill(title, known: availability)
         }
-        .frame(minHeight: 22)
+        .frame(minHeight: 22, alignment: .leading)
         .task(id: title.key) {
             let e = await TitleExtras.shared.extras(title)
             withAnimation(.easeOut(duration: 0.2)) { scores = e?.scores }
         }
+    }
+
+    private func words(genres: Int) -> some View {
+        Text(TitleMeta.meta(title, genres: genres))
+            .font(Cinema.Fonts.meta).foregroundStyle(.white.opacity(0.86))
+            .lineLimit(1).fixedSize()
     }
 }
 

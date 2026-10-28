@@ -308,11 +308,11 @@ class SetupWizard(
      * with accounts.
      */
     private fun stepList(): List<Int> = listOfNotNull(
-        WELCOME, NEED, INTRO, ZONE, CONTENT, ACCOUNTS, SCRAPERS, CHECK, PLAYBACK, UNLOCK,
+        WELCOME, NEED, INTRO, ZONE, TMDB, ACCOUNTS, SCRAPERS, CHECK, PLAYBACK, UNLOCK,
         PROFILE, WHO, LOOK,
         // The unlock turns the Home button on; its own step stays only for when it's still off.
         if (homeActive() && cur != HOME) null else HOME,
-        APPLE, AIRPODS, IPHONE, VOICE, MORE, DONE,
+        CONTENT, APPLE, AIRPODS, IPHONE, VOICE, MORE, DONE,
     )
 
     /** Why a required step can't be left yet (shown on the page), or null. */
@@ -320,6 +320,7 @@ class SetupWizard(
         ACCOUNTS -> SetupGate.accountsBlocker(ctx, accountPages?.isChecking() == true)
         SCRAPERS -> if (SetupGate.scrapersReady(ctx)) null else "Add a scraper repository and turn on at least one provider to continue."
         CHECK -> if (SetupGate.checkPassed(ctx)) null else "Run the check to continue."
+        TMDB -> if (Tmdb.hasKey(ctx)) null else "Add your TMDB key to continue."
         else -> null
     }
 
@@ -431,6 +432,7 @@ class SetupWizard(
             WELCOME -> welcome()
             INTRO -> introStep()
             NEED -> needStep()
+            TMDB -> tmdbStep()
             PLAYBACK -> playbackStep()
             WHO -> whoStep()
             ZONE -> zoneStep()
@@ -503,7 +505,7 @@ class SetupWizard(
         // What Dream OS is (the logo and two lines), what it does (DreamWelcome.kt's feature grid, full width), then the buttons.
         val intro = vBox()
         val title = titleText("Welcome to Dream OS", center = false)
-        val sub = subText("Dream OS turns your Fire TV into your own streaming service: every movie and show in one beautiful place, ready to play in seconds. Setup takes about three minutes.", center = false)
+        val sub = subText("Dream OS turns your Fire TV into your own streaming service: every movie and show in one beautiful place, ready to play in seconds. Setup takes about 15 minutes, and every step shows you how.", center = false)
         intro.addView(title, lp(top = 0))
         intro.addView(sub, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { topMargin = 6.dp })
         val top = LinearLayout(ctx).apply {
@@ -761,32 +763,49 @@ class SetupWizard(
     // ---- 5. content ----
 
     private fun content(): Built {
-        val p = Split(glyph(R.drawable.ic_live), "Your Shows and Apps",
-            "Posters and details come from TMDB, the weather from your approximate location. Pick the apps for your home screen.")
-        val tmdb = row("Movie & Show Info", "Posters, details and search", icon = R.drawable.ic_movie,
-            value = if (Tmdb.hasKey(ctx)) "Connected" else "Add Key", chevron = true) { r -> editKey(p, r) }
-        if (Tmdb.hasKey(ctx)) tmdb.value?.setTextColor(GREEN)
-        p.add(tmdb.view, 0)
-        val ratings = row("Ratings", "Rotten Tomatoes and IMDb scores", icon = R.drawable.ic_movie,
-            value = if (Ratings.omdbEnabled(ctx)) "Connected" else "Add Key", chevron = true) { r ->
-            editKey(p, r, "Paste or Type Your OMDb Key", "Get a free key at omdbapi.com/apikey.aspx.",
-                current = { Ratings.omdbKey(ctx) }, has = { Ratings.omdbEnabled(ctx) },
-                save = { Ratings.setOmdbKey(ctx, it) }, check = { Ratings.testKey(Ratings.omdbKey(ctx)) })
-        }
-        if (Ratings.omdbEnabled(ctx)) ratings.value?.setTextColor(GREEN)
-        p.add(ratings.view, 6)
+        val p = Split(glyph(R.drawable.ic_live), "Your Home Screen",
+            "Pick the apps for your home screen. The weather comes from your approximate location.", tags = listOf("Optional"))
         val weather = row("Weather", "Based on your internet connection", icon = R.drawable.ic_bolt, value = "Finding You…", focusable = false)
-        p.add(weather.view, 6)
+        p.add(weather.view, 0)
         val g = gen
         Weather.load(ctx) { now ->
             if (g != gen) return@load
-            weather.value?.text = if (now == null) "Unavailable Right Now" else "${now.tempF}° ${now.place}".trim()
+            weather.value?.text = if (now == null) "Unavailable Right Now" else "${now.tempF}° ${now.place}".trim()
         }
         p.add(p.kicker("YOUR APPS"), 18)
         val grid = appGrid()
         p.add(grid.first, 8)
-        p.buttons("Continue") { next(CONTENT) }
-        return p.built(grid.second ?: tmdb.view)
+        val main = p.buttons("Continue") { next(CONTENT) }
+        return p.built(grid.second ?: main)
+    }
+
+    /**
+     * Connect Movie & Show Info (owner, 2026-10-28, the iPhone's TMDB step): the viewer's own free TMDB key is
+     * required (Dream OS ships no keys), with Show Me How and If Something Goes Wrong; OMDb for ratings is optional.
+     */
+    private fun tmdbStep(): Built {
+        val ui = SetupUi(ctx, k)
+        val panel = SetupPanel(ui)
+        val me = cur
+        val keys = KeyPages(ctx, ui, panel) { onResumeCheck?.invoke() }
+        val s = SetupScreen(ui, null, null)
+        val rows = ScreenRows(s)
+        fun paint() {
+            s.view("k:tmdb", 0) { SetupParts(ctx, k).section("Your TMDB Key", true) }
+            keys.addRows(s, rows, KeyPages.Kind.TMDB, 10)
+            s.view("k:omdb", 24) { SetupParts(ctx, k).section("Ratings", false) }
+            s.view("n:omdb", 8) { SetupParts(ctx, k).note("A free OMDb key adds Rotten Tomatoes and IMDb scores to every title. You can add it now or later in Settings.", 14f) }
+            keys.addRows(s, rows, KeyPages.Kind.OMDB, 10)
+        }
+        paint()
+        s.onShow = { paint(); onResumeCheck?.invoke() }
+        s.onResume = { paint(); onResumeCheck?.invoke() }
+        val b = panelStep(SetupArt.Kind.ACCOUNTS, "Connect Movie & Show Info",
+            if (Tmdb.hasKey(ctx)) "TMDB is a free movie and TV website. Every poster, detail and search in Dream OS comes from it. Your TMDB key is added, so you can continue."
+            else "TMDB is a free movie and TV website. Every poster, detail and search in Dream OS comes from it, so Dream OS needs your own free TMDB key before it can show anything.",
+            panel, s, continueFirst = { Tmdb.hasKey(ctx) }, tags = listOf("Required", "Free", "About 5 Minutes")) {}
+        Log.w(TAG, "Setup: step Movie & Show Info (${if (blocker(me) == null) "key added" else "no key yet"})")
+        return b
     }
 
     /**
@@ -934,7 +953,7 @@ class SetupWizard(
     private fun zoneStep(): Built {
         val me = cur
         val p = Split(SetupArt(ctx, SetupArt.Kind.CLOCK), "Your Time Zone",
-            "We use this to show when new episodes and movies come out.", iconDp = 112)
+            "Dream OS uses this to show when new episodes and movies come out.", iconDp = 112)
         val now = k.label("", 22f, k.text, k.semibold, lines = 2)
         fun paintNow() = setTextIfNew(now, "${DreamTime.label(ctx, DreamTime.zone(ctx))}  ·  ${DreamTime.formatTime(ctx, System.currentTimeMillis())}")
         paintNow()
@@ -957,7 +976,7 @@ class SetupWizard(
      */
     /** [continueFirst]: focus starts on Continue (nothing on the page needs doing, e.g. everything unlocked). */
     private fun panelStep(art: SetupArt.Kind, title: String, sub: String, panel: SetupPanel, first: SetupScreen,
-                          continueFirst: () -> Boolean = { false }, onRelease: () -> Unit): Built {
+                          continueFirst: () -> Boolean = { false }, tags: List<String> = emptyList(), onRelease: () -> Unit): Built {
         val me = cur
         panel.layoutParams = LinearLayout.LayoutParams(MATCH_PARENT, 330.dp)
         panel.push(first, animate = false)
@@ -969,7 +988,7 @@ class SetupWizard(
             override fun handleBack() = panel.pop()
             override fun release() { onRelease(); panel.release() }
         }
-        val p = Split(SetupArt(ctx, art), title, sub, iconDp = 112)
+        val p = Split(SetupArt(ctx, art), title, sub, iconDp = 112, tags = tags)
         p.add(panel, 0)
         addBlockNote(p, me)
         val main = p.buttons("Continue") { next(me) }
@@ -983,8 +1002,8 @@ class SetupWizard(
         val pages = AccountsPages(ctx, ui, panel, inSetup = true) { onResumeCheck?.invoke() }
         accountPages = pages
         return panelStep(SetupArt.Kind.ACCOUNTS, "Connect Your Accounts",
-            "Required. A debrid service finds and streams your movies and shows in high quality. Connect the ones you have. Trakt is optional.",
-            panel, pages.overview()) { if (accountPages === pages) accountPages = null }
+            "A debrid service is a paid online account that streams movies and shows to Dream OS in full quality, with no waiting. Dream OS needs one to play anything. Most cost about \$3 to \$12 a month.",
+            panel, pages.overview(), tags = listOf("Required", "Paid", "About 5 Minutes")) { if (accountPages === pages) accountPages = null }
             .also { Log.w(TAG, "Setup: step Accounts (${if (blocker(me) == null) "ready" else "waiting"})") }
     }
 
@@ -995,8 +1014,8 @@ class SetupWizard(
         val listener: () -> Unit = { view.post { onResumeCheck?.invoke() } }
         Scrapers.addListener(listener)
         return panelStep(SetupArt.Kind.SCRAPERS, "Set Up Scrapers",
-            "Required. Scrapers search the web for streams of what you pick. Dream OS doesn't include any: add the repository you use.",
-            panel, pages.overview()) { Scrapers.removeListener(listener) }
+            "Scrapers are free add-ons that search the web for streams of what you pick, so your debrid service can play them. They come in a repository: a web address you add here. Dream OS doesn't include any.",
+            panel, pages.overview(), tags = listOf("Required", "Free", "About 2 Minutes")) { Scrapers.removeListener(listener) }
     }
 
     // ---- Before You Start, Playback Preferences, Who's Watching (pages in DreamSetupMore.kt) ----
@@ -1004,8 +1023,8 @@ class SetupWizard(
     private fun introStep(): Built {
         val me = cur
         val p = Split(SetupArt(ctx, SetupArt.Kind.INTRO), "Before You Start",
-            "Required. Dream OS doesn't include or host any movies, shows or sources. You connect your own accounts and add your own scraper repositories, and you're responsible for what you add.",
-            iconDp = 112)
+            "Dream OS doesn't include or host any movies, shows or sources. You connect your own accounts and add your own scraper repositories, and you're responsible for what you add.",
+            iconDp = 112, tags = listOf("Required"))
         p.add(p.kicker("YOUR PRIVACY"), 0)
         p.add(k.label("Where your information goes:", 16f, k.text, k.medium), 10)
         p.add(SetupIntro.list(ctx, k), 12)
@@ -1027,13 +1046,13 @@ class SetupWizard(
             iconDp = 112)
         p.add(p.kicker("REQUIRED"), 0)
         p.add(SetupIntro.needs(ctx, k, listOf(
-            Triple("A TMDB Key", "Every poster, detail and search", if (BuildConfig.TMDB_KEY.isNotBlank()) "Included" else "Free"),
+            Triple("A TMDB Key", "Every poster, detail and search. About 5 minutes", "Free"),
             Triple("A Debrid Service", "Streams what you watch. About \$3 to \$12 a month", "Paid"),
             Triple("A Scraper Repository", "Add-ons that find streams for your debrid service", "Free"),
         )), 10)
         p.add(p.kicker("FOR THE FULL VIEWING EXPERIENCE"), 18)
         p.add(SetupIntro.needs(ctx, k, listOf(
-            Triple("Premiumize", "The fastest Play. TorBox works the same way", "Recommended"),
+            Triple("Premiumize", "The fastest Play, about \$12 a month. TorBox works the same way", "Recommended"),
             Triple("An OMDb Key", "Rotten Tomatoes and IMDb scores", if (Ratings.omdbEnabled(ctx)) "Included" else "Free"),
             Triple("Trakt", "Your history and watchlist on every device", "Free"),
             Triple("A Profile for Everyone", "Their own rows, picks and Kids limits", ""),
@@ -1047,27 +1066,36 @@ class SetupWizard(
         val ui = SetupUi(ctx, k)
         val panel = SetupPanel(ui)
         return panelStep(SetupArt.Kind.PLAYBACK, "Playback Preferences",
-            "Optional. Choose picture quality, languages, subtitles and sound. The defaults suit most TVs.",
-            panel, PlaybackPages(ctx, ui, panel).overview()) {}
+            "Choose picture quality, languages, subtitles and sound. The defaults suit most TVs.",
+            panel, PlaybackPages(ctx, ui, panel).overview(), tags = listOf("Optional")) {}
     }
 
     private fun whoStep(): Built {
         val ui = SetupUi(ctx, k)
         val panel = SetupPanel(ui)
         return panelStep(SetupArt.Kind.PROFILES, "Who's Watching?",
-            "Optional. Add a profile for everyone at home. A Kids profile only shows movies and shows up to the rating you choose.",
-            panel, ProfilesPages(ctx, ui, panel, pins).overview()) {}
+            "Add a profile for everyone at home. A Kids profile only shows movies and shows up to the rating you choose.",
+            panel, ProfilesPages(ctx, ui, panel, pins).overview(), tags = listOf("Optional")) {}
     }
 
     private fun checkStep(): Built {
         val me = cur
         val art = SetupArt(ctx, SetupArt.Kind.CHECK)
         val p = Split(art, "Getting You Ready",
-            "Required. Dream OS runs one real search with your account and scrapers, so you know everything works.", iconDp = 112)
+            "Dream OS runs one real search with your debrid service and scrapers, so you know everything works before you start watching.",
+            iconDp = 112, tags = listOf("Required", "About 30 Seconds"))
         val line = k.label("", 22f, k.text, k.semibold, lines = 2)
         val detail = k.label("", Ui.T_CAPTION, Ui.alpha(k.dim, 0.95f), k.font, lines = 0)
         p.add(line, 0)
         p.add(detail, 8, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
+        // While it runs: what it does (the iPhone's Show Me How for the check). After a miss: What to Try.
+        val explain = k.label(SetupGuide.CHECK_STEPS[0].see.orEmpty(), Ui.T_CAPTION, Ui.alpha(k.dim, 0.8f), k.font, lines = 0).apply {
+            setLineSpacing(3.dp.toFloat(), 1f)
+            visibility = View.GONE
+        }
+        p.add(explain, 10, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
+        val help = FrameLayout(ctx).apply { visibility = View.GONE }
+        p.add(help, 12, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
         addBlockNote(p, me)
         var running = false
         lateinit var main: View
@@ -1083,6 +1111,8 @@ class SetupWizard(
             setTextIfNew(line, "Checking…")
             setTextIfNew(detail, "")
             setShown(blockNote, false)
+            setShown(help, false)
+            setShown(explain, true)
             Thread {
                 val r = try {
                     Scrapers.test(ctx.applicationContext) { msg -> view.post { if (gen == g) setTextIfNew(detail, msg) } }
@@ -1096,6 +1126,10 @@ class SetupWizard(
                     art.checkState = if (r.ok) SetupArt.CheckState.OK else SetupArt.CheckState.FAIL
                     setTextIfNew(line, if (r.ok) "Found ${r.found} Sources  ·  ${r.ready} Ready to Play" else "Not Quite Ready")
                     setTextIfNew(detail, r.message)
+                    setShown(explain, false)
+                    help.removeAllViews()
+                    if (!r.ok) help.addView(SetupGuide.whatToTry(ctx, k, SetupGuide.checkHelp(r.message)))
+                    setShown(help, !r.ok)
                     (main as? TextView)?.text = if (r.ok) "Continue" else "Try Again"
                     Log.w(TAG, "Setup: final check ${if (r.ok) "passed" else "failed"}: ${r.found} found, ${r.ready} ready in ${r.ms} ms")
                     if (r.ok) speed.run()
@@ -1124,8 +1158,8 @@ class SetupWizard(
         val pages = UnlockPages(ctx, ui, panel, onChange = { onResumeCheck?.invoke() },
             afterTurnOff = { if (cur == me) page?.view?.findViewWithTag<View>(MAIN)?.requestFocus() })
         val b = panelStep(SetupArt.Kind.UNLOCK, "Unlock Dream OS Features",
-            "Recommended. A one-time step so Dream OS can fully take over your Fire TV: the Home button, startup, voice search and more.",
-            panel, pages.overview(), continueFirst = { DreamUnlock.allOn(ctx) }) {}
+            "A one-time step so Dream OS can fully take over your Fire TV: the Home button, startup, voice search and more.",
+            panel, pages.overview(), continueFirst = { DreamUnlock.allOn(ctx) }, tags = listOf("Recommended")) {}
         (blockNote)?.let { n ->
             onResumeCheck = { if (cur == me) setTextIfNew(n, if (DreamUnlock.allOn(ctx)) "" else "You can skip this and unlock later in Settings.") }
             n.visibility = View.VISIBLE
@@ -1456,8 +1490,8 @@ class SetupWizard(
         val items = listOfNotNull(
             "Profile" to true,
             (if (homeActive()) "Home Button On" else "Home Button Off") to homeActive(),
-            (if (Tmdb.hasKey(ctx)) "Movie & Show Info" else "Movie & Show Info Not Set") to Tmdb.hasKey(ctx),
-            (if (Ratings.omdbEnabled(ctx)) "Ratings" else "Ratings Not Set") to Ratings.omdbEnabled(ctx),
+            (if (Tmdb.hasKey(ctx)) "Movie & Show Info" else "Movie & Show Info Not Added") to Tmdb.hasKey(ctx),
+            (if (Ratings.omdbEnabled(ctx)) "Ratings" else "Ratings Not Added") to Ratings.omdbEnabled(ctx),
             (if (SetupGate.anyVerified(ctx)) "Accounts Connected" else "Accounts") to SetupGate.anyVerified(ctx),
             (if (SetupGate.scrapersReady(ctx)) "Scrapers Ready" else "Scrapers") to SetupGate.scrapersReady(ctx),
             (if (host.airPodsConnected()) "AirPods Connected" else "AirPods Not Connected") to host.airPodsConnected(),
@@ -1610,7 +1644,7 @@ class SetupWizard(
      * A split step: [icon], title and explanation on the left; controls on the right with the
      * buttons under them.
      */
-    private inner class Split(icon: View?, title: String, sub: String?, iconDp: Int = 52, hero: View? = null) {
+    private inner class Split(icon: View?, title: String, sub: String?, iconDp: Int = 52, hero: View? = null, tags: List<String> = emptyList()) {
         val root = LinearLayout(ctx).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
         val left = LinearLayout(ctx).apply { orientation = LinearLayout.VERTICAL }
         val right = LinearLayout(ctx).apply { orientation = LinearLayout.VERTICAL }
@@ -1629,6 +1663,8 @@ class SetupWizard(
             } else {
                 if (icon != null) leftAdd(icon, 0, LinearLayout.LayoutParams(iconDp.dp, iconDp.dp))
                 leftAdd(titleText(title, center = false), if (icon != null) 18 else 0)
+                // The step's facts ("Required", "Free", "About 5 Minutes"), the iPhone's step tags.
+                if (tags.isNotEmpty()) leftAdd(tagRow(tags), 10)
                 subtitle = subText(sub ?: "", center = false)
                 leftAdd(subtitle, 10)
             }
@@ -1674,6 +1710,19 @@ class SetupWizard(
     }
 
     private fun column() = LinearLayout(ctx).apply { orientation = LinearLayout.VERTICAL; gravity = Gravity.CENTER_HORIZONTAL }
+
+    /** Small capsules: "Required" is the strong one. */
+    private fun tagRow(tags: List<String>) = LinearLayout(ctx).apply {
+        orientation = LinearLayout.HORIZONTAL
+        gravity = Gravity.CENTER_VERTICAL
+        for ((i, t) in tags.withIndex()) {
+            val strong = t == "Required"
+            addView(k.label(t, 12f, if (strong) Color.WHITE else k.dim, k.semibold, 0.02f).apply {
+                setPadding(11.dp, 4.dp, 11.dp, 5.dp)
+                background = Ui.rounded(ctx, Ui.alpha(Color.WHITE, if (strong) 0.14f else 0.06f), Ui.R_PILL, 1f, Ui.alpha(Color.WHITE, if (strong) 0.30f else 0.14f))
+            }, LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT).apply { if (i > 0) marginStart = 8.dp })
+        }
+    }
 
     private fun center(col: View) = FrameLayout(ctx).apply { addView(col, FrameLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT, Gravity.CENTER)) }
 
@@ -1957,6 +2006,7 @@ class SetupWizard(
         private const val PLAYBACK = 22
         private const val WHO = 23
         private const val NEED = 24
+        private const val TMDB = 25
 
         private const val V_IDLE = 0
         private const val V_LISTENING = 1

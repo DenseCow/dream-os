@@ -57,7 +57,8 @@ class CinemaBrowse(shell: CinemaShell) : CinemaRowsPage(shell) {
         entry.fill(listOf(tv, movies).map { (it as View) to it }, animate = false)
         // The tiles wear the most popular title of the week.
         if (Tmdb.hasKey(ctx)) for ((card, type) in listOf(tv to "tv", movies to "movie")) {
-            Net.background({ Tmdb.list(ctx, "/trending/$type/week", type = type).firstOrNull { it.backdropPath != null } }) { t ->
+            // Anime only inside anime (STANDARDS §5): the tiles wear the most popular non-anime title that is out.
+            Net.background({ Tmdb.list(ctx, "/trending/$type/week", type = type).firstOrNull { it.backdropPath != null && !RowMix.isAnime(it) && !it.adult && RowMix.released(it) } }) { t ->
                 if (t == null || released) return@background
                 card.art().source(t.backdrop("w780"))
                 card.art().bind(0)

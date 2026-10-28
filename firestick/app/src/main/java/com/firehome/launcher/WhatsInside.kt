@@ -46,7 +46,7 @@ class WhatsInside(private val ctx: Context) {
         Feature(FeatureGlyph.INSTANT, "Instant Play", "Predictive pre-loading: ready before you press Play, next episode lined up"),
         Feature(FeatureGlyph.PLAYER, "Dream Player", "Custom-built player: Skip Intro, Up Next, resume and Dream Subtitles"),
         Feature(FeatureGlyph.SPARK, "Dream Cinema", "All-new cinematic interface with rainbow glow focus"),
-        Feature(FeatureGlyph.AIRPODS, "AirPods Compatibility", "Native AirPods support: live battery, iPhone handoff, auto-pause"),
+        Feature(FeatureGlyph.AIRPODS, "AirPods Compatibility", "Native AirPods support: pair, connect, Send to iPhone, and pause when they disconnect"),
         Feature(FeatureGlyph.CLOCK, "Continue Watching", "Seamless pick-up across everything, plus every New Episode"),
         Feature(FeatureGlyph.SEARCH, "Dream Search", "Universal search with the Dream Keyboard and Alexa voice"),
         Feature(FeatureGlyph.PERSON, "Profiles", "Personal profiles, each with its own list, look and PIN"),
@@ -219,7 +219,7 @@ class WhatsInside(private val ctx: Context) {
             Triple(FeatureGlyph.INSTANT, "Instant Play", "Predictive loading, zero wait"),
             Triple(FeatureGlyph.PLAYER, "Dream Player", "Custom-built cinema player"),
             Triple(FeatureGlyph.SPARK, "Dream Cinema", "All-new cinematic interface"),
-            Triple(FeatureGlyph.AIRPODS, "AirPods Compatibility", "Native support, live battery"),
+            Triple(FeatureGlyph.AIRPODS, "AirPods Compatibility", "Native support, Send to iPhone"),
             Triple(FeatureGlyph.SHIELD, "Ad Blocking", "System-wide ad shield"),
             Triple(FeatureGlyph.PULSE, "System Health", "Smart self-diagnostics"),
         )

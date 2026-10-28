@@ -583,7 +583,10 @@ class CinemaDetails(private val ctx: Context, private val t: Title, private val 
         buttons.addView(mine)
 
         val elsewhere = d?.providers.orEmpty().map { it.name }.distinct().filterNot { n -> watchable.any { n.startsWith(it.name) } }
-        also.text = if (elsewhere.isNotEmpty()) "Also Streaming On  " + elsewhere.take(4).joinToString("  ·  ") else ""
+        // TMDB's where-to-watch data comes from JustWatch, whose terms ask for this credit wherever it shows.
+        also.text = if (elsewhere.isNotEmpty()) android.text.SpannableString("Also Streaming On  " + elsewhere.take(3).joinToString("  ·  ") + JUSTWATCH_TAIL).apply {
+            setSpan(android.text.style.ForegroundColorSpan(Ui.alpha(dim, 0.62f)), length - JUSTWATCH_TAIL.length, length, android.text.Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+        } else ""
         also.visibility = if (also.text.isEmpty()) View.GONE else View.VISIBLE
 
         if (!rebuild) return
@@ -1322,6 +1325,9 @@ class CinemaDetails(private val ctx: Context, private val t: Title, private val 
         return flatLinear(LinearLayout.VERTICAL).apply {
             setPadding(CinemaStyle.GUTTER.dp, 22.dp, CinemaStyle.GUTTER.dp, 0)
             addView(grid, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
+            // Where to Watch comes from JustWatch (through TMDB): its credit, small and quiet, under the grid.
+            if (info.watchWords().isNotEmpty()) addView(label(JUSTWATCH, 12.5f, Ui.alpha(dim, 0.8f), font, 1),
+                LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT).apply { topMargin = 14.dp })
         }
     }
 
@@ -1745,6 +1751,9 @@ class CinemaDetails(private val ctx: Context, private val t: Title, private val 
     private fun flatLinear(o: Int): LinearLayout = object : LinearLayout(ctx) { override fun hasOverlappingRendering() = false }.apply { orientation = o }
 
     companion object {
+        /** JustWatch's credit for the where-to-watch data TMDB passes on (its terms ask for it wherever that data shows). */
+        const val JUSTWATCH = "Streaming Availability From JustWatch"
+        private const val JUSTWATCH_TAIL = "      Availability From JustWatch"
         /** The synopsis' focus face reaches this far past the text on each side (dp). */
         private const val SYN_PAD = 14
         private const val TAG = "FireHome"

@@ -1265,14 +1265,45 @@ class CinemaHero(
                 LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT).apply { marginStart = gap })
         }
     }
-    // Two lines tall; a longer synopsis glides up once the remote rests so all of it can be read (AutoScroll).
-    private val synopsis = AutoScrollText(ctx).apply {
-        textSize = CinemaStyle.T_SYNOPSIS
-        typeface = kit.font
-        setTextColor(Ui.alpha(kit.text, 0.80f))
-        includeFontPadding = false
-        maxLines = 2
+    /**
+     * Two lines that always start at the first word: the whole sentences that fit ([fitSentences]), else the first
+     * one cut with an ellipsis. It never scrolls: a glide that held at its last line read as a synopsis starting
+     * mid-sentence ("lessons he's learned from nearly two decades..."; owner, 2026-10-28). The title page has it all.
+     */
+    private val synopsisW = Ui.dp(ctx, 470)
+    private val synopsis = kit.label("", CinemaStyle.T_SYNOPSIS, Ui.alpha(kit.text, 0.80f), kit.font, lines = 2).apply {
         setLineSpacing(0f, 1.18f)
+        hyphenationFrequency = android.text.Layout.HYPHENATION_FREQUENCY_NONE
+    }
+
+    /**
+     * The meta line that fits beside the scores in [infoW]: two genres, then one, then none, so the tomato and the
+     * IMDb badge are never squeezed or cut (iPhone MetaLine, 2026-10-28).
+     */
+    private fun fitMeta(t: Title): String {
+        heroScores.measure(View.MeasureSpec.UNSPECIFIED, View.MeasureSpec.UNSPECIFIED)
+        val room = infoW - heroScores.measuredWidth - metaView.compoundPaddingLeft - metaView.compoundPaddingRight
+        for (g in 2 downTo 1) kit.meta(t, g).let { if (metaView.paint.measureText(it) <= room) return it }
+        return kit.meta(t, 0)
+    }
+
+    /** [t]'s leading whole sentences that fit [synopsis]'s two lines; [t] itself when it fits or no sentence does. */
+    private fun fitSentences(t: String): String {
+        val text = t.trim()
+        if (text.isEmpty()) return text
+        val w = synopsisW - synopsis.compoundPaddingLeft - synopsis.compoundPaddingRight
+        fun lines(s: String) = android.text.StaticLayout.Builder.obtain(s, 0, s.length, synopsis.paint, w)
+            .setLineSpacing(synopsis.lineSpacingExtra, synopsis.lineSpacingMultiplier)
+            .setIncludePad(false).setHyphenationFrequency(android.text.Layout.HYPHENATION_FREQUENCY_NONE)
+            .build().lineCount
+        if (lines(text) <= 2) return text
+        val ends = Regex("[.!?…][\"”’)]*(?=\\s)").findAll(text).map { it.range.last + 1 }.toList()
+        var best: String? = null
+        for (e in ends) {
+            val s = text.substring(0, e)
+            if (lines(s) <= 2) best = s else break
+        }
+        return best ?: text
     }
     private val info = FlatLinear(ctx).apply { orientation = LinearLayout.VERTICAL; clipChildren = false; clipToPadding = false }
     val buttons = FlatLinear(ctx).apply { orientation = LinearLayout.HORIZONTAL; clipChildren = false; clipToPadding = false }
@@ -1299,8 +1330,7 @@ class CinemaHero(
 
     private val rotate = object : Runnable {
         override fun run() {
-            if (synopsis.reading) handler.postDelayed(this, 1_000L) // let the viewer finish reading first
-            else if (active && titles.size > 1 && buttons.hasFocus() && host.resumed() && host.idle()) step(1) else schedule()
+            if (active && titles.size > 1 && buttons.hasFocus() && host.resumed() && host.idle()) step(1) else schedule()
         }
     }
 
@@ -1330,7 +1360,7 @@ class CinemaHero(
             addView(metaView, LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT))
             addView(heroScores, LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT))
         }, LinearLayout.LayoutParams(infoW, Ui.dp(ctx, 22)).apply { topMargin = Ui.dp(ctx, 12) })
-        info.addView(synopsis, LinearLayout.LayoutParams(Ui.dp(ctx, 470), Ui.dp(ctx, 42)).apply { topMargin = Ui.dp(ctx, 8) })
+        info.addView(synopsis, LinearLayout.LayoutParams(synopsisW, Ui.dp(ctx, 42)).apply { topMargin = Ui.dp(ctx, 8) })
         val playable = host.canPlay()
         // A plain "Play"; hold OK to pick the episode.
         if (playable) play = kit.button("Play", R.drawable.ic_play, primary = true) { current()?.let { host.watch(it, false) } }.apply {
@@ -1449,9 +1479,9 @@ class CinemaHero(
     private fun setText(t: Title) {
         kickerView.text = kickerFor(t).uppercase()
         kickerView.visibility = if (kickerView.text.isEmpty()) View.INVISIBLE else View.VISIBLE
-        metaView.text = kit.meta(t)
         setScores(t)
-        synopsis.text = t.overview
+        metaView.text = fitMeta(t)
+        synopsis.text = fitSentences(t.overview)
         bigTitle.text = t.name
         bigTitle.textSize = when {
             t.name.length > 30 -> if (compact) 24f else 28f

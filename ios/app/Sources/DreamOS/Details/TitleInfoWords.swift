@@ -38,17 +38,19 @@ enum InfoWords {
         PageTime.isAhead(ymd) ? PageTime.longDate(ymd).map { "Coming \($0)" } : nil
     }
 
-    /// Provider names, each once, never YouTube in any form (STANDARDS §1).
+    /// Provider names, each once, never YouTube (STANDARDS §1) except YouTube TV, a real streaming service (owner,
+    /// 2026-10-28: the no-YouTube rule covers trailers).
     static func cleanProviders(_ names: [String]) -> [String] {
         var seen = Set<String>()
         return names.filter { n in
-            guard !n.isEmpty, !n.lowercased().contains("youtube"), !seen.contains(n) else { return false }
+            let youTube = n.lowercased().contains("youtube") && n.lowercased() != "youtube tv"
+            guard !n.isEmpty, !youTube, !seen.contains(n) else { return false }
             seen.insert(n)
             return true
         }
     }
 
-    /// The info with every provider list cleaned (Where to Watch never shows YouTube TV).
+    /// The info with every provider list cleaned (cleanProviders).
     static func cleaned(_ info: TitleInfo) -> TitleInfo {
         var i = info
         i.streaming = cleanProviders(i.streaming)

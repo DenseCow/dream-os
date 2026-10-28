@@ -540,7 +540,8 @@ public final class PlayerSession: ObservableObject {
             NowPlaying.update(self)
             pip?.refresh()
         case .format:
-            break
+            // Badges and Info read the engine's facts (and whether the screen shows HDR) on the next draw.
+            tick &+= 1
         case .ended:
             // Ended before any picture: an empty, cut or unreadable file (or a start spot past its end), never
             // "finished" (that closed the player without a word). From a spot: once more from the beginning; else

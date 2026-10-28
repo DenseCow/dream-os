@@ -551,6 +551,7 @@ public final class NativeResolver: @unchecked Sendable {
                 remember(k, found)
                 addAlternates(k, others)
                 noteRelaxed(req, k, found, kept, level)
+                if p == .play { noteHDR(req, found, kept, f) }
                 plog.warning("Dream Core: \(self.label(req), privacy: .public) → \(found.service.uppercased(), privacy: .public) \(found.quality, privacy: .public) \(Self.size(found.sizeBytes), privacy: .public) in \(Self.secs(Mono.now() - t0), privacy: .public) (scrapers: \(job.count) sources so far, \(kept.count) kept, round \(round + 1)\(others.isEmpty ? "" : ", \(others.count) more ready", privacy: .public)\(p <= .page ? ", look-ahead" : "", privacy: .public))")
                 return found
             }
@@ -951,6 +952,11 @@ public final class NativeResolver: @unchecked Sendable {
     }
 
     private func hdr(_ t: String) -> Bool { has(t, "HDR", "HDR10", "HDR10+", "DV", "DOVI", "DOLBY VISION") }
+    /// Dolby Vision with no HDR10 named: usually profile 5 (no standard HDR picture underneath). Plays on iPhone, but
+    /// an HDR10 / hybrid copy is the safer pick above the cap (Dream Player notes, docs/port/player.md).
+    private func dvOnly(_ t: String) -> Bool { has(t, "DV", "DOVI", "DOLBY VISION") && !has(t, "HDR", "HDR10", "HDR10+") }
+    /// A copy above Maximum Quality that only Prefer HDR let in.
+    private func aboveCap(_ p: Parsed, _ f: DreamFilters.Values) -> Bool { f.known && qi(p.c.quality) < f.cap }
     private func hevc(_ t: String) -> Bool { has(t, "HEVC", "X265", "H265", "H.265") }
     private func upscaled(_ t: String) -> Bool { has(t, "UPSCALE", "UPSCALED", "AI UPSCALED", "AI-UPSCALED", "AIUS") }
     private func disc(_ name: String) -> Bool { name.range(of: "\\.(iso|img|rar|zip|7z|exe)$", options: [.regularExpression, .caseInsensitive]) != nil }
@@ -997,7 +1003,8 @@ public final class NativeResolver: @unchecked Sendable {
         if let fn = c.fileName { if !DebridFiles.isVideo(fn) { return false } }
         else if disc(c.torrentName) || has(t, "ISO", "BDMV", "BD25", "BD50", "BD66", "BD100") { return false }
         if ep && c.sizeBytes > 40 * Self.gb { return false }
-        if relax < Self.relaxQuality && qi(c.quality) < f.cap { return false }
+        // Prefer HDR (HDRPreference): an HDR copy may go above Maximum Quality; every other copy obeys it.
+        if relax < Self.relaxQuality && qi(c.quality) < f.cap && !(f.hdrAboveCap && hdr(t) && !(f.hideDv && dvOnly(t))) { return false }
         if relax < Self.relaxSize {
             if let r = f.range(ep), c.sizeBytes > 0, !r.contains(Double(c.sizeBytes) / Double(Self.gb)) { return false }
             if let mbps = f.speedMbps(ep), runtimeSec > 0, c.sizeBytes > 0, Double(c.sizeBytes) * 8 / Double(runtimeSec) / 1_000_000 > mbps { return false }
@@ -1021,6 +1028,19 @@ public final class NativeResolver: @unchecked Sendable {
             if !kept.isEmpty { return (kept, level) }
         }
         return ([], 0)
+    }
+
+    /// After a Play's link: what Prefer HDR did (log only).
+    private func noteHDR(_ req: PlayRequest, _ found: StreamLink, _ kept: [Parsed], _ f: DreamFilters.Values) {
+        guard f.known, f.cap > 0 else { return }
+        let capLabel = ["4K", "1080p", "720p", "SD"][min(3, f.cap)]
+        if let p = kept.first(where: { $0.c.hash == found.hash }), aboveCap(p, f) {
+            plog.info("Sources: prefer HDR picked \(p.c.quality, privacy: .public) \(self.tags(p.text).first ?? "HDR", privacy: .public) above your \(capLabel, privacy: .public) Maximum Quality for \(self.label(req), privacy: .public)")
+        } else if HDRPreference.chosen, let why = HDRPreference.heldBack {
+            plog.info("Sources: prefer HDR held back for \(self.label(req), privacy: .public) (\(why, privacy: .public)), kept within \(capLabel, privacy: .public)")
+        } else if f.hdrAboveCap {
+            plog.info("Sources: prefer HDR on, no HDR copy above \(capLabel, privacy: .public) was ready for \(self.label(req), privacy: .public)")
+        }
     }
 
     /// After a link was found: when the filters were relaxed ([level] > 0), the log line and the note the loading screen shows.
@@ -1055,6 +1075,7 @@ public final class NativeResolver: @unchecked Sendable {
         }
         func penalty(_ p: Parsed) -> Int {
             (p.dubbed && !other ? 2 : 0) + (upscaled(p.text) ? 2 : 0) + (f.preferHdr && !hdr(p.text) ? 1 : 0) + (f.preferHevc && !hevc(p.text) ? 1 : 0)
+                + (aboveCap(p, f) && dvOnly(p.text) ? 1 : 0)
         }
         // Otherwise equal, an MKV before an MP4: an MP4's index (often at the end) costs its download before the first frame.
         func slow(_ p: Parsed) -> Bool { mp4(p) }

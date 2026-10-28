@@ -65,7 +65,9 @@ final class MPVEngine: PlayerEngine {
     private var hdrLogged = false
     let thumbs = ScrubThumbnails()
     var thumbnails: ScrubThumbnails? { thumbs }
-    private var thumbWorker: MPVThumbnailer?
+    private var thumbDesk: ThumbDesk?
+    private var thumbWorkers: [MPVThumbnailer] = []
+    private var lastStallAt: CFTimeInterval?
     private var thumbsTried = false
     private var stableTicks = 0
     private var firstFrameAt: CFTimeInterval = 0
@@ -92,7 +94,7 @@ final class MPVEngine: PlayerEngine {
         thumbs.onFirstWant = { [weak self] in self?.thumbsWanted() }
         memoryObserver = NotificationCenter.default.addObserver(forName: UIApplication.didReceiveMemoryWarningNotification, object: nil, queue: .main) { [weak self] _ in
             MainActor.assumeIsolated {
-                guard let self, self.thumbWorker != nil else { return }
+                guard let self, self.thumbDesk != nil else { return }
                 Log.player.info("Thumbs: memory warning, previews decoder stopped (\(self.thumbs.count, privacy: .public) frames kept)")
                 self.stopThumbs()
             }
@@ -662,7 +664,7 @@ final class MPVEngine: PlayerEngine {
         cacheAheadBytes = 0; cacheTotalBytes = 0; cacheInputRate = 0
         cacheRanges = []; cachedToEnd = false
         pendingSeek = nil
-        stallStarted = nil; stalls = 0
+        stallStarted = nil; stalls = 0; lastStallAt = nil
         hdrLogged = false
         stopThumbs()
         thumbs.reset()
@@ -722,6 +724,7 @@ final class MPVEngine: PlayerEngine {
         let now = CACurrentMediaTime()
         if waiting, stallStarted == nil, pendingSeek == nil {
             stallStarted = now
+            lastStallAt = now
             stalls += 1
             Log.player.info("Buffer: stalled at \(Labels.time(self.state.position), privacy: .public) (reading \(String(format: "%.1f", Double(self.cacheInputRate) / 1_048_576), privacy: .public) MB/s)")
         } else if !waiting, let s = stallStarted {
@@ -763,6 +766,7 @@ final class MPVEngine: PlayerEngine {
     /// tell mpv how bright the screen can go (PQ and HLG carry their own levels).
     private func pictureColorspaceChanged(_ kind: MPVMetalLayer.HDRKind, name: String, format: UInt) {
         let headroom = Double(UIScreen.main.currentEDRHeadroom)
+        if edrOn != (kind != .sdr) { edrOn = kind != .sdr; fire(.format) }
         let key = "\(name) \(format) \(kind)"
         guard key != lastPicture else { return }
         lastPicture = key
@@ -776,32 +780,41 @@ final class MPVEngine: PlayerEngine {
         }
     }
     private var targetPeak = "auto"
+    /// The screen layer is in an HDR colour space with EDR on (MPVMetalLayer).
+    private var edrOn = false
+    /// What the badge and Info say: the screen shows this HDR stream in HDR right now.
+    var hdrOnScreen: Bool {
+        let g = videoParams["gamma"]?.string ?? ""
+        return edrOn && !pipMode && (g == "pq" || g == "hlg")
+    }
     private var lastPicture = ""
 
     // MARK: Scrub previews
 
-    /// The main picture's health decides how much the previews decoder may do.
-    private func thumbGate() -> MPVThumbnailer.Gate {
+    /// The main picture's health decides how much the previews decoders may do: nothing while it loads, seeks,
+    /// buffers or is away; only the thumb's spots with little buffered or for 30 s after a stall; also the walk once
+    /// 12 s are buffered (or the rest of the file is in).
+    private func thumbGate() -> ThumbDesk.Gate {
         guard state.hasSource, firstFrameSent, videoOn, !pipMode, !loading, !state.isBuffering, !seeking else { return .closed }
+        if let s = lastStallAt, CACurrentMediaTime() - s < 30 { return .wants }
         let ahead = state.buffered - state.position
-        if cachedToEnd || ahead >= 25 { return .open }
-        return ahead >= 6 ? .wants : .closed
+        return cachedToEnd || ahead >= 12 ? .open : .wants
     }
 
     private func updateThumbGate() {
-        thumbWorker?.setGate(thumbGate())
+        thumbDesk?.setGate(thumbGate())
     }
 
-    /// Starts the previews once playback has been steady for a few ticks (~6 s, at least 10 s after the first frame).
+    /// Starts the previews once playback is steady (2 healthy ticks, at least 5 s after the first frame).
     private func maybeStartThumbs() {
-        guard thumbWorker == nil, !thumbsTried, firstFrameSent else { return }
+        guard thumbDesk == nil, !thumbsTried, firstFrameSent else { return }
         stableTicks = thumbGate() == .open ? stableTicks + 1 : 0
-        if stableTicks >= 3, CACurrentMediaTime() - firstFrameAt >= 10 { startThumbs(early: false) }
+        if stableTicks >= 2, CACurrentMediaTime() - firstFrameAt >= 5 { startThumbs(early: false) }
     }
 
     /// The viewer started dragging before the previews ran: start now if the picture is up and not buffering.
     private func thumbsWanted() {
-        guard thumbWorker == nil, !thumbsTried, firstFrameSent, CACurrentMediaTime() - firstFrameAt >= 3,
+        guard thumbDesk == nil, !thumbsTried, firstFrameSent, CACurrentMediaTime() - firstFrameAt >= 2,
               thumbGate() != .closed else { return }
         startThumbs(early: true)
     }
@@ -823,54 +836,71 @@ final class MPVEngine: PlayerEngine {
         let mb = 1 << 20
         let free = Int(os_proc_available_memory())
         if free > 0, free < 450 * mb { Log.player.info("Thumbs: off (\(free / mb, privacy: .public) MB free)"); return }
+        let phys = Int(ProcessInfo.processInfo.physicalMemory)
         // Frames stay in memory, sized to the phone like the art memory: a 4 GB iPhone ~32 MB, 6 GB and up 48 MB.
         let width = 288, frameBytes = 288 * 162 * 4
-        let budget = min(48 * mb, Int(ProcessInfo.processInfo.physicalMemory / 128))
+        let budget = min(48 * mb, phys / 128)
         let cap = max(40, budget / frameBytes)
         let interval = max(8, d / Double(cap))
         let grid = Int((d / interval).rounded(.up))
         let dw = Double(videoParams["dw"]?.int ?? 16), dh = Double(videoParams["dh"]?.int ?? 9)
         thumbs.prepare(grid: grid, interval: interval, aspect: dw > 0 && dh > 0 ? CGFloat(dw / dh) : 16 / 9)
-        let walk = NetPath.shared.unmetered
+        let unmetered = NetPath.shared.unmetered
+        // Metered: the coarse pass only (about one frame per 1.5 % of the runtime), then only where the viewer drags.
+        let near = min(grid - 1, max(0, Int(state.position / interval)))
+        let desk = ThumbDesk(grid: grid, near: near, walkLimit: unmetered ? grid : min(grid, 64))
+        // As many decoders as the phone has room for: drag decoders follow only the thumb (never stuck behind the walk).
+        let gb = 1 << 30
+        let roomy = phys >= 6 * gb && (free <= 0 || free >= 1200 * mb)
+        let some = phys >= 4 * gb && (free <= 0 || free >= 800 * mb)
+        let roles: [ThumbDesk.Role] = roomy ? [.drag, .drag, .walk] : some ? [.drag, .walk] : [.both]
         let ua = src.headers.first { $0.key.lowercased() == "user-agent" }?.value ?? "DreamOS/0.1 (iOS) DreamPlayer"
         let cfg = MPVThumbnailer.Config(
             url: src.url, headers: src.headers.filter { $0.key.lowercased() != "user-agent" }, userAgent: ua,
-            duration: d, grid: grid, interval: interval, width: width, walk: walk, near: state.position,
+            duration: d, interval: interval, width: width,
             // Dolby Vision 7 / 8 carry a normal HDR10 picture: decode that one, without the Dolby Vision data.
             filter: dvProfile != nil ? "format=colormatrix=bt.2020-ncl:dolbyvision=no" : nil)
-        let worker = MPVThumbnailer(cfg)
         let thumbs = self.thumbs
-        worker.onFrame = { i, img, t, aspect in
-            let box = ThumbBox(image: img)
-            DispatchQueue.main.async {
-                MainActor.assumeIsolated {
-                    thumbs.setAspect(CGFloat(aspect))
-                    thumbs.add(i, box.image, time: t)
+        var workers: [MPVThumbnailer] = []
+        for (n, role) in roles.enumerated() {
+            let name = role == .walk ? "walk" : role == .drag ? "drag\(n + 1)" : "both"
+            let w = MPVThumbnailer(cfg, desk: desk, role: role, name: name)
+            w.onFrame = { i, img, t, aspect in
+                let box = ThumbBox(image: img)
+                DispatchQueue.main.async {
+                    MainActor.assumeIsolated {
+                        thumbs.setAspect(CGFloat(aspect))
+                        thumbs.add(i, box.image, time: t)
+                    }
                 }
             }
-        }
-        worker.onEnd = { [weak self, weak worker] reason in
-            DispatchQueue.main.async {
-                MainActor.assumeIsolated {
-                    Log.player.info("Thumbs: stopped (\(reason, privacy: .public))")
-                    guard let self, self.thumbWorker === worker else { return }
-                    self.thumbWorker = nil
-                    self.thumbs.onWant = nil
+            w.onEnd = { [weak self, weak w] reason in
+                DispatchQueue.main.async {
+                    MainActor.assumeIsolated {
+                        Log.player.info("Thumbs: stopped (\(reason, privacy: .public))")
+                        guard let self, let w else { return }
+                        self.thumbWorkers.removeAll { $0 === w }
+                        if self.thumbWorkers.isEmpty, self.thumbDesk === desk { self.stopThumbs() }
+                    }
                 }
             }
+            workers.append(w)
         }
-        thumbs.onWant = { [weak worker] i in worker?.want(i) }
-        thumbWorker = worker
-        worker.setGate(thumbGate())
-        worker.start()
-        Log.player.info("Thumbs: starting\(early ? " (viewer dragging)" : "", privacy: .public), \(grid, privacy: .public) spots every \(Int(interval), privacy: .public) s, \(walk ? "whole timeline in the background" : "only where the viewer drags (metered network)", privacy: .public)")
+        thumbs.onWant = { [weak desk] i, next in desk?.want(i, next: next) }
+        thumbDesk = desk
+        thumbWorkers = workers
+        desk.setGate(thumbGate())
+        for w in workers { w.start() }
+        Log.player.info("Thumbs: starting\(early ? " (viewer dragging)" : "", privacy: .public) \(Int(CACurrentMediaTime() - self.firstFrameAt), privacy: .public) s after the first frame, \(grid, privacy: .public) spots every \(Int(interval), privacy: .public) s, decoders \(roles.count, privacy: .public) (\(roles.map { "\($0)" }.joined(separator: ", ")), privacy: .public), walk \(unmetered ? "whole timeline" : "coarse pass only (metered network)", privacy: .public)")
     }
 
     private func stopThumbs() {
-        thumbWorker?.cancel()
-        thumbWorker = nil
+        thumbDesk?.cancel()
+        thumbDesk = nil
+        thumbWorkers = []
         thumbs.onWant = nil
     }
+
 
     /// Log lines may quote the stream URL: cut every http(s) URL down to its host.
     static func redact(_ s: String) -> String {

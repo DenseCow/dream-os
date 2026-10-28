@@ -1255,6 +1255,10 @@ class CinemaService(shell: CinemaShell, private val spec: ServiceSpec) : CinemaR
             titles(shelf.title, min = CATEGORY_MIN) { GenreShelves.load(ctx, g, shelf) }
         }
         endCap()
+        // The rows come from where-to-watch data (JustWatch, through TMDB): its credit, small and quiet, at the very end.
+        add(kit.label(CinemaDetails.JUSTWATCH, 12.5f, Ui.alpha(kit.text, 0.45f), kit.font).apply {
+            setPadding(CinemaStyle.GUTTER.dp, 0, CinemaStyle.GUTTER.dp, 0)
+        }, top = 4, gap = 24)
     }
 
     /** The loads behind the page's first rows, shared with [prefetch] (each blends its lists side by side, [RowPaging.all]). */

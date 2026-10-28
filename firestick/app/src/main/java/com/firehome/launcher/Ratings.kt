@@ -106,25 +106,6 @@ object Ratings {
         Net.getJson("$OMDB?i=tt0068646&apikey=${URLEncoder.encode(key.trim(), "UTF-8")}").optString("Response") == "True"
     } catch (e: Exception) { false }
 
-    /** The "OMDb Key" dialog, styled like the TMDB one. */
-    fun askKey(activity: Activity, onSaved: () -> Unit) {
-        val input = EditText(activity).apply {
-            setText(omdbKey(activity))
-            isSingleLine = true
-            hint = "Paste your OMDb key"
-        }
-        AlertDialog.Builder(activity, android.R.style.Theme_DeviceDefault_Dialog_Alert)
-            .setTitle("OMDb Key")
-            .setMessage("Adds Rotten Tomatoes and IMDb scores. Get a free key at omdbapi.com/apikey.aspx")
-            .setView(input)
-            .setPositiveButton("Save") { _, _ ->
-                setOmdbKey(activity, input.text.toString())
-                onSaved()
-            }
-            .setNegativeButton("Cancel", null)
-            .show()
-    }
-
     // ---- freshness ----
 
     fun hasOmdbScores(r: Rating) = r.rt != null || r.imdb != null

@@ -151,7 +151,8 @@ enum Details {
         return fallback
     }
 
-    /// Provider names as people say them; Dream OS's known services first; channels, ad tiers and YouTube left out.
+    /// Provider names as people say them; Dream OS's known services first; channels, ad tiers and YouTube left out
+    /// (YouTube TV stays: a real streaming service; owner, 2026-10-28).
     private static func providerNames(_ a: Any?) -> [String] {
         let list = (a as? [[String: Any]] ?? []).sorted { x, y in
             let kx = Tmdb.services.contains { $0.providerId == x["provider_id"] as? Int } ? 0 : 1
@@ -163,7 +164,8 @@ enum Details {
             let id = o["provider_id"] as? Int ?? 0
             if let s = Tmdb.services.first(where: { $0.providerId == id }) { return s.name }
             var n = Tmdb.str(o, "provider_name")
-            if n.isEmpty || id == 192 || n.localizedCaseInsensitiveContains("YouTube") || n.localizedCaseInsensitiveContains("Channel") ||
+            let youTube = n.localizedCaseInsensitiveContains("YouTube") && n.caseInsensitiveCompare("YouTube TV") != .orderedSame
+            if n.isEmpty || id == 192 || youTube || n.localizedCaseInsensitiveContains("Channel") ||
                 n.localizedCaseInsensitiveContains("with Ads") { return nil }
             n = n.replacingOccurrences(of: "Paramount Plus", with: "Paramount+")
                 .replacingOccurrences(of: "\\s+(Premium|Essential|Standard|Basic)$", with: "", options: .regularExpression)

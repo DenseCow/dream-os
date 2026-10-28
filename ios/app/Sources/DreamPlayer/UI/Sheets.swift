@@ -330,6 +330,7 @@ private struct InfoSheet: View {
                         }
                     }
                 }
+                if !session.isTrailer { fact("Picture", pictureLine) }
                 fact("Audio", session.tracks(.audio).first { $0.selected }?.label ?? "Default")
                 fact("Subtitles", session.tracks(.text).first { $0.selected }?.label ?? "Off")
                 if abs(session.speed - 1) > 0.01 { fact("Speed", Labels.speed(session.speed)) }
@@ -368,6 +369,13 @@ private struct InfoSheet: View {
 
     private func serviceName(_ s: String) -> String {
         switch s { case "ad": return "AllDebrid"; case "pm": return "Premiumize"; case "tb": return "TorBox"; case "rd": return "Real-Debrid"; default: return s }
+    }
+
+    /// "Dolby Vision  ·  Shown in HDR", "HDR10  ·  Shown in Standard Range" (this screen or the output can't), "Standard Range".
+    private var pictureLine: String {
+        let b = StreamBadges.make(session.engine.facts(), fileName: session.link?.fileName, sizeBytes: session.link?.sizeBytes ?? 0)
+        guard let hdr = b?.hdrName else { return "Standard Range" }
+        return hdr + "  ·  " + (session.engine.hdrOnScreen ? "Shown in HDR" : "Shown in Standard Range")
     }
 
     private func fact(_ k: String, _ v: String) -> some View {

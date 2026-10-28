@@ -309,7 +309,7 @@ class SystemHealth(
             pm.queryIntentActivities(Intent(Intent.ACTION_MAIN).addCategory(cat), 0).forEach { launchable += it.activityInfo.packageName }
         }
         return pm.getInstalledApplications(0).filter {
-            it.packageName != act.packageName && !Apps.neverShown(it.packageName) && (it.packageName in launchable ||
+            it.packageName != act.packageName && (it.packageName in launchable ||
                 it.flags and (ApplicationInfo.FLAG_SYSTEM or ApplicationInfo.FLAG_UPDATED_SYSTEM_APP) != ApplicationInfo.FLAG_SYSTEM)
         }
     }

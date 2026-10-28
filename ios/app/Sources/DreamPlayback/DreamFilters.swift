@@ -1,5 +1,7 @@
 import Foundation
 import DreamCore
+import AVFoundation
+import Network
 
 /// Dream OS's own source filters (DreamStore.kt `DreamFilters`): quality cap, Hide AV1 / HEVC / HDR / Dolby Vision /
 /// CAM, size limits, HDR / HEVC preference and subtitle languages. Dream Core reads them here (`current`);
@@ -10,7 +12,7 @@ public enum DreamFilters {
 
     /// The option keys Settings shows.
     public static let keys: Set<String> = [
-        "quality.max", "quality.min", "hide.cam", "hide.hdr", "hide.dv", "hide.hevc", "hide.av1", "prefer.hdr", "prefer.hevc",
+        "quality.max", "quality.min", "quality.hdr", "hide.cam", "hide.hdr", "hide.dv", "hide.hevc", "hide.av1", "prefer.hdr", "prefer.hevc",
         "size.movie.limit", "size.movie.min_gb", "size.movie.max_gb", "size.movie.speed_mbps",
         "size.episode.limit", "size.episode.min_gb", "size.episode.max_gb", "size.episode.speed_mbps",
         "subs.enabled", "subs.lang1", "subs.lang2", "subs.embedded", "subs.hi", "subs.forced",
@@ -21,7 +23,13 @@ public enum DreamFilters {
     /// The filters as the resolver applies them. Missing values fall back to safe defaults.
     public struct Values: Sendable {
         let v: [String: String]
-        init(_ v: [String: String]) { self.v = v }
+        init(_ v: [String: String]) {
+            self.v = v
+            let s = v["quality.hdr"] ?? ""
+            hdrAboveCap = (s.isEmpty ? HDRPreference.screenShowsHDR : s == "true") && HDRPreference.heldBack == nil
+        }
+        /// Prefer HDR applies to this Play: an HDR copy may go above Maximum Quality (`HDRPreference`).
+        public let hdrAboveCap: Bool
         private func on(_ k: String, _ def: Bool) -> Bool { let s = v[k] ?? ""; return s.isEmpty ? def : s == "true" }
         /// A quality cap was ever chosen; without one the resolver ranks 1080p first.
         public var known: Bool { !(v["quality.max"] ?? "").isEmpty }
@@ -156,4 +164,47 @@ enum ReleaseLanguage {
         }
         return p
     }
+}
+
+// MARK: Prefer HDR (watching worker, 2026-10-28 night)
+
+/// "Prefer HDR" (DreamFilters "quality.hdr"): a copy in HDR10 / HDR10+ / Dolby Vision / HLG may go above Maximum
+/// Quality (almost every HDR copy is 4K, so a 1080p cap otherwise never plays HDR). Only on a screen that shows HDR
+/// and an unmetered network; every other copy still obeys the cap. Default: on when the screen shows HDR.
+public enum HDRPreference {
+    /// The screen (and decoder) can show HDR video. Thread-safe (AVFoundation class property).
+    public static var screenShowsHDR: Bool { AVPlayer.eligibleForHDRPlayback }
+    /// The viewer's choice, else the default for this screen.
+    public static var chosen: Bool {
+        let s = DreamFilters.stored()["quality.hdr"] ?? ""
+        return s.isEmpty ? screenShowsHDR : s == "true"
+    }
+    public static func set(_ on: Bool) {
+        DreamFilters.put("quality.hdr", on ? "true" : "false")
+        Log.core.info("Sources: prefer HDR \(on ? "on" : "off", privacy: .public) (screen shows HDR: \(screenShowsHDR, privacy: .public))")
+    }
+    /// Why it doesn't apply right now (nil = it does, when chosen).
+    public static var heldBack: String? {
+        if !screenShowsHDR { return "this screen shows no HDR" }
+        if !PlaybackPath.shared.unmetered { return "metered or Low Data network" }
+        return nil
+    }
+    /// HDR copies may go above the cap for this Play.
+    public static var active: Bool { chosen && heldBack == nil }
+}
+
+/// The phone's network path for source choices (metered = cellular, hotspot, Low Data Mode).
+final class PlaybackPath: @unchecked Sendable {
+    static let shared = PlaybackPath()
+    private let monitor = NWPathMonitor()
+    private let lock = NSLock()
+    private var free = true
+    private init() {
+        monitor.pathUpdateHandler = { [weak self] p in
+            let ok = p.status == .satisfied && !p.isExpensive && !p.isConstrained
+            self?.lock.withLock { self?.free = ok }
+        }
+        monitor.start(queue: DispatchQueue(label: "dreamos.playback.path", qos: .utility))
+    }
+    var unmetered: Bool { lock.withLock { free } }
 }

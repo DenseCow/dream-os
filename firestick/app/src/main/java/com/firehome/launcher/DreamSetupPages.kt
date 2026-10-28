@@ -664,10 +664,17 @@ internal class AccountsPages(
     fun overview(): SetupScreen {
         val s = SetupScreen(ui, null, null)
         val rows = ScreenRows(s)
+        val keys = KeyPages(ctx, ui, panel, onChange)
+        // A beginner's setup (the check hasn't passed yet) leads with the help; Settings leads with the accounts.
+        val helpFirst = inSetup && !SetupGate.checkPassed(app())
+        fun help(top: Int) = SetupGuide.helpRows(rows, "debrid", parts, panel, ui, "Sign Up, Then Connect It to Dream OS",
+            "Expired Codes, Plans and Keys", { SetupGuide.debridSteps() }, SetupGuide.DEBRID_TROUBLE, top = top)
         fun paint() {
             s.view("k:debrid", 0) { parts.section("Debrid Services", true) }
+            s.view("n:pick", 8) { parts.note(SetupGuide.PICK_LINE, 14f) }
+            if (helpFirst) help(12)
             for ((i, key) in SetupBrand.SERVICES.withIndex()) {
-                val r = rows.row("d:$key", if (i == 0) 10 else 8) {
+                val r = rows.row("d:$key", if (i == 0) (if (helpFirst) 18 else 12) else 8) {
                     parts.row(SetupArt.monogram(ctx, SetupBrand.monogram(key)), chevron = true) {
                         if (DreamAccounts.linked(app(), key)) panel.push(service(key)) else link(key)?.let { panel.push(it) }
                     }
@@ -681,28 +688,15 @@ internal class AccountsPages(
                     else SetupBrand.site(key)
                 r.set(AccountHealth.name(key), cap, if (linked) words.substringBefore(" · ") else "Connect", tone, if (linked) mark else BrandRow.Mark.NONE)
             }
+            if (!helpFirst) help(8)
             rows.row("info", 8) { parts.row(null, chevron = true) { panel.push(debridInfo()) } }
                 .set("What's a Debrid Service?", "What It Does, and Where to Get One")
             rows.row("best", 8) { parts.row(null, chevron = true) { panel.push(debridBest()) } }
                 .set("Which Service Works Best?", "Premiumize Gives the Fastest Play")
-            rows.row("how", 8) { parts.row(null, chevron = true) {
-                panel.push(SetupGuide.screen(ui, parts, panel, "Show Me How", SetupGuide.DEBRID_STEPS, numbered = true))
-            } }.set("Show Me How", "Sign Up, Then Connect It to Dream OS")
-            rows.row("trouble", 8) { parts.row(null, chevron = true) {
-                panel.push(SetupGuide.screen(ui, parts, panel, "If Something Goes Wrong", SetupGuide.DEBRID_TROUBLE, numbered = false))
-            } }.set("If Something Goes Wrong", "Expired Codes, Plans and Keys")
-            if (!Tmdb.hasKey(app()) || s.has("k:tmdb")) {
+            // Setup has its own Connect Movie & Show Info step; Settings' Accounts shows the key while there is none.
+            if (!inSetup && (!Tmdb.hasKey(app()) || s.has("k:tmdb"))) {
                 s.view("k:tmdb", 24) { parts.section("Movie & Show Info", true) }
-                val has = Tmdb.hasKey(app())
-                rows.row("tmdb", 10) { parts.row(null, chevron = true) { panel.push(tmdbKey()) } }
-                    .set("TMDB Key", "Posters, Details and Search", if (has) "Added" else "Add", if (has) SetupBrand.GREEN else null,
-                        if (has) BrandRow.Mark.OK else BrandRow.Mark.NONE)
-                rows.row("tmdbhow", 8) { parts.row(null, chevron = true) {
-                    panel.push(SetupGuide.screen(ui, parts, panel, "Get a TMDB Key", SetupGuide.TMDB_STEPS, numbered = true))
-                } }.set("Show Me How to Get a TMDB Key", "Free, About 5 Minutes")
-                rows.row("tmdbtrouble", 8) { parts.row(null, chevron = true) {
-                    panel.push(SetupGuide.screen(ui, parts, panel, "If Something Goes Wrong", SetupGuide.TMDB_TROUBLE, numbered = false))
-                } }.set("If the TMDB Key Doesn't Work", "Keys, Accounts and the API Page")
+                keys.addRows(s, rows, KeyPages.Kind.TMDB, 10)
             }
             s.view("k:trakt", 24) { parts.section("Trakt", false) }
             s.view("n:trakt", 8) { parts.note("Keeps your watch history and watchlist in sync across your devices.", 14f) }
@@ -710,6 +704,9 @@ internal class AccountsPages(
             rows.row("trakt", 10) { parts.row(SetupArt.monogram(ctx, "T"), chevron = true) { panel.push(TraktPages(ctx, ui, panel, fromAccounts = true).overview()) } }
                 .set("Trakt", if (signedIn) Trakt.lastSyncedText(app()) else "trakt.tv", TraktPage.status(app()),
                     if (signedIn) SetupBrand.GREEN else null, if (signedIn) BrandRow.Mark.OK else BrandRow.Mark.NONE)
+            rows.row("trakt:how", 8) { parts.row(null, chevron = true) {
+                panel.push(SetupGuide.guide(ui, parts, panel, "Show Me How to Connect Trakt", SetupGuide.traktSteps()))
+            } }.set("Show Me How to Connect Trakt", "Optional and Free. Add It Now or Later in Settings")
         }
         s.onShow = {
             paint()
@@ -794,6 +791,9 @@ internal class AccountsPages(
         wrap.addView(col, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
         wrap.addView(qrBox, LinearLayout.LayoutParams(160.dp, 160.dp).apply { marginStart = 24.dp })
         s.add(wrap, 0)
+        // "What to Try", filled when the sign-in fails (under the message, above the buttons).
+        val helpBox = FrameLayout(ctx).apply { visibility = View.GONE; layoutParams = LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT) }
+        s.add(helpBox, 16)
         val button = parts.pill("Cancel", false) { panel.pop() }
         s.add(parts.pills(button), 22)
         s.focus = { button }
@@ -810,6 +810,9 @@ internal class AccountsPages(
             site.text = ""
             code.visibility = View.GONE
             status.visibility = View.GONE
+            helpBox.removeAllViews()
+            helpBox.addView(SetupGuide.whatToTry(ctx, k, SetupGuide.linkHelp(message, name, key = false)))
+            helpBox.visibility = View.VISIBLE
             button.text = "Try Again"
             button.setOnClickListener { panel.replace(link(key) ?: return@setOnClickListener) }
         }
@@ -929,7 +932,12 @@ internal class AccountsPages(
                             }
                             is DebridLink.Poll.Failed -> {
                                 reply(false, r.message)
-                                if (s.alive) status.set("That Key Didn't Work", r.message, mark = BrandRow.Mark.WARN)
+                                if (s.alive) {
+                                    status.set("That Key Didn't Work", r.message, mark = BrandRow.Mark.WARN)
+                                    val box = s.view("help", 14) { FrameLayout(ctx).apply { layoutParams = LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT) } } as FrameLayout
+                                    box.removeAllViews()
+                                    box.addView(SetupGuide.whatToTry(ctx, k, SetupGuide.linkHelp(r.message, name, key = true)))
+                                }
                             }
                             else -> { reply(false, "Something went wrong. Try again."); if (s.alive) waiting() }
                         }
@@ -956,6 +964,7 @@ internal class AccountsPages(
                     is DebridLink.Poll.Done -> s.bg({ DreamAccounts.link(app(), key, r.settings); AccountHealth.forget(app(), key) }) { panel.replace(verify(key)) }
                     is DebridLink.Poll.Failed -> {
                         rows.get("check")?.set("That Key Didn't Work", r.message, mark = BrandRow.Mark.WARN)
+                        s.view("help", 14) { SetupGuide.whatToTry(ctx, k, SetupGuide.linkHelp(r.message, name, key = true)) }
                         val again = parts.pill("Try Again", true) { panel.replace(apiKey(key)) }
                         s.view("again", 18) { parts.pills(again) }
                         again.requestFocus()
@@ -1050,29 +1059,6 @@ internal class AccountsPages(
         return s
     }
 
-    private fun tmdbKey(): SetupScreen = setupEntry(ctx, ui, parts, "TMDB Key", null, "Your TMDB Key", "", emptyList(),
-        "Dream OS gets posters, details and search from TMDB. A key is free: scan the code, sign in, and copy the key shown as API Key.",
-        "https://www.themoviedb.org/settings/api") { typed ->
-        val s = SetupScreen(ui, "TMDB Key", null)
-        val rows = ScreenRows(s)
-        rows.row("check", 0) { parts.row() }.set("Checking Your Key", "One Moment…", mark = BrandRow.Mark.BUSY)
-        panel.replace(s)
-        val old = Tmdb.key(app())
-        s.bg({ Tmdb.setKey(app(), typed.filterNot { it.isWhitespace() }); val ok = Tmdb.trending(app()).isNotEmpty(); if (!ok) Tmdb.setKey(app(), old); ok }) { ok ->
-            onChange()
-            if (ok) {
-                rows.get("check")?.set("Key Added", "Posters and details are ready.", mark = BrandRow.Mark.OK)
-                val done = parts.pill("Done", true) { panel.pop() }
-                s.view("done", 18) { parts.pills(done) }
-                done.requestFocus()
-            } else {
-                rows.get("check")?.set("That Key Didn't Work", "Check it and try again.", mark = BrandRow.Mark.WARN)
-                val again = parts.pill("Try Again", true) { panel.replace(tmdbKey()) }
-                s.view("again", 18) { parts.pills(again) }
-                again.requestFocus()
-            }
-        }
-    }
 }
 
 // =====================================================================================
@@ -1112,7 +1098,8 @@ internal class ScraperPages(
             }
             if (st.repos.isEmpty()) {
                 s.view("k:repo", 0) { parts.section("Your Repository", true) }
-                s.view("none", 10) { parts.note("No repository yet. Add the one you use by typing its address.", 15f) }
+                s.view("none", 10) { parts.note("No repository yet. Add the one you use by typing its address. Repositories are shared by the people who make them, usually on a web page or on GitHub.", 15f) }
+                s.view("examples", 12) { SetupGuide.addressExamples(ctx, k) }
                 rows.row("add", 14) { parts.row(null, chevron = true) { panel.push(addRepo()) } }
                     .set("Add Scraper Repository", "Type Its Address, Like Adding a Repository on Other Media Apps")
                 helpRows(rows)
@@ -1170,14 +1157,8 @@ internal class ScraperPages(
     }
 
     /** Show Me How and If Something Goes Wrong (SetupGuide), right under the add row. */
-    private fun helpRows(rows: ScreenRows) {
-        rows.row("how", 8) { parts.row(null, chevron = true) {
-            panel.push(SetupGuide.screen(ui, parts, panel, "Show Me How", SetupGuide.SCRAPER_STEPS, numbered = true))
-        } }.set("Show Me How", "Add It, Then Choose Your Providers")
-        rows.row("trouble", 8) { parts.row(null, chevron = true) {
-            panel.push(SetupGuide.screen(ui, parts, panel, "If Something Goes Wrong", SetupGuide.SCRAPER_TROUBLE, numbered = false))
-        } }.set("If Something Goes Wrong", "Addresses That Won't Install")
-    }
+    private fun helpRows(rows: ScreenRows) = SetupGuide.helpRows(rows, "repo", parts, panel, ui, "Add It, Then Choose Your Providers",
+        "Addresses That Won't Install", { SetupGuide.SCRAPER_STEPS }, SetupGuide.SCRAPER_TROUBLE)
 
     private fun kindWords(kind: String) = when (kind.lowercase()) { "torrent" -> "Torrent Sources"; "hoster" -> "File Hosts"; else -> kind.replaceFirstChar { it.uppercase() } }
 
@@ -1222,6 +1203,7 @@ internal class ScraperPages(
                         Log.w(SetupBrand.TAG, "Setup: step Scrapers, add failed: ${r.message}")
                         row.set("Couldn't Add It", r.message, mark = BrandRow.Mark.WARN, capTone = null)
                         s.hide("bar")
+                        s.view("help", 16) { SetupGuide.whatToTry(ctx, k, SetupGuide.repoHelp(r.message)) }
                         val again = parts.pill("Try Again", true) { panel.replace(addRepo()) }
                         val cancel = parts.pill("Cancel", false) { panel.pop() }
                         s.view("again", 22) { parts.pills(again, cancel) }

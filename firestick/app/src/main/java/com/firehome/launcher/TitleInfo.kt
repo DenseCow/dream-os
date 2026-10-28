@@ -328,7 +328,9 @@ class TitleInfo(
                 val id = o.optInt("provider_id")
                 Tmdb.SERVICES.firstOrNull { it.providerId == id }?.let { return@mapNotNull it.name }
                 var n = o.optString("provider_name").trim()
-                if (n.isEmpty() || id == 192 || n.contains("YouTube", true) || n.contains("Channel", true) || n.contains("with Ads", true)) return@mapNotNull null
+                // YouTube's movie store stays out; YouTube TV is a real streaming service and shows (owner, 2026-10-28).
+                if (n.isEmpty() || id == 192 || (n.contains("YouTube", true) && !n.equals("YouTube TV", true)) ||
+                    n.contains("Channel", true) || n.contains("with Ads", true)) return@mapNotNull null
                 n = n.replace("Paramount Plus", "Paramount+").replace(Regex("\\s+(Premium|Essential|Standard|Basic)$"), "")
                 when (n) {
                     "Amazon Video" -> "Amazon"

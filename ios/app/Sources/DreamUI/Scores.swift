@@ -13,8 +13,9 @@ public struct ScoreBadges: View {
             if let v = scores.tomatometer {
                 HStack(spacing: 6) {
                     TomatoGlyph().frame(width: 15, height: 15)
-                    Text("\(v)%").font(font.weight(.semibold)).foregroundStyle(Self.scoreColor(v))
+                    Text("\(v)%").font(font.weight(.semibold)).foregroundStyle(Self.scoreColor(v)).fixedSize()
                 }
+                .fixedSize()
                 .accessibilityElement(children: .ignore)
                 .accessibilityLabel("Rotten Tomatoes \(v) percent")
             }
@@ -24,15 +25,19 @@ public struct ScoreBadges: View {
                     Text(tag)
                         .font(.system(size: 9.5, weight: .bold)).tracking(0.4)
                         .foregroundStyle(.white.opacity(0.95))
+                        .lineLimit(1).fixedSize()
                         .padding(.horizontal, 6).padding(.vertical, 2)
                         .background(Color.white.opacity(0.16), in: Capsule())
-                    Text(number).font(font.weight(.semibold)).foregroundStyle(.white.opacity(0.92))
+                    Text(number).font(font.weight(.semibold)).foregroundStyle(.white.opacity(0.92)).fixedSize()
                 }
+                .fixedSize()
                 .accessibilityElement(children: .ignore)
                 .accessibilityLabel(badge)
             }
         }
         .lineLimit(1)
+        // Whole, always: a crowded row wraps or moves the badges to the next line, never squeezes them ("31...", "TI").
+        .fixedSize()
     }
 
     /// Green 75+, amber 60+, red below, eased a touch toward white.

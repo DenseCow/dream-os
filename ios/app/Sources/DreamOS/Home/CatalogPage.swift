@@ -330,6 +330,10 @@ struct CatalogFeed: View {
                         CatalogRowView(row, open: { open($0, in: row) }, openHub: { shell.push(.page(.season($0.id))) },
                                        menu: { menu($0, in: row) }, onNearEnd: { Task { await model.more(row) } })
                     }
+                    // A service page is built from where-to-watch data (JustWatch's, through TMDB): its credit.
+                    if case .service = model.page {
+                        JustWatchCredit().padding(.horizontal, Cinema.gutter).padding(.top, 4)
+                    }
                     if rows.count > 3 { EndCap(onTop: onTop) }
                 }
             }

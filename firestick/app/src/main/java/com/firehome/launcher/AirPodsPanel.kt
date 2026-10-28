@@ -51,6 +51,7 @@ class AirPodsPanel(
     private val stateLine = label("", 13f, dim)
     private val gauges = LinearLayout(ctx).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
     private val batteryAge = label("", 12f, dim)
+    private val batteryBox = LinearLayout(ctx)
     private val sendBtn: LinearLayout
     private val bringBtn: LinearLayout
     private val result = label("", 13f, ink)
@@ -217,11 +218,13 @@ class AirPodsPanel(
         orientation = LinearLayout.VERTICAL
         clipChildren = false
         clipToPadding = false
-        // Battery: last known reading (AirPods only share it while the case is open).
-        addView(LinearLayout(ctx).apply {
+        // Battery: only when a real reading exists. This stick can't read AirPods battery today (owner, 2026-10-28),
+        // so the block stays hidden; the path is kept for the future broadcast key (AirPods.setKey).
+        addView(batteryBox.apply {
             orientation = LinearLayout.VERTICAL
             setPadding(16.dp, 12.dp, 16.dp, 12.dp)
             background = group()
+            visibility = View.GONE
             addView(gauges, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
             addView(batteryAge.apply { setPadding(0, 8.dp, 0, 0); setLineSpacing(0f, 1.1f) })
         }, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
@@ -318,11 +321,11 @@ class AirPodsPanel(
 
     private fun fillBattery(s: AirPods.Status?) {
         gauges.removeAllViews()
-        if (s == null) {
-            gauges.addView(label("No battery reading yet", 16f, ink))
-            batteryAge.text = "Open the case near the TV to refresh"
-            return
-        }
+        // No real reading: no battery block at all (never "No battery reading yet": it suggested one was coming).
+        // A reading restored from disk long ago isn't a real one either: only a fresh broadcast shows.
+        val real = s != null && s.recent
+        batteryBox.visibility = if (real) View.VISIBLE else View.GONE
+        if (!real || s == null) return
         val parts = if (s.single) listOf(Triple("Battery", s.left ?: s.right, s.leftCharging || s.rightCharging))
         else listOf(Triple("Left", s.left, s.leftCharging), Triple("Right", s.right, s.rightCharging), Triple("Case", s.case, s.caseCharging))
         for ((i, p) in parts.withIndex()) {

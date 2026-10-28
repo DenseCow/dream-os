@@ -261,6 +261,14 @@ struct SourcesQualityRows: View {
                                        options: PlaybackPrefs.qualities.map { .init(id: $0.id, label: $0.label) },
                                        current: { PlaybackPrefs.quality ?? "" }) { PlaybackPrefs.setQuality($0) }
                     }
+                    // Prefer HDR (DreamPlayback HDRPreference): HDR copies may go above Maximum Quality, on Wi-Fi.
+                    PageRow(title: "Prefer HDR",
+                            caption: HDRPreference.screenShowsHDR
+                                ? "Plays an HDR or Dolby Vision copy when there is one, even above Maximum Quality, on Wi-Fi"
+                                : "This iPhone's screen doesn't show HDR, so copies stay within Maximum Quality",
+                            lead: .symbol("sun.max"), toggle: HDRPreference.chosen) {
+                        HDRPreference.set(!HDRPreference.chosen); tick += 1
+                    }
                 }
                 .padding(.top, 10)
 

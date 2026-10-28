@@ -23,7 +23,7 @@ val signingProps: Properties? = (System.getenv("DREAMOS_SIGNING") ?: localProps.
     ?.takeIf { p -> listOf("storeFile", "storePassword", "keyAlias", "keyPassword").all { !p.getProperty(it).isNullOrBlank() } }
 
 /** Dream OS's version (major.minor[.patch]): the one place to change it for a release. See versionCode below. */
-val dreamVersion = "4.0"
+val dreamVersion = "4.1"
 
 /** A local.properties value as a Java string literal for BuildConfig (quotes and backslashes escaped). */
 fun localString(key: String): String =

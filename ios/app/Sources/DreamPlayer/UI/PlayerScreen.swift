@@ -458,20 +458,49 @@ struct BadgeRow: View {
     var body: some View {
         let b = session.isTrailer ? nil : StreamBadges.make(session.engine.facts(), fileName: session.link?.fileName, sizeBytes: session.link?.sizeBytes ?? 0)
         if let b, !b.badges.isEmpty {
+            // The HDR badge lights up (rainbow edge, a small glow glyph) only while the screen really shows HDR.
+            let lit = session.engine.hdrOnScreen
             HStack(spacing: compact ? 6 : 8) {
                 ForEach(b.badges, id: \.self) { badge in
-                    Text(badge.text)
-                        .font(.system(size: compact ? 11.5 : 13, weight: .semibold)).tracking(0.3)
-                        .foregroundStyle(badge.warn ? Palette.amberText : .white)
-                        .padding(.horizontal, compact ? 9 : 11).padding(.vertical, compact ? 4 : 5)
-                        .background(Capsule().fill(badge.warn ? Palette.amber.opacity(0.16) : Color(red: 14 / 255, green: 14 / 255, blue: 16 / 255).opacity(150 / 255)))
-                        .overlay(Capsule().strokeBorder(badge.warn ? Palette.amber.opacity(0.6) : Palette.hairline, lineWidth: 1))
+                    if lit && StreamBadges.hdrNames.contains(badge.text) {
+                        HDRBadge(text: badge.text, compact: compact)
+                    } else {
+                        Text(badge.text)
+                            .font(.system(size: compact ? 11.5 : 13, weight: .semibold)).tracking(0.3)
+                            .foregroundStyle(badge.warn ? Palette.amberText : .white)
+                            .padding(.horizontal, compact ? 9 : 11).padding(.vertical, compact ? 4 : 5)
+                            .background(Capsule().fill(badge.warn ? Palette.amber.opacity(0.16) : Color(red: 14 / 255, green: 14 / 255, blue: 16 / 255).opacity(150 / 255)))
+                            .overlay(Capsule().strokeBorder(badge.warn ? Palette.amber.opacity(0.6) : Palette.hairline, lineWidth: 1))
+                    }
                 }
                 if !compact, let size = b.size {
                     Text(size).font(.system(size: 13, weight: .medium)).monospacedDigit().foregroundStyle(.white.opacity(0.62)).padding(.leading, 6)
                 }
             }
         }
+    }
+}
+
+/// "Dolby Vision" / "HDR10" / "HDR10+" / "HLG" while the screen shows it in HDR: the same capsule as the other
+/// badges, with a small sun glyph (8 pt gap) and a 1 pt edge in the rainbow (the brand's only colour) plus its glow.
+struct HDRBadge: View {
+    let text: String
+    let compact: Bool
+    var body: some View {
+        let size: CGFloat = compact ? 11.5 : 13
+        HStack(spacing: 8) {
+            Image(systemName: "sun.max.fill").font(.system(size: size - 2, weight: .semibold))
+            Text(text).font(.system(size: size, weight: .semibold)).tracking(0.3)
+        }
+        .foregroundStyle(.white)
+        .lineLimit(1).fixedSize()
+        .padding(.horizontal, compact ? 10 : 12).padding(.vertical, compact ? 4 : 5)
+        .background(Capsule().fill(Color(red: 14 / 255, green: 14 / 255, blue: 16 / 255).opacity(170 / 255)))
+        .overlay(
+            Capsule().strokeBorder(AngularGradient(colors: Rainbow.colors + [Rainbow.colors[0]], center: .center), lineWidth: 1)
+                .shadow(color: Rainbow.fadeColor().opacity(0.45), radius: 5)
+        )
+        .accessibilityLabel("\(text), Shown in HDR")
     }
 }
 

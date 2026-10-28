@@ -711,6 +711,14 @@ object DreamPanelPage {
         PlaybackPages(a, ui, panel).overview()
     }
 
+    /** Settings › TMDB Key / OMDb Key: the key's own page (KeyPages). */
+    internal fun openKey(a: Activity, kind: KeyPages.Kind, onClose: (() -> Unit)? = null) = open(a, SetupArt.Kind.ACCOUNTS,
+        if (kind == KeyPages.Kind.TMDB) "TMDB Key" else "OMDb Key",
+        if (kind == KeyPages.Kind.TMDB) "Every poster, detail and search in Dream OS comes from TMDB, with your own free key."
+        else "A free OMDb key adds Rotten Tomatoes and IMDb scores to every title.", onClose) { ui, panel ->
+        KeyPages(a, ui, panel).overview(kind)
+    }
+
     /**
      * Opens a page over the current screen in the setup's look: the illustration, title and [note] on the
      * left, the page's screens ([first]) on the right. Back steps back inside it, then closes.

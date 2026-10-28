@@ -10,8 +10,9 @@ because something broke or looked wrong before. Check new work against the **che
 - **Standalone and open source.** Dream OS ships no content and no sources. Users connect their own debrid accounts
   and add their own scraper repositories (e.g. CocoScrapers, run in embedded Python). Kodi and Umbrella are gone; never
   reintroduce Kodi code paths, wording, or hand-offs.
-- **Never show YouTube.** Trailers play inside Dream Player (TrailerEngine). No "YouTube" text anywhere, including
-  "YouTube TV" in Where to Watch.
+- **Never show YouTube as the trailer source.** Trailers play inside Dream Player (TrailerEngine); no "YouTube" text
+  for them anywhere, and YouTube's movie store stays out of Where to Watch. Exception (owner, 2026-10-28): **YouTube
+  TV** is a real streaming service and shows in Where to Watch and Also Streaming On like any other.
 - **Never borrow another app's identity or API keys** (e.g. a Premiumize client id). Each service gets Dream OS's own
   ("DreamOS" agent/app name) or the user's own key.
 - **No secrets in source.** Keys live in `local.properties` (ignored by git); `local.properties.example` lists them.
@@ -68,7 +69,9 @@ because something broke or looked wrong before. Check new work against the **che
 - **No technical wording** in anything a viewer sees: no HTTP codes, "API", "JSON", "module", stack traces. Errors say
   what happened and what to do ("Couldn't reach Trakt. Try again.").
 - **Positive framing:** describe what a feature does, not what it can't do (e.g. the AirPods page lists no "can't" lines).
-- **Legal credits** (e.g. TMDB attribution) are full sentences, never truncated.
+- **Legal credits** (e.g. TMDB attribution) are full sentences, never truncated. Where-to-watch data (TMDB's, from
+  JustWatch) carries a small dim "Streaming Availability From JustWatch" credit where it shows (title page
+  Information, Also Streaming On) and in Settings › About.
 
 ## 5. Content rules
 
@@ -167,5 +170,5 @@ because something broke or looked wrong before. Check new work against the **che
 - [ ] Words: Title Case labels, sentence-case descriptions, no hints, no technical terms, no "can't" lists.
 - [ ] Content: anime filter, Kids limits, pill rules, `DreamTime` for every date/time.
 - [ ] Performance: measured with gfxinfo on the stick within the budgets; nothing animating while idle.
-- [ ] No Kodi, Umbrella or YouTube anywhere; no secrets in source.
+- [ ] No Kodi or Umbrella anywhere, no YouTube as a trailer source (YouTube TV in Where to Watch is fine); no secrets in source.
 - [ ] Logged with the `FireHome` tag; deferred bits filed as issues.

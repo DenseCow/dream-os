@@ -5,90 +5,110 @@ import QuartzCore
 import Libmpv
 import DreamCore
 
-/// The scrub previews' decoder: a second, small libmpv that opens the same stream with no sound, no
-/// subtitles and no read-ahead, jumps to keyframes (no exact seeks) and draws each one with mpv's software
-/// renderer at preview size. It runs on its own utility-priority thread (mpv's own threads, created from it,
-/// start at that priority too) and only grabs while `gate` allows: the main player says when it has plenty
-/// buffered. HDR frames are brought down to normal colours here (the software renderer doesn't tone map).
-final class MPVThumbnailer: @unchecked Sendable {
-    /// The main player's health: closed = no grabs, wants = only spots the viewer is dragging over, open = also
-    /// the background walk over the whole timeline.
+/// The scrub previews' work list, shared by every previews decoder of a stream: the spot under the viewer's
+/// thumb (only the latest counts, plus one ahead in the drag direction), the background walk, and which spots are
+/// done or being grabbed (so two decoders never grab the same one). Thread-safe; workers block in `next`.
+final class ThumbDesk: @unchecked Sendable {
+    /// The main player's health: closed = no grabs, wants = only spots the viewer drags over, open = also the walk.
     enum Gate: Sendable { case closed, wants, open }
+    enum Role: Sendable { case drag, walk, both }
 
-    struct Config: Sendable {
-        var url: URL
-        var headers: [String: String]
-        var userAgent: String
-        var duration: Double
-        var grid: Int
-        var interval: Double
-        /// Grab width in pixels (height follows the picture).
-        var width: Int
-        /// Walk the whole timeline in the background (Wi-Fi), or only grab what the viewer drags over.
-        var walk: Bool
-        /// Where playback is (the walk starts around it).
-        var near: Double
-        /// A video filter for this stream ("format=..." for Dolby Vision with an HDR10 base).
-        var filter: String?
-    }
-
-    private let config: Config
     private let cond = NSCondition()
-    private var wants: [Int] = []
-    private var order: [Int] = []
-    private var done = Set<Int>()
     private var gate: Gate = .closed
-    private var cancelled = false
-    private var handle: OpaquePointer?
-    private var ctx: OpaquePointer?
-    private var thread: Thread?
-    private var outW = 288, outH = 162
-    private var tone: ThumbTone = .sdr
-    private var colourChecked = false
+    private var latest: Int?
+    private var ahead: Int?
+    private var order: [Int]
+    private var walkLeft: Int
+    private var done = Set<Int>()
+    private var busy = Set<Int>()
+    private(set) var cancelled = false
+    // Timings for the log (ms).
+    private var dragN = 0, dragMs = 0.0, dragJump = 0.0
+    private var walkN = 0, walkMs = 0.0, walkJump = 0.0, drawMs = 0.0
+    private var failed = 0
+    let grid: Int
 
-    /// A frame is ready (worker thread).
-    var onFrame: (@Sendable (Int, CGImage, Double, Double) -> Void)?
-    /// The worker stopped by itself (worker thread): the reason, for the log.
-    var onEnd: (@Sendable (String) -> Void)?
-
-    init(_ config: Config) {
-        self.config = config
-        order = Self.walkOrder(grid: config.grid, near: config.grid > 0 ? min(config.grid - 1, Int(config.near / config.interval)) : 0)
+    /// `walkLimit`: how many walk spots at most (the coarse pass only on a metered network).
+    init(grid: Int, near: Int, walkLimit: Int) {
+        self.grid = grid
+        order = Self.walkOrder(grid: grid, near: near)
+        walkLeft = min(walkLimit, order.count)
     }
 
-    func start() {
-        let t = Thread { [self] in run() }
-        t.name = "dreamos.thumbs"
-        t.qualityOfService = .utility
-        t.stackSize = 1 << 20
-        thread = t
-        t.start()
-    }
+    func setGate(_ g: Gate) { cond.lock(); gate = g; cond.broadcast(); cond.unlock() }
 
-    func setGate(_ g: Gate) {
-        cond.lock(); gate = g; cond.signal(); cond.unlock()
-    }
-
-    func want(_ i: Int) {
+    /// The thumb is over spot `i`, moving toward `next` (nil when it just stopped / no direction).
+    func want(_ i: Int, next: Int?) {
         cond.lock()
-        if !done.contains(i) {
-            wants.removeAll { $0 == i }
-            wants.append(i)
-            if wants.count > 8 { wants.removeFirst(wants.count - 8) }
-            cond.signal()
-        }
+        if !done.contains(i) && !busy.contains(i) { latest = i }
+        if let n = next, n >= 0, n < grid, !done.contains(n), !busy.contains(n) { ahead = n } else { ahead = nil }
+        cond.broadcast()
         cond.unlock()
     }
 
-    /// Stops the worker; mpv is torn down on its thread.
-    func cancel() {
-        cond.lock(); cancelled = true; cond.signal(); cond.unlock()
+    func cancel() { cond.lock(); cancelled = true; cond.broadcast(); cond.unlock() }
+
+    var isCancelled: Bool { cond.lock(); defer { cond.unlock() }; return cancelled }
+
+    /// The next spot for a worker of `role` (blocks until there is one); nil = stop.
+    func next(_ role: Role) -> (spot: Int, dragged: Bool)? {
+        cond.lock()
+        defer { cond.unlock() }
+        while !cancelled {
+            if role != .walk, gate != .closed {
+                for slot in [latest, ahead] {
+                    guard let s = slot else { continue }
+                    if slot == latest { latest = nil } else { ahead = nil }
+                    if done.contains(s) || busy.contains(s) { continue }
+                    busy.insert(s)
+                    return (s, true)
+                }
+            }
+            if role != .drag, gate == .open, walkLeft > 0 {
+                while let n = order.first, done.contains(n) || busy.contains(n) { order.removeFirst(); walkLeft -= 1 }
+                if walkLeft > 0, let n = order.first {
+                    order.removeFirst(); walkLeft -= 1
+                    busy.insert(n)
+                    return (n, false)
+                }
+            }
+            cond.wait(until: Date().addingTimeInterval(1))
+        }
+        return nil
     }
 
-    // MARK: Order
+    /// The spot a worker opens on (its first frame): the next walk spot, whatever the gate.
+    func opening() -> Int {
+        cond.lock(); defer { cond.unlock() }
+        while let n = order.first {
+            order.removeFirst(); walkLeft = max(0, walkLeft - 1)
+            if !done.contains(n) && !busy.contains(n) { busy.insert(n); return n }
+        }
+        return 0
+    }
 
-    /// The spots around playback first (the likeliest jumps), then coarse to fine over the whole timeline,
-    /// so early previews already cover everything roughly.
+    func finish(_ s: Int, ok: Bool, dragged: Bool, totalMs: Double, jumpMs: Double, drawMs d: Double) {
+        cond.lock()
+        busy.remove(s); done.insert(s)
+        if ok {
+            if dragged { dragN += 1; dragMs += totalMs; dragJump += jumpMs } else { walkN += 1; walkMs += totalMs; walkJump += jumpMs }
+            drawMs += d
+        } else { failed += 1 }
+        cond.broadcast()
+        cond.unlock()
+    }
+
+    var walkFinished: Bool { cond.lock(); defer { cond.unlock() }; return walkLeft == 0 }
+
+    /// "walk 40 (avg 520 ms: jump 490), drag 12 (avg 610 ms: jump 580), draw 9 ms, 1 failed"
+    var summary: String {
+        cond.lock(); defer { cond.unlock() }
+        func avg(_ s: Double, _ n: Int) -> Int { n > 0 ? Int(s / Double(n)) : 0 }
+        return "walk \(walkN) (avg \(avg(walkMs, walkN)) ms: jump \(avg(walkJump, walkN))), drag \(dragN) (avg \(avg(dragMs, dragN)) ms: jump \(avg(dragJump, dragN))), draw \(avg(drawMs, walkN + dragN)) ms, \(failed) failed, \(done.count)/\(grid) spots"
+    }
+
+    /// The spots around playback first (the likeliest jumps), then coarse to fine over the whole timeline, so early
+    /// previews already cover everything roughly (the first 64 are about one every 1.5 % of the runtime).
     static func walkOrder(grid: Int, near: Int) -> [Int] {
         guard grid > 0 else { return [] }
         var out: [Int] = []
@@ -105,92 +125,126 @@ final class MPVThumbnailer: @unchecked Sendable {
         for i in 0..<grid { add(i) }
         return out
     }
+}
+
+/// One scrub previews decoder: a second, small libmpv that opens the same stream with no sound, no subtitles
+/// and no read-ahead, jumps to keyframes (no exact seeks) and draws each one with mpv's software renderer at
+/// preview size. It runs on its own utility-priority thread (mpv's own threads, created from it, start at that
+/// priority too) and takes its spots from the shared `ThumbDesk`, which only hands any out while the main player
+/// is healthy. HDR frames are brought down to normal colours here (the software renderer doesn't tone map).
+/// Several can work one desk: on phones with room, drag decoders that only follow the thumb (never stuck behind
+/// the walk) plus one walking the timeline.
+final class MPVThumbnailer: @unchecked Sendable {
+    struct Config: Sendable {
+        var url: URL
+        var headers: [String: String]
+        var userAgent: String
+        var duration: Double
+        var interval: Double
+        /// Grab width in pixels (height follows the picture).
+        var width: Int
+        /// A video filter for this stream ("format=..." for Dolby Vision with an HDR10 base).
+        var filter: String?
+    }
+
+    private let config: Config
+    private let desk: ThumbDesk
+    private let role: ThumbDesk.Role
+    private let name: String
+    private var handle: OpaquePointer?
+    private var ctx: OpaquePointer?
+    private var thread: Thread?
+    private var outW = 288, outH = 162
+    private var tone: ThumbTone = .sdr
+    private var colourChecked = false
+    /// Last grab's split (ms): seek to mpv's restart there, and the software draw.
+    private var lastJump = 0.0, lastDraw = 0.0
+
+    /// A frame is ready (worker thread): spot, image, its real time, aspect.
+    var onFrame: (@Sendable (Int, CGImage, Double, Double) -> Void)?
+    /// The worker stopped by itself (worker thread): the reason, for the log.
+    var onEnd: (@Sendable (String) -> Void)?
+
+    init(_ config: Config, desk: ThumbDesk, role: ThumbDesk.Role, name: String) {
+        self.config = config
+        self.desk = desk
+        self.role = role
+        self.name = name
+    }
+
+    func start() {
+        let t = Thread { [self] in run() }
+        t.name = "dreamos.thumbs.\(name)"
+        t.qualityOfService = .utility
+        t.stackSize = 1 << 20
+        thread = t
+        t.start()
+    }
 
     // MARK: Worker thread
 
     private func run() {
         let began = CACurrentMediaTime()
-        guard open() else {
-            onEnd?("couldn't open the stream")
+        let first = desk.opening()
+        guard open(at: first) else {
+            desk.finish(first, ok: false, dragged: false, totalMs: 0, jumpMs: 0, drawMs: 0)
+            onEnd?("\(name): couldn't open the stream")
             teardown()
             return
         }
-        // The file opened at the first spot: its first frame is the first grab.
-        let first = order.first ?? 0
-        var firstOK = land(first)
-        if !firstOK, config.filter != nil, !isCancelled {
+        // The file opened at its first spot: that frame is this decoder's first grab.
+        var firstOK = land(first, since: began)
+        if !firstOK, config.filter != nil, !desk.isCancelled {
             // The Dolby Vision clean-up filter was refused: try once without it.
-            Log.player.info("Thumbs: no frame with the Dolby Vision filter, trying without it")
+            Log.player.info("Thumbs: \(self.name, privacy: .public) got no frame with the Dolby Vision filter, trying without it")
             command(["set", "vf", ""])
             firstOK = grab(first)
         }
+        desk.finish(first, ok: firstOK, dragged: false, totalMs: (CACurrentMediaTime() - began) * 1000, jumpMs: lastJump, drawMs: lastDraw)
         guard firstOK else {
-            onEnd?("no first frame")
+            onEnd?("\(name): no first frame")
             teardown()
             return
         }
-        cond.lock(); done.insert(first); cond.unlock()
-        Log.player.info("Thumbs: first frame \(Int((CACurrentMediaTime() - began) * 1000), privacy: .public) ms after opening")
-        var grabbed = 1, failures = 0, wanted = 0
+        Log.player.info("Thumbs: \(self.name, privacy: .public) first frame \(Int((CACurrentMediaTime() - began) * 1000), privacy: .public) ms after opening (jump \(Int(self.lastJump), privacy: .public), draw \(Int(self.lastDraw), privacy: .public))")
+        var failures = 0
         var lastNote = CACurrentMediaTime()
-        var spent: Double = 0
         var walkDoneNoted = false
-        while true {
-            cond.lock()
-            var job: Int?
-            var fromWant = false
-            while !cancelled {
-                if gate != .closed, let w = wants.popLast() {
-                    if done.contains(w) { continue }
-                    job = w; fromWant = true; break
-                }
-                if gate == .open, config.walk {
-                    while let n = order.first, done.contains(n) { order.removeFirst() }
-                    if let n = order.first { order.removeFirst(); job = n; break }
-                }
-                cond.wait(until: Date().addingTimeInterval(1))
-            }
-            let stop = cancelled
-            cond.unlock()
-            if stop { break }
-            guard let i = job else { continue }
+        while let (i, dragged) = desk.next(role) {
             let t0 = CACurrentMediaTime()
             let ok = grab(i)
-            spent += CACurrentMediaTime() - t0
-            cond.lock(); done.insert(i); let left = config.walk ? order.count : 0; cond.unlock()
-            if ok {
-                grabbed += 1; failures = 0
-                if fromWant { wanted += 1 }
-            } else {
+            let ms = (CACurrentMediaTime() - t0) * 1000
+            desk.finish(i, ok: ok, dragged: dragged, totalMs: ms, jumpMs: lastJump, drawMs: lastDraw)
+            if dragged {
+                Log.player.info("Thumbs: drag frame at \(Labels.time(self.spot(i)), privacy: .public) \(ok ? "in" : "failed after", privacy: .public) \(Int(ms), privacy: .public) ms (jump \(Int(self.lastJump), privacy: .public), draw \(Int(self.lastDraw), privacy: .public)) [\(self.name, privacy: .public)]")
+            }
+            if ok { failures = 0 } else {
                 failures += 1
-                if failures >= 6 { onEnd?("6 grabs in a row failed"); break }
+                if failures >= 6 { onEnd?("\(name): 6 grabs in a row failed"); break }
             }
-            let walkDone = config.walk && left == 0 && !walkDoneNoted
+            let walkDone = role != .drag && desk.walkFinished && !walkDoneNoted
             if walkDone { walkDoneNoted = true }
-            if CACurrentMediaTime() - lastNote > 60 || walkDone {
+            if role != .drag, CACurrentMediaTime() - lastNote > 60 || walkDone {
                 lastNote = CACurrentMediaTime()
-                Log.player.info("Thumbs: \(grabbed, privacy: .public)/\(self.config.grid, privacy: .public) frames (\(wanted, privacy: .public) asked for while dragging), avg \(Int(spent / Double(max(1, grabbed + failures)) * 1000), privacy: .public) ms each, \(Int(CACurrentMediaTime() - began), privacy: .public) s in")
+                Log.player.info("Thumbs: \(self.desk.summary, privacy: .public), \(Int(CACurrentMediaTime() - began), privacy: .public) s in\(walkDone ? ", walk done" : "", privacy: .public)")
             }
-            // Background walk: a short rest between grabs so the main picture's decoder and network stay first.
-            if !fromWant {
-                cond.lock()
-                if wants.isEmpty && !cancelled { cond.wait(until: Date().addingTimeInterval(0.35)) }
-                cond.unlock()
-            }
+            // Walk: a short breath between grabs so the main picture's decoder and network stay first.
+            if !dragged { Thread.sleep(forTimeInterval: 0.12) }
         }
         teardown()
     }
 
-    private func open() -> Bool {
+    private func open(at first: Int) -> Bool {
         guard let h = mpv_create() else { return false }
         handle = h
         let opts: [(String, String)] = [
             ("vo", "libmpv"), ("ao", "null"), ("aid", "no"), ("sid", "no"),
             ("hwdec", "videotoolbox-copy"), ("hwdec-codecs", "h264,hevc,mpeg1video,mpeg2video,mpeg4,av1,prores"),
-            ("pause", "yes"), ("keep-open", "always"), ("idle", "yes"), ("hr-seek", "no"),
-            ("cache", "no"), ("demuxer-readahead-secs", "0"), ("demuxer-max-bytes", "4MiB"), ("demuxer-max-back-bytes", "0"),
-            ("vd-lavc-skiploopfilter", "all"), ("vd-lavc-fast", "yes"), ("vd-lavc-threads", "2"),
-            ("sws-scaler", "fast-bilinear"), ("video-rotate", "no"),
+            ("pause", "yes"), ("keep-open", "always"), ("idle", "yes"), ("hr-seek", "no"), ("hr-seek-framedrop", "yes"),
+            ("cache", "no"), ("demuxer-readahead-secs", "0"), ("demuxer-max-bytes", "2MiB"), ("demuxer-max-back-bytes", "0"),
+            ("demuxer-seekable-cache", "no"), ("stream-buffer-size", "64KiB"),
+            ("vd-lavc-skiploopfilter", "all"), ("vd-lavc-skipidct", "nonref"), ("vd-lavc-fast", "yes"), ("vd-lavc-threads", "1"),
+            ("vd-queue-enable", "no"), ("sws-scaler", "fast-bilinear"), ("video-rotate", "no"),
             ("config", "no"), ("load-scripts", "no"), ("ytdl", "no"), ("osc", "no"), ("osd-level", "0"),
             ("input-default-bindings", "no"), ("input-vo-keyboard", "no"), ("terminal", "no"),
             ("sub-auto", "no"), ("audio-file-auto", "no"), ("network-timeout", "12"), ("force-seekable", "yes"),
@@ -215,12 +269,10 @@ final class MPVThumbnailer: @unchecked Sendable {
         guard r >= 0, let c = out else { return false }
         ctx = c
         for (k, v) in config.headers { command(["change-list", "http-header-fields", "append", "\(k): \(v)"]) }
-        let first = order.first ?? 0
         command(["loadfile", config.url.absoluteString, "replace", "-1", "start=\(String(format: "%.3f", spot(first)))"])
-        // Wait for the file (its first frame is the first grab's).
         let deadline = CACurrentMediaTime() + 20
         while CACurrentMediaTime() < deadline {
-            if isCancelled { return false }
+            if desk.isCancelled { return false }
             guard let ev = mpv_wait_event(h, 0.1)?.pointee else { continue }
             switch ev.event_id {
             case MPV_EVENT_FILE_LOADED: return true
@@ -232,30 +284,30 @@ final class MPVThumbnailer: @unchecked Sendable {
         return false
     }
 
-    private var isCancelled: Bool { cond.lock(); defer { cond.unlock() }; return cancelled }
-
     private func spot(_ i: Int) -> Double {
         min(max(0, config.duration - 1), (Double(i) + 0.5) * config.interval)
     }
 
     /// One frame: keyframe seek, then the frame mpv lands on.
     private func grab(_ i: Int) -> Bool {
+        let t0 = CACurrentMediaTime()
         command(["seek", String(format: "%.3f", spot(i)), "absolute+keyframes"])
-        return land(i)
+        return land(i, since: t0)
     }
 
     /// Waits until mpv has restarted near spot `i` and handed its frame over, then draws it. A restart that lands
     /// far from the spot belongs to an earlier seek that timed out; it is skipped and the wait goes on.
-    private func land(_ i: Int) -> Bool {
+    private func land(_ i: Int, since t0: CFTimeInterval) -> Bool {
         guard let h = handle, let c = ctx else { return false }
+        lastJump = 0; lastDraw = 0
         let t = spot(i)
         let slack = max(12, config.interval)
         let deadline = CACurrentMediaTime() + 8
         var restarted = false
         var frameSince = false
         while CACurrentMediaTime() < deadline {
-            if isCancelled { return false }
-            if let ev = mpv_wait_event(h, 0.03)?.pointee {
+            if desk.isCancelled { return false }
+            if let ev = mpv_wait_event(h, 0.01)?.pointee {
                 switch ev.event_id {
                 case MPV_EVENT_PLAYBACK_RESTART: restarted = true
                 case MPV_EVENT_END_FILE:
@@ -276,8 +328,11 @@ final class MPVThumbnailer: @unchecked Sendable {
             if restarted && frameSince {
                 let at = doubleProperty(h, "time-pos") ?? t
                 guard abs(at - t) <= slack else { restarted = false; frameSince = false; continue }
+                lastJump = (CACurrentMediaTime() - t0) * 1000
                 if !colourChecked { checkColour(h) }
+                let d0 = CACurrentMediaTime()
                 guard let img = draw(c, w: outW, h: outH) else { return false }
+                lastDraw = (CACurrentMediaTime() - d0) * 1000
                 onFrame?(i, img, at, Double(outW) / Double(outH))
                 return true
             }

@@ -111,7 +111,7 @@ object Apps {
             val query = Intent(Intent.ACTION_MAIN).addCategory(category)
             for (ri in pm.queryIntentActivities(query, 0)) {
                 val ai = ri.activityInfo
-                if (ai.packageName == ctx.packageName || ai.packageName in seen || neverShown(ai.packageName)) continue
+                if (ai.packageName == ctx.packageName || ai.packageName in seen) continue
                 seen[ai.packageName] = AppEntry(
                     pkg = ai.packageName,
                     label = ri.loadLabel(pm).toString(),
@@ -123,12 +123,6 @@ object Apps {
         }
         return seen.values.sortedBy { it.label.lowercase() }
     }
-
-    /**
-     * Apps Dream OS never shows anywhere (Apps page, tiles, favorites, menus): Kodi was removed from Dream OS
-     * (STANDARDS §1), so a Kodi still installed on the TV stays out of sight. Nothing is uninstalled.
-     */
-    fun neverShown(pkg: String) = pkg == "org.xbmc.kodi" || pkg.startsWith("org.xbmc.")
 
     fun launchIntent(ctx: Context, pkg: String): Intent? {
         val pm = ctx.packageManager
