@@ -8,7 +8,7 @@ body:
       label: Platform
       multiple: true
       options:
-        - Fire TV
+        - Fire Stick
         - iPhone
         - Windows, Mac or Linux (coming soon)
   - type: textarea

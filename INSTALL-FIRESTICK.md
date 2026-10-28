@@ -1,8 +1,8 @@
 <p align="center"><img alt="Dream OS" src="docs/assets/icon.png" width="96"></p>
 
-# Install Dream OS on Fire TV
+# Install Dream OS on the Fire Stick
 
-This guide takes about ten minutes. All you need is your Fire TV remote. A computer is only needed for one
+This guide takes about ten minutes. All you need is your Fire Stick remote. A computer is only needed for one
 optional extra at the end.
 
 - [Compatibility](#compatibility)
@@ -37,9 +37,9 @@ Tried it on another device? Please share how it went in
 ## Step 1: Get the Downloader App
 
 Downloader is a free app by AFTVnews from the Amazon Appstore. It downloads files from the internet onto your
-Fire TV.
+Fire Stick.
 
-1. On the Fire TV home screen, choose **Find**, then **Search**.
+1. On the Fire Stick home screen, choose **Find**, then **Search**.
 2. Type **Downloader** and choose the Downloader app (orange icon).
 3. Choose **Get** (or **Download**) and wait for it to install.
 
@@ -47,10 +47,10 @@ Fire TV.
 
 ## Step 2: Let Downloader Install Apps
 
-Fire TV only installs apps from the Appstore until you allow another app to install them.
+The Fire Stick only installs apps from the Appstore until you allow another app to install them.
 
 1. Open **Settings › My Fire TV**.
-2. If you don't see **Developer Options**, choose **About**, then press the Select button on your Fire TV's
+2. If you don't see **Developer Options**, choose **About**, then press the Select button on your Fire Stick's
    name **7 times** until it says you're a developer. Go back one screen.
 3. Open **Developer Options › Install Unknown Apps** (on some versions: **Apps from Unknown Sources**).
 4. Turn it **On** for **Downloader**.
@@ -98,7 +98,7 @@ Every choice is saved as you go, and everything lives in **Settings** later. You
 ## Optional: Make Dream Your Home Screen
 
 Dream can take the place of Amazon's home screen, start up in Dream, answer the voice remote's microphone
-button, show your other apps' shows in Continue Watching, and use the Dream screensaver. Fire TV only allows
+button, show your other apps' shows in Continue Watching, and use the Dream screensaver. The Fire Stick only allows
 these with a one-time permission over ADB. You can do it right on the TV, or from a computer.
 
 > These steps were tested on Fire OS 7 only. Fire OS updates can change how they behave.
@@ -108,8 +108,8 @@ these with a one-time permission over ADB. You can do it right on the TV, or fro
 1. Open **Settings › My Fire TV › Developer Options** and turn on **ADB Debugging**.
 2. In Dream, open **Settings › Accounts & Scrapers › Unlock Features** (it's also a step in setup) and choose
    **Unlock Now**.
-3. Fire TV asks **Allow USB debugging?** Tick **Always allow from this computer** and choose **OK**.
-   (The "computer" is Dream itself, connecting to your own Fire TV. Nothing leaves the TV.)
+3. Fire Stick asks **Allow USB debugging?** Tick **Always allow from this computer** and choose **OK**.
+   (The "computer" is Dream itself, connecting to your own Fire Stick. Nothing leaves the TV.)
 4. When every feature shows as on, choose **Turn Off ADB Debugging**. Everything stays unlocked.
 
 ### From a Computer With ADB
@@ -118,7 +118,7 @@ If you prefer, give the same permissions from a Windows, Mac or Linux computer o
 
 1. Install Android's platform tools (they include `adb`) from
    [developer.android.com/tools/releases/platform-tools](https://developer.android.com/tools/releases/platform-tools).
-2. On the Fire TV, turn on **ADB Debugging** (as above) and find its IP address in
+2. On the Fire Stick, turn on **ADB Debugging** (as above) and find its IP address in
    **Settings › My Fire TV › About › Network**.
 3. On the computer, connect (replace `FIRE-TV-IP` with that address) and allow the prompt on the TV:
 
@@ -162,7 +162,7 @@ replaces them; add them back separated by `:`.
 
 ### Undo It
 
-Turn off **Dream OS** under **Settings › Accessibility** on the Fire TV (or uninstall Dream OS). The Amazon home
+Turn off **Dream OS** under **Settings › Accessibility** on the Fire Stick (or uninstall Dream OS). The Amazon home
 screen comes back right away.
 
 <br>
@@ -195,7 +195,7 @@ Uninstalling removes everything Dream stored on the TV, including your linked ac
 | The code doesn't work | Type the full address shown in Step 3 instead. |
 | Posters and rows don't load | Check your TMDB key in **Settings › Advanced › TMDB API Key**. |
 | Nothing plays | Check your debrid account in **Settings › Accounts & Scrapers › Accounts** and that at least one scraper repository is added under **Scrapers** on the same page. |
-| The Home button still opens Amazon's home | Re-run **Unlock Features**, or restart the Fire TV once. |
+| The Home button still opens Amazon's home | Re-run **Unlock Features**, or restart the Fire Stick once. |
 
-Still stuck? Open an [issue](https://github.com/DenseCow/dream-os/issues/new/choose) with your Fire TV model and
+Still stuck? Open an [issue](https://github.com/DenseCow/dream-os/issues/new/choose) with your Fire Stick model and
 Fire OS version.

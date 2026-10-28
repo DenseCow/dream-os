@@ -6,12 +6,12 @@
   </picture>
 </p>
 
-<p align="center"><b>A beautiful, cinematic home for movies and shows on Fire TV and iPhone.</b><br>
+<p align="center"><b>A beautiful, cinematic home for movies and shows on the Fire TV Stick 4K Max and iPhone.</b><br>
 Free and open source. You bring your own accounts; Dream brings the experience.</p>
 
 <p align="center">
   <a href="LICENSE"><img alt="License: GPL-3.0" src="https://img.shields.io/badge/license-GPL--3.0-2c2c2e?style=flat-square&labelColor=0b0b0c"></a>
-  <a href="#platforms"><img alt="Platforms: Fire TV and iPhone" src="https://img.shields.io/badge/platforms-Fire%20TV%20%C2%B7%20iPhone-2c2c2e?style=flat-square&labelColor=0b0b0c"></a>
+  <a href="#platforms"><img alt="Platforms: Fire Stick and iPhone" src="https://img.shields.io/badge/platforms-Fire%20Stick%20%C2%B7%20iPhone-2c2c2e?style=flat-square&labelColor=0b0b0c"></a>
   <a href="https://github.com/DenseCow/dream-os/releases/latest"><img alt="Latest release" src="https://img.shields.io/github/v/release/DenseCow/dream-os?style=flat-square&color=2c2c2e&labelColor=0b0b0c&label=release"></a>
   <a href="https://github.com/DenseCow/dream-os/releases"><img alt="Downloads" src="https://img.shields.io/github/downloads/DenseCow/dream-os/total?style=flat-square&color=2c2c2e&labelColor=0b0b0c"></a>
 </p>
@@ -25,7 +25,7 @@ Free and open source. You bring your own accounts; Dream brings the experience.<
 </p>
 
 <p align="center">
-  <img alt="Dream OS on Fire TV: the cinematic Home screen with a live hero, ratings and Play" src="docs/screenshots/firestick/01-home.webp" width="900"><br>
+  <img alt="Dream OS on the Fire Stick: the cinematic Home screen with a live hero, ratings and Play" src="docs/screenshots/firestick/01-home.webp" width="900"><br>
   <sub>Cinematic Home Hero With Live Ratings</sub>
 </p>
 
@@ -47,13 +47,13 @@ behind one clean, fast interface.
 
 | Platform | Status | How to Install |
 | :-- | :-- | :-- |
-| **Fire TV** | Available | [Fire TV Install Guide](INSTALL-FIRESTICK.md) |
+| **Fire Stick** (4K Max, 1st gen) | Available | [Fire Stick Install Guide](INSTALL-FIRESTICK.md) |
 | **iPhone** | Available (sideloaded) | [iPhone Install Guide](INSTALL-IOS.md) |
 | **Windows** | Coming Soon | |
 | **Mac** | Coming Soon | |
 | **Linux** | Coming Soon | |
 
-**Tested On:** Fire TV: a Fire TV Stick 4K Max (1st generation, 2021) on Fire OS 7.7.1.3; other Fire TV models
+**Tested On:** Fire Stick: a Fire TV Stick 4K Max (1st generation, 2021) on Fire OS 7.7.1.3; other Fire TV models
 are untested. iPhone: tested on iOS 27.2; requires iOS 17 or later. Older iPhones may load more slowly, and HDR
 needs an HDR-capable screen. Reports from other devices are welcome in
 [Issues](https://github.com/DenseCow/dream-os/issues).
@@ -62,15 +62,15 @@ needs an HDR-capable screen. Reports from other devices are welcome in
 
 ## Get Dream
 
-### Fire TV
+### Fire Stick
 
 <p>
-  <a href="https://github.com/DenseCow/dream-os/releases/latest/download/DreamOS.apk"><img alt="Download for Fire TV" src="https://img.shields.io/badge/Download%20for%20Fire%20TV-DreamOS.apk-1c1c1e?style=for-the-badge&labelColor=000000"></a>
+  <a href="https://github.com/DenseCow/dream-os/releases/latest/download/DreamOS.apk"><img alt="Download for Fire Stick" src="https://img.shields.io/badge/Download%20for%20Fire%20Stick-DreamOS.apk-1c1c1e?style=for-the-badge&labelColor=000000"></a>
   &nbsp;
-  <a href="INSTALL-FIRESTICK.md"><img alt="Fire TV Install Guide" src="https://img.shields.io/badge/Step%20by%20Step-Install%20Guide-1c1c1e?style=for-the-badge&labelColor=000000"></a>
+  <a href="INSTALL-FIRESTICK.md"><img alt="Fire Stick Install Guide" src="https://img.shields.io/badge/Step%20by%20Step-Install%20Guide-1c1c1e?style=for-the-badge&labelColor=000000"></a>
 </p>
 
-The easy way is the free **Downloader** app on your Fire TV. Open it, choose the address box, and type:
+The easy way is the free **Downloader** app on your Fire Stick. Open it, choose the address box, and type:
 
 <table>
   <tr>
@@ -83,7 +83,7 @@ The easy way is the free **Downloader** app on your Fire TV. Open it, choose the
 
 Or type this address instead: `github.com/DenseCow/dream-os/releases/latest/download/DreamOS.apk`
 
-The [Fire TV Install Guide](INSTALL-FIRESTICK.md) walks through every step, including allowing Downloader to
+The [Fire Stick Install Guide](INSTALL-FIRESTICK.md) walks through every step, including allowing Downloader to
 install apps and the optional steps that make Dream your Home screen.
 
 ### iPhone
@@ -163,7 +163,7 @@ lives on its own page instead of filling every row.
 IMDb and Rotten Tomatoes scores (with a free OMDb key), cast pages, season guides, air times, and where a title
 is streaming on the services you already pay for.
 
-### Made for Fire TV
+### Made for the Fire Stick
 Optionally replace Amazon's home screen, search with the voice remote, type from your phone with Phone Remote,
 check AirPods battery, rest on the Dream screensaver, and get updates right inside the app.
 
@@ -196,7 +196,7 @@ nothing to the developer. More in [Privacy](#privacy).
 - **Dream talks straight to the services you use:** TMDB, OMDb, Trakt, your debrid services and your scraper
   repositories, plus a few free public services for extras: TVmaze (air times), TheIntroDB, AniSkip, ARM and
   Kitsu (skip markers), OpenSubtitles (subtitles), the video host TMDB lists for trailers, Cloudflare (only when
-  you run the speed test), and on Fire TV Open-Meteo for the weather (with an approximate location from your
+  you run the speed test), and on the Fire Stick Open-Meteo for the weather (with an approximate location from your
   internet address via ipwho.is or GeoJS) and GitHub to check for Dream updates.
 
 <br>
@@ -209,7 +209,7 @@ it, change it and share it under the same terms. It builds on great open-source 
 
 | Folder | What's Inside |
 | :-- | :-- |
-| [`firestick/`](firestick) | The Fire TV app (Kotlin, Android 7.1+ / Fire OS 6+) |
+| [`firestick/`](firestick) | The Fire Stick app (Kotlin, Android 7.1+ / Fire OS 6+) |
 | [`ios/`](ios) | The iPhone app (Swift and SwiftUI, iOS 17+) |
 | [`docs/`](docs) | Brand images and screenshots |
 | [`tools/`](tools) | Publishing and release scripts |

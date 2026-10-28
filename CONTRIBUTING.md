@@ -6,13 +6,13 @@ Thanks for wanting to help. Bug reports, device reports, ideas and code are all 
 
 Use [Issues](https://github.com/DenseCow/dream-os/issues/new/choose) and pick a template. Please include:
 
-- Your device model and OS version (Fire TV: **Settings › My Fire TV › About**; iPhone: **Settings › General ›
+- Your device model and OS version (Fire Stick: **Settings › My Fire TV › About**; iPhone: **Settings › General ›
   About**)
-- The Dream version (Fire TV: **Settings › Updates**; iPhone: the release you installed)
+- The Dream version (Fire Stick: **Settings › Updates**; iPhone: the release you installed)
 - What you did, what you expected, and what happened instead. Photos of the screen help a lot.
 
 **Never paste API keys, debrid tokens, account emails or scraper repository addresses** into an issue.
-Dream OS has only been tested on one Fire TV and one iPhone, so reports from other devices, good or bad, are
+Dream OS has only been tested on one Fire Stick and one iPhone, so reports from other devices, good or bad, are
 especially useful.
 
 ## Before You Write Code

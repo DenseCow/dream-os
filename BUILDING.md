@@ -1,11 +1,11 @@
 # Building Dream OS
 
 This page is for developers who want to build Dream OS from source. To just install it, see the
-[Fire TV](INSTALL-FIRESTICK.md) or [iPhone](INSTALL-IOS.md) install guide.
+[Fire Stick](INSTALL-FIRESTICK.md) or [iPhone](INSTALL-IOS.md) install guide.
 
 - [Repository Layout](#repository-layout)
 - [Keys and Where They Go](#keys-and-where-they-go)
-- [Fire TV App](#fire-tv-app)
+- [Fire Stick App](#fire-stick-app)
 - [iPhone App](#iphone-app)
 - [Releases](#releases)
 
@@ -15,9 +15,9 @@ This page is for developers who want to build Dream OS from source. To just inst
 
 | Folder | What's Inside |
 | :-- | :-- |
-| `firestick/` | The Fire TV app: Kotlin, one Gradle module (`app/`), package `com.firehome.launcher` |
+| `firestick/` | The Fire Stick app: Kotlin, one Gradle module (`app/`), package `com.firehome.launcher` |
 | `firestick/app/src/main/python/` | The small Python layer that runs scraper modules (embedded with Chaquopy) |
-| `firestick/tools/` | `deploy.sh` (install and set up on a Fire TV), `release.sh`, offline debrid tests |
+| `firestick/tools/` | `deploy.sh` (install and set up on a Fire Stick), `release.sh`, offline debrid tests |
 | `firestick/docs/STANDARDS.md` | The design and wording rulebook every screen follows |
 | `ios/` | The iPhone app: a Swift package (`ios/app/`) built with xtool |
 | `ios/app/Vendor/Python/` | CPython 3.13 for iOS and its standard library (third party, unmodified) |
@@ -34,11 +34,11 @@ Dream OS needs no keys to build. Every key is optional and **anything you put in
 the app**, so leave them empty for builds you share. Without them, Dream asks each viewer for their own
 (TMDB in setup, OMDb in Settings) or hides the feature.
 
-| Key | Fire TV (`firestick/local.properties`) | iPhone (`ios/secrets.properties`) | Without It |
+| Key | Fire Stick (`firestick/local.properties`) | iPhone (`ios/secrets.properties`) | Without It |
 | :-- | :-- | :-- | :-- |
 | TMDB API key | `tmdb.key` | `tmdb.key` | Setup asks the viewer for their own |
 | OMDb API key | `omdb.key` | `omdb.key` | IMDb and Rotten Tomatoes scores stay hidden until a key is entered |
-| Trakt app | `trakt.client_id`, `trakt.client_secret` | same | Trakt sync is hidden (Fire TV) or uses the viewer's own app keys (iPhone) |
+| Trakt app | `trakt.client_id`, `trakt.client_secret` | same | Trakt sync is hidden (Fire Stick) or uses the viewer's own app keys (iPhone) |
 | Premiumize device sign-in | `premiumize.client_id` | not used | Premiumize is linked with the account's API key |
 | Update repository | `update.repo` (`owner/name`) | not used | The in-app updater hides itself |
 
@@ -47,7 +47,7 @@ Never commit `local.properties`, `secrets.properties` or `Secrets.swift`; they a
 
 <br>
 
-## Fire TV App
+## Fire Stick App
 
 ### What You Need
 
@@ -76,7 +76,7 @@ path in `local.properties` `release.signing` or the `DREAMOS_SIGNING` environmen
 release build is signed with your debug key (with a warning). That's fine for your own testing, but a build
 signed with a different key can't update an install of the official release; uninstall first.
 
-### Install on a Fire TV
+### Install on a Fire Stick
 
 ```sh
 cd firestick
@@ -174,10 +174,10 @@ idevicesyslog | grep --line-buffered 'DreamOS\['
 ## Releases
 
 All platforms publish to this repository's [Releases](https://github.com/DenseCow/dream-os/releases). Every
-release must include the Fire TV app as **`DreamOS.apk`** (plus `DreamOS.apk.sha256`), because the Downloader
+release must include the Fire Stick app as **`DreamOS.apk`** (plus `DreamOS.apk.sha256`), because the Downloader
 code and the in-app updater always fetch the newest release's `DreamOS.apk`. The iPhone build is attached as
 `Dream.ipa` when there is one.
 
-Maintainers use `tools/release.sh` in the repository root: it builds the APK from the committed Fire TV code with
+Maintainers use `tools/release.sh` in the repository root: it builds the APK from the committed Fire Stick code with
 no keys inside, runs the privacy scan on it, and publishes the release. For your own fork, set `update.repo` to
 your repository (or leave it empty) and sign with your own key.

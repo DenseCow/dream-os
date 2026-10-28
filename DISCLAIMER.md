@@ -82,7 +82,7 @@ watch") data is provided by JustWatch, through TMDB.
 
 Dream OS has been tested on one device per platform:
 
-- **Fire TV:** a Fire TV Stick 4K Max (1st generation, 2021) running Fire OS 7.7.1.3 (based on Android 9). Other
+- **Fire Stick:** a Fire TV Stick 4K Max (1st generation, 2021) running Fire OS 7.7.1.3 (based on Android 9). Other
   Fire TV models and Fire OS versions, such as Fire OS 8 on newer sticks, are untested and may not work or may
   behave differently, especially the optional "make Dream your Home screen" steps, which rely on Fire OS 7
   behavior. Fire TV devices running Vega OS can't install it at all.
@@ -93,9 +93,9 @@ Use on other devices at your own risk. Reports are welcome in
 
 ## Sideloading
 
-The Fire TV app installs from outside the Amazon Appstore, and the iPhone app is sideloaded with your own Apple
+The Fire Stick app installs from outside the Amazon Appstore, and the iPhone app is sideloaded with your own Apple
 Account instead of coming from the App Store. Neither has been reviewed by Amazon or Apple. Amazon's and Apple's
-terms for your devices and accounts still apply. The optional Fire TV Home screen steps change system settings
+terms for your devices and accounts still apply. The optional Fire Stick Home screen steps change system settings
 over ADB; you can undo them at any time (see the [install guide](INSTALL-FIRESTICK.md#undo-it)).
 
 ## No Warranty
@@ -117,6 +117,6 @@ Dream OS keeps your keys, accounts, profiles and watch history on your device an
 developer. It has no analytics, tracking or crash reporting. It connects directly to the services you set up
 (TMDB, OMDb, Trakt, your debrid services and your scraper repositories) and to a few free public services for
 extras: TVmaze (air times), TheIntroDB, AniSkip, ARM and Kitsu (skip markers), OpenSubtitles (subtitles),
-trailer streams from the video host TMDB lists, Cloudflare (only when you run the speed test), and on Fire TV
+trailer streams from the video host TMDB lists, Cloudflare (only when you run the speed test), and on the Fire Stick
 Open-Meteo for the weather (using an approximate location from your internet address via ipwho.is or GeoJS) and
 GitHub (to check for Dream updates).

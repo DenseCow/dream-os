@@ -1,5 +1,5 @@
 name: Device Report
-description: Tell us how Dream OS runs on your Fire TV or iPhone (it has only been tested on one of each).
+description: Tell us how Dream OS runs on your Fire Stick or iPhone (it has only been tested on one of each).
 labels: ["device report"]
 body:
   - type: dropdown
@@ -7,7 +7,7 @@ body:
     attributes:
       label: Platform
       options:
-        - Fire TV
+        - Fire Stick
         - iPhone
     validations:
       required: true
@@ -39,4 +39,4 @@ body:
     id: notes
     attributes:
       label: Details
-      description: "What worked and what didn't. Fire TV: did the optional Home screen steps work?"
+      description: "What worked and what didn't. Fire Stick: did the optional Home screen steps work?"
