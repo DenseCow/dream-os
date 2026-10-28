@@ -1,0 +1,49 @@
+# Privacy scan hits reviewed by hand and judged harmless. Format (TAB separated): rule	path glob	piece of the line
+# Keep each entry as narrow as possible; never allow-list a real key, address or name. "secret" hits can't be allowed.
+
+# Example addresses shown to the viewer when moving settings from an old TV (not a real network).
+network	firestick/app/src/main/java/com/firehome/launcher/BackupTransfer.kt	192.168.1.23
+# Upstream Python and requests: documentation examples and the private-range table.
+network	ios/app/Vendor/Python/Stdlib/python/lib/python3.13/ipaddress.py	IPv4Network('
+network	ios/app/Vendor/Python/Stdlib/python/lib/python3.13/urllib/request.py	192.168.0.1
+network	ios/app/Vendor/Python/Stdlib/python/site-packages/requests/utils.py	ip = 192.168.1.1
+network	ios/app/Vendor/Python/Python.xcframework/*
+
+# Inline base64 of the app's own logo image.
+credential	ios/app/Sources/DreamUI/DreamMark.swift	"
+# Gradle cache folder names (public SHA-1s of Kotlin compiler jars).
+credential	firestick/tools/debrid-tests/run.sh	org.jetbrains.kotlin/
+# Fake values in offline tests and on-screen examples.
+credential	firestick/tools/debrid-tests/src/PremiumizeTests.kt	"pm-oauth-access-7f3e9a"
+credential	firestick/tools/debrid-tests/src/TorBoxTests.kt	"tb-api-key-51c0de"
+credential	firestick/app/src/main/java/com/firehome/launcher/AirPods.kt	0011223344556677889900AABBCCDDEEFF
+credential	ios/app/Sources/DreamOS/Setup/SetupGuide.swift	value: "8f3a1c9e2b7d4f60a5e1c3b9d2f7a4e8"
+credential	ios/app/Sources/DreamPlayback/DebridCore.swift	"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+# Apple API names, not keys.
+credential	ios/app/Sources/DreamPlayer/Engine/MPVFrameFeed.swift	vImageOverwriteChannelsWithScalar_ARGB8888
+
+# This file quotes the reviewed lines above.
+network	tools/privacy-allow.txt	
+credential	tools/privacy-allow.txt	
+
+# --- APK (tools/privacy_scan.py apk) ---
+# The on-screen example address (BackupTransfer.kt, compiled).
+network	*.apk!classes*.dex	192.168.1.23
+# dadb (the stick's own ADB client) writes PEM headers for its key: string constants, not a key.
+token	*.apk!classes*.dex	PRIVATE KEY-----
+# Upstream Python / requests documentation examples and the private-range table (compiled .pyc).
+network	*.apk!assets/chaquopy/*!requests/utils.pyc	ip = 192.168.1.1
+network	*.apk!assets/chaquopy/*!urllib/request.pyc	192.168.0.1
+network	*.apk!assets/chaquopy/*!ipaddress.pyc	/
+
+# --- IPA ---
+# YouTubeKit's public InnerTube client keys (Sources/YouTubeKit/InnerTube.swift upstream): the same keys every
+# YouTube web/app client sends; not ours and not secret.
+token	*.ipa!Payload/DreamOS.app/DreamOS	AIzaSy
+# Upstream Python / requests documentation examples and the private-range table.
+network	*.ipa!Payload/DreamOS.app/DreamOS_DreamPythonStdlib.bundle/python/site-packages/requests/utils.py	192.168.1.1
+network	*.ipa!Payload/DreamOS.app/DreamOS_DreamPythonStdlib.bundle/python/lib/python3.13/ipaddress.py	
+network	*.ipa!Payload/DreamOS.app/DreamOS_DreamPythonStdlib.bundle/python/lib/python3.13/urllib/request.py	192.168.0.1
+
+# Generic WSL network range in the build guide (not an address).
+network	BUILDING.md	-RemoteAddress 172.16.0.0/12

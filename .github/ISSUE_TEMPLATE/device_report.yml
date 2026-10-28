@@ -1,0 +1,42 @@
+name: Device Report
+description: Tell us how Dream OS runs on your Fire TV or iPhone (it has only been tested on one of each).
+labels: ["device report"]
+body:
+  - type: dropdown
+    id: platform
+    attributes:
+      label: Platform
+      options:
+        - Fire TV
+        - iPhone
+    validations:
+      required: true
+  - type: input
+    id: device
+    attributes:
+      label: Device Model
+      placeholder: "Fire TV Stick (3rd generation) / iPhone 13 mini"
+    validations:
+      required: true
+  - type: input
+    id: os
+    attributes:
+      label: OS Version
+      placeholder: "Fire OS 8.1.0.3 / iOS 18.6"
+    validations:
+      required: true
+  - type: dropdown
+    id: result
+    attributes:
+      label: How Did It Go?
+      options:
+        - Everything works
+        - Works with some problems
+        - Doesn't install or doesn't start
+    validations:
+      required: true
+  - type: textarea
+    id: notes
+    attributes:
+      label: Details
+      description: "What worked and what didn't. Fire TV: did the optional Home screen steps work?"

@@ -1,0 +1,29 @@
+# Machine-specific publishing settings (paths to the source projects, secret files to check against)
+tools/sources.local
+
+# Keys and signing material never go in this repository
+local.properties
+secrets.properties
+Secrets.swift
+*.jks
+*.keystore
+*.p12
+*.mobileprovision
+dreamos-release.properties
+.env
+.env.*
+
+# Build outputs
+build/
+.gradle/
+dist/
+*.apk
+*.ipa
+.build/
+.swiftpm/
+ios/app/xtool/
+__pycache__/
+*.pyc
+.idea/
+*.iml
+.DS_Store

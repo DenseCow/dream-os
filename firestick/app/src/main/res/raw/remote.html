@@ -1,0 +1,467 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Dream OS">
+<meta name="application-name" content="Dream OS">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="theme-color" content="#000000">
+<meta name="format-detection" content="telephone=no">
+<!-- Home-screen icon: iOS only accepts PNG here, so it's an inlined 180px PNG (no network fetch). -->
+<link rel="apple-touch-icon" href="data:image/png;base64,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">
+<title>Dream OS Remote</title>
+<style>
+  /* Dream OS: the logo's black falling into gray, neutral glass, the logo's rainbow for the main actions;
+     pressed controls turn pearl with dark ink, like focus on the TV. */
+  :root { --bg1:#000000; --bg2:#1c1c20; --card:rgba(255,255,255,.045); --card-hi:rgba(255,255,255,.08);
+          --line:rgba(255,255,255,.08); --line-hi:rgba(255,255,255,.14);
+          --text:#f4f4f6; --dim:#9a9aa3; --pearl:#fbf8ff; --ink:#16161a;
+          --rainbow:linear-gradient(90deg,#2f7bff,#8b5cff,#ff3dc8,#ff4d6d,#ff8a1f,#ffd21f,#7cff4f,#19e3d6);
+          --ease:cubic-bezier(.2,0,0,1); --spring:cubic-bezier(.22,1.28,.4,1); --r-sm:10px; --r-md:14px; --r-lg:20px; }
+  * { box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
+  html { background:var(--bg1); }
+  html,body { margin:0; min-height:100%; color:var(--text);
+              font:16px/1.45 system-ui, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+              -webkit-font-smoothing:antialiased; }
+  body { background:linear-gradient(180deg, var(--bg1) 0%, #0c0c0e 45%, var(--bg2) 100%) fixed, var(--bg1);
+         padding: max(16px, env(safe-area-inset-top)) 16px max(24px, env(safe-area-inset-bottom)); }
+  button { font:inherit; color:inherit; touch-action:manipulation; cursor:pointer; }
+  header { display:flex; align-items:center; gap:10px; margin:6px 4px 20px; }
+  header h1 { font-size:19px; margin:0; font-weight:600; letter-spacing:-.01em; }
+  header h1 span { background:var(--rainbow); -webkit-background-clip:text; background-clip:text; color:transparent; }
+  .status { margin-left:auto; display:flex; align-items:center; gap:8px; font-size:13px; color:var(--dim); }
+  .dot { width:8px; height:8px; border-radius:50%; background:#4ade80; box-shadow:0 0 0 3px rgba(74,222,128,.16); flex:none;
+         transition:background .25s var(--ease), box-shadow .25s var(--ease); }
+  .dot.off { background:#f87171; box-shadow:0 0 0 3px rgba(248,113,113,.18); animation:pulse 1.2s ease-in-out infinite; }
+  @keyframes pulse { 50% { opacity:.35; } }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:var(--r-lg); padding:16px; margin-bottom:14px;
+          animation:rise .42s var(--ease) both; }
+  .card:nth-of-type(2) { animation-delay:.04s; } .card:nth-of-type(3) { animation-delay:.08s; }
+  .card:nth-of-type(4) { animation-delay:.12s; } .card:nth-of-type(5) { animation-delay:.16s; }
+  @keyframes rise { from { opacity:0; transform:translateY(12px); } to { opacity:1; transform:none; } }
+  .label { color:var(--dim); font-size:11px; font-weight:600; letter-spacing:.18em; text-transform:uppercase; margin:0 0 12px 2px; }
+
+  /* Trackpad: swipe = arrow key, tap = OK. */
+  .trackpad { position:relative; overflow:hidden; height:280px; height:min(76vw,340px); border-radius:var(--r-md);
+              border:1px solid var(--line); touch-action:none; -webkit-user-select:none; user-select:none; -webkit-touch-callout:none;
+              background:radial-gradient(110% 80% at 50% 0%, rgba(255,255,255,.07), transparent 62%), rgba(0,0,0,.35);
+              box-shadow:inset 0 1px 0 rgba(255,255,255,.04); }
+  .trackpad .hint { position:absolute; inset:0; display:flex; flex-direction:column; align-items:center; justify-content:center;
+                    gap:4px; color:var(--dim); font-size:13px; pointer-events:none; transition:opacity .4s var(--ease); }
+  .trackpad .hint b { color:var(--text); font-size:15px; font-weight:600; }
+  .trackpad.used .hint { opacity:.3; }
+  .edge { position:absolute; color:rgba(255,255,255,.22); font-size:14px; pointer-events:none; transition:color .3s var(--ease), transform .3s var(--ease); }
+  .edge.up { top:12px; left:50%; transform:translateX(-50%); } .edge.down { bottom:12px; left:50%; transform:translateX(-50%); }
+  .edge.left { left:14px; top:50%; transform:translateY(-50%); } .edge.right { right:14px; top:50%; transform:translateY(-50%); }
+  .edge.flash { color:#fff; transition:none; }
+  .ripple { position:absolute; width:84px; height:84px; margin:-42px 0 0 -42px; border-radius:50%; pointer-events:none;
+            background:radial-gradient(circle, rgba(255,61,200,.45), rgba(139,92,255,.12) 60%, transparent 70%);
+            animation:ripple .42s var(--ease) forwards; }
+  .ripple.swipe { background:radial-gradient(circle, rgba(25,227,214,.4), rgba(47,123,255,.08) 60%, transparent 70%); }
+  @keyframes ripple { from { transform:scale(.25); opacity:1; } to { transform:scale(2.1); opacity:0; } }
+
+  .pad { position:relative; width:min(72vw,280px); aspect-ratio:1; margin:14px auto 4px; border-radius:50%;
+         background:radial-gradient(circle at 50% 35%, rgba(255,255,255,.08), rgba(255,255,255,.025)); border:1px solid var(--line); }
+  .pad button { position:absolute; border:0; background:transparent; color:var(--text); font-size:22px; width:33%; height:33%;
+                border-radius:50%; transition:transform .18s var(--spring), background .18s var(--ease), opacity .18s var(--ease); }
+  .pad .up { top:0; left:33.5%; } .pad .down { bottom:0; left:33.5%; } .pad .left { left:0; top:33.5%; } .pad .right { right:0; top:33.5%; }
+  .pad .ok { top:33.5%; left:33.5%; background:var(--rainbow); font-size:16px; font-weight:700; letter-spacing:.02em;
+             text-shadow:0 1px 3px rgba(0,0,0,.45); box-shadow:0 6px 22px rgba(255,61,200,.28), inset 0 1px 0 rgba(255,255,255,.25); }
+  .pad button:active { transform:scale(.9); background:rgba(255,255,255,.08); transition-duration:.07s; }
+  .pad .ok:active { background:var(--rainbow); filter:brightness(1.15); }
+  .row { display:grid; grid-template-columns:repeat(3,1fr); gap:10px; margin-top:14px; }
+  .btn { border:1px solid var(--line); background:var(--card-hi); color:var(--text); border-radius:var(--r-md); padding:13px 8px;
+         font-size:15px; font-weight:600;
+         transition:transform .18s var(--spring), background .18s var(--ease), border-color .18s var(--ease); }
+  .btn:active { transform:scale(.96); background:var(--pearl); color:var(--ink); border-color:transparent; box-shadow:0 0 16px rgba(139,92,255,.45); transition-duration:.07s; }
+  .row .wide { grid-column:1/-1; }
+  .row.two { grid-template-columns:repeat(2,1fr); margin-top:0; }
+  .btn:disabled { opacity:.55; }
+  .toggle { display:block; margin:12px auto 0; border:0; background:none; color:var(--dim); font-size:13px; padding:6px 12px;
+            border-radius:999px; transition:color .18s var(--ease), background .18s var(--ease); }
+  .toggle:active { color:var(--text); background:var(--card-hi); }
+  .search { display:flex; gap:8px; }
+  .search input { flex:1; min-width:0; border-radius:var(--r-md); border:1px solid var(--line); background:rgba(0,0,0,.25); color:var(--text);
+                  padding:13px 14px; font-size:16px; outline:none; transition:border-color .18s var(--ease), box-shadow .18s var(--ease); }
+  .search input::placeholder { color:rgba(149,154,176,.7); }
+  .search input:focus { border-color:rgba(255,255,255,.5); box-shadow:0 0 0 3px rgba(255,255,255,.1); }
+  .primary { background:var(--rainbow); border-color:transparent; padding-left:18px; padding-right:18px; text-shadow:0 1px 3px rgba(0,0,0,.45);
+             box-shadow:inset 0 1px 0 rgba(255,255,255,.22); }
+  .primary:active { background:var(--rainbow); color:var(--text); filter:brightness(1.15); border-color:transparent; }
+  .apps { display:grid; grid-template-columns:repeat(2,1fr); gap:8px; }
+  .apps button { text-align:left; border:1px solid var(--line); background:rgba(255,255,255,.04); color:var(--text); border-radius:var(--r-sm);
+                 padding:12px; font-size:14px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+                 transition:transform .18s var(--spring), background .18s var(--ease), border-color .18s var(--ease); }
+  .apps button:active { transform:scale(.97); background:var(--pearl); color:var(--ink); border-color:transparent; box-shadow:0 0 14px rgba(139,92,255,.4); transition-duration:.07s; }
+  .apps .note { grid-column:1/-1; margin:0 2px; }
+  .file { position:relative; display:block; text-align:center; border:1px dashed var(--line-hi); border-radius:var(--r-md); padding:18px;
+          color:var(--dim); background:rgba(255,255,255,.02);
+          transition:transform .18s var(--spring), background .18s var(--ease), border-color .18s var(--ease), color .18s var(--ease); }
+  .file:active { transform:scale(.98); background:rgba(255,255,255,.08); border-color:rgba(255,255,255,.4); color:var(--text); }
+  .file input { position:absolute; opacity:0; width:1px; height:1px; }
+  .note { color:var(--dim); font-size:13px; margin:8px 2px 0; }
+  .toast { position:fixed; left:50%; bottom:max(28px, env(safe-area-inset-bottom)); transform:translateX(-50%) translateY(24px); opacity:0;
+           transition:opacity .22s var(--ease), transform .32s var(--ease); pointer-events:none; background:rgba(22,22,26,.94);
+           border:1px solid var(--line-hi); padding:10px 18px; box-shadow:0 10px 30px rgba(0,0,0,.35);
+           border-radius:999px; font-size:14px; font-weight:500; white-space:nowrap; max-width:90vw; overflow:hidden; text-overflow:ellipsis; }
+  .toast.show { opacity:1; transform:translateX(-50%) translateY(0); }
+  /* Connect Premiumize (#go=pm): only this card shows, as its own small page. */
+  body.pm .card:not(#pmCard) { display:none; }
+  .steps { margin:0 0 14px; padding:0; list-style:none; counter-reset:s; }
+  .steps li { counter-increment:s; display:flex; gap:12px; align-items:baseline; margin:0 0 10px; font-size:15px; }
+  .steps li::before { content:counter(s); flex:none; width:22px; height:22px; border-radius:50%; background:rgba(255,255,255,.12);
+                      font-size:12px; font-weight:700; display:inline-flex; align-items:center; justify-content:center; transform:translateY(-1px); }
+  a.btn { display:block; text-align:center; text-decoration:none; margin-bottom:14px; }
+  .pmDone { display:flex; align-items:center; gap:10px; font-weight:600; margin:12px 2px 0; }
+  .pmDone::before { content:""; width:22px; height:22px; border-radius:50%; flex:none;
+                    background:#30d158 url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath d='M6 12.5l4 4 8-9' fill='none' stroke='white' stroke-width='2.6' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E") center/16px no-repeat; }
+  @media (prefers-reduced-motion: reduce) {
+    .card { animation:none; }
+    .btn, .apps button, .pad button, .file { transition:none; }
+  }
+</style>
+</head>
+<body>
+<header>
+  <h1><span>Dream OS</span> Remote</h1>
+  <div class="status" role="status" aria-live="polite"><span id="stxt"></span><div id="dot" class="dot" aria-hidden="true"></div></div>
+</header>
+
+<div class="card">
+  <div class="trackpad" id="pad" role="application" aria-label="Trackpad: swipe to move, tap to select">
+    <span class="edge up" aria-hidden="true">&#9650;</span><span class="edge down" aria-hidden="true">&#9660;</span>
+    <span class="edge left" aria-hidden="true">&#9664;</span><span class="edge right" aria-hidden="true">&#9654;</span>
+    <div class="hint"><b>Swipe to move</b>Tap to select</div>
+  </div>
+  <div class="row">
+    <button class="btn" data-k="back" aria-label="Back">&#8617; Back</button>
+    <button class="btn" data-k="home" aria-label="Home">&#8962; Home</button>
+    <button class="btn" data-k="menu" aria-label="Menu">&#9776; Menu</button>
+    <button class="btn wide" data-k="playpause" aria-label="Play or pause">&#9199;&#xFE0E; Play / Pause</button>
+  </div>
+  <button class="toggle" id="padToggle" aria-expanded="false" aria-controls="dpad">Show arrow buttons</button>
+  <div class="pad" id="dpad" hidden>
+    <button class="up" data-k="up" aria-label="Up">&#9650;</button>
+    <button class="left" data-k="left" aria-label="Left">&#9664;</button>
+    <button class="ok" data-k="ok" aria-label="OK">OK</button>
+    <button class="right" data-k="right" aria-label="Right">&#9654;</button>
+    <button class="down" data-k="down" aria-label="Down">&#9660;</button>
+  </div>
+</div>
+
+<div class="card">
+  <p class="label">AirPods</p>
+  <div class="row two">
+    <button class="btn" id="podsTv" data-to="tv" aria-label="Move AirPods to the TV">&#127911; AirPods &rarr; TV</button>
+    <button class="btn" id="podsPhone" data-to="phone" aria-label="Move AirPods to the iPhone">&#128241; AirPods &rarr; iPhone</button>
+  </div>
+  <p class="note" id="podsMsg" aria-live="polite" hidden></p>
+  <p class="note">After &ldquo;&rarr; iPhone&rdquo;, your iPhone usually takes them on its own; if not, tap AirPods in Control Center.</p>
+</div>
+
+<div class="card">
+  <p class="label">Search on TV</p>
+  <form class="search" id="searchForm">
+    <input id="q" placeholder="Movies, shows, apps…" autocomplete="off" enterkeyhint="search" aria-label="Search text">
+    <button class="btn primary" type="submit" aria-label="Send search to TV">Send</button>
+  </form>
+</div>
+
+<div class="card">
+  <p class="label">Open an app</p>
+  <div class="apps" id="apps"><p class="note">Loading apps…</p></div>
+</div>
+
+<div class="card">
+  <p class="label">Wallpaper</p>
+  <label class="file"><input type="file" id="photo" accept="image/*">&#128247;&nbsp; Choose a photo for the TV background</label>
+  <p class="note">Your photo is sent only to your TV on this Wi-Fi.</p>
+</div>
+
+<div class="card" id="pmCard" hidden>
+  <p class="label">Connect Premiumize</p>
+  <ol class="steps">
+    <li>Tap Open Your Premiumize Account and sign in if asked.</li>
+    <li>Copy the key shown as API Key.</li>
+    <li>Come back here, paste it below and tap Link.</li>
+  </ol>
+  <a class="btn primary" href="https://www.premiumize.me/account" target="_blank" rel="noopener noreferrer">Open Your Premiumize Account</a>
+  <form class="search" id="pmForm">
+    <input id="pmKey" placeholder="Paste Your API Key" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false"
+           enterkeyhint="done" aria-label="Paste Your API Key">
+    <button class="btn primary" type="submit" id="pmLink">Link</button>
+  </form>
+  <p class="note" id="pmMsg" aria-live="polite">Your key goes straight to your TV, on your home network only.</p>
+</div>
+
+<div class="toast" id="toast" aria-live="polite"></div>
+
+<script>
+  const $ = id => document.getElementById(id);
+  const store = { get(k) { try { return localStorage.getItem(k); } catch (e) { return null; } },
+                  set(k, v) { try { localStorage.setItem(k, v); } catch (e) {} },
+                  del(k) { try { localStorage.removeItem(k); } catch (e) {} } };
+
+  // ---- SHA-256 / HMAC (the page is plain http on the home network, where browsers hide crypto.subtle) ----
+  const SHA_K = new Uint32Array([
+    0x428a2f98,0x71374491,0xb5c0fbcf,0xe9b5dba5,0x3956c25b,0x59f111f1,0x923f82a4,0xab1c5ed5,0xd807aa98,0x12835b01,0x243185be,0x550c7dc3,
+    0x72be5d74,0x80deb1fe,0x9bdc06a7,0xc19bf174,0xe49b69c1,0xefbe4786,0x0fc19dc6,0x240ca1cc,0x2de92c6f,0x4a7484aa,0x5cb0a9dc,0x76f988da,
+    0x983e5152,0xa831c66d,0xb00327c8,0xbf597fc7,0xc6e00bf3,0xd5a79147,0x06ca6351,0x14292967,0x27b70a85,0x2e1b2138,0x4d2c6dfc,0x53380d13,
+    0x650a7354,0x766a0abb,0x81c2c92e,0x92722c85,0xa2bfe8a1,0xa81a664b,0xc24b8b70,0xc76c51a3,0xd192e819,0xd6990624,0xf40e3585,0x106aa070,
+    0x19a4c116,0x1e376c08,0x2748774c,0x34b0bcb5,0x391c0cb3,0x4ed8aa4a,0x5b9cca4f,0x682e6ff3,0x748f82ee,0x78a5636f,0x84c87814,0x8cc70208,
+    0x90befffa,0xa4506ceb,0xbef9a3f7,0xc67178f2]);
+  function sha256(bytes) {
+    const l = bytes.length, n = ((l + 72) >> 6) << 6, m = new Uint8Array(n);
+    m.set(bytes); m[l] = 0x80;
+    const dv = new DataView(m.buffer);
+    dv.setUint32(n - 8, Math.floor(l / 0x20000000)); dv.setUint32(n - 4, (l * 8) >>> 0);
+    const H = new Uint32Array([0x6a09e667,0xbb67ae85,0x3c6ef372,0xa54ff53a,0x510e527f,0x9b05688c,0x1f83d9ab,0x5be0cd19]), w = new Uint32Array(64);
+    for (let o = 0; o < n; o += 64) {
+      for (let i = 0; i < 16; i++) w[i] = dv.getUint32(o + i * 4);
+      for (let i = 16; i < 64; i++) {
+        const x = w[i - 15], y = w[i - 2];
+        w[i] = w[i - 16] + ((x >>> 7 | x << 25) ^ (x >>> 18 | x << 14) ^ (x >>> 3)) + w[i - 7] + ((y >>> 17 | y << 15) ^ (y >>> 19 | y << 13) ^ (y >>> 10));
+      }
+      let a = H[0], b = H[1], c = H[2], d = H[3], e = H[4], f = H[5], g = H[6], h = H[7];
+      for (let i = 0; i < 64; i++) {
+        const t1 = (h + ((e >>> 6 | e << 26) ^ (e >>> 11 | e << 21) ^ (e >>> 25 | e << 7)) + ((e & f) ^ (~e & g)) + SHA_K[i] + w[i]) | 0;
+        const t2 = (((a >>> 2 | a << 30) ^ (a >>> 13 | a << 19) ^ (a >>> 22 | a << 10)) + ((a & b) ^ (a & c) ^ (b & c))) | 0;
+        h = g; g = f; f = e; e = (d + t1) | 0; d = c; c = b; b = a; a = (t1 + t2) | 0;
+      }
+      H[0] += a; H[1] += b; H[2] += c; H[3] += d; H[4] += e; H[5] += f; H[6] += g; H[7] += h;
+    }
+    const out = new Uint8Array(32), odv = new DataView(out.buffer);
+    for (let i = 0; i < 8; i++) odv.setUint32(i * 4, H[i]);
+    return out;
+  }
+  function hmac(key, msg) {
+    const k = new Uint8Array(64); k.set(key.length > 64 ? sha256(key) : key);
+    const inner = new Uint8Array(64 + msg.length), outer = new Uint8Array(96);
+    for (let i = 0; i < 64; i++) { inner[i] = k[i] ^ 0x36; outer[i] = k[i] ^ 0x5c; }
+    inner.set(msg, 64); outer.set(sha256(inner), 64);
+    return sha256(outer);
+  }
+  const hex = b => Array.from(b, x => (x < 16 ? '0' : '') + x.toString(16)).join('');
+  const unhex = s => new Uint8Array((s.match(/../g) || []).map(x => parseInt(x, 16)));
+  const utf8 = s => new TextEncoder().encode(s);
+
+  // ---- Pairing: the QR code's one-time code rides in the #fragment (never sent in a request line) and is
+  //      swapped once for this phone's own key. Every request after that is signed with the key (HMAC over
+  //      phone id, a rising sequence number, method, path and the body's hash); the key itself stays here. ----
+  const frag = new URLSearchParams(location.hash.slice(1));
+  const pairCode = frag.get('p'), go = frag.get('go');
+  if (location.hash) { try { history.replaceState(null, '', location.pathname); } catch (e) {} }
+  // Connect Premiumize: the page is just that card (no remote, no pings: the TV's server closes once it's linked).
+  const pmMode = go === 'pm';
+  if (pmMode) {
+    document.body.classList.add('pm'); $('pmCard').hidden = false; document.title = 'Connect Premiumize';
+    const h = document.querySelector('header h1'); if (h && h.lastChild) h.lastChild.textContent = '';
+  }
+  store.del('token'); // the old permanent token is no longer accepted
+  let creds = null;
+  try { creds = JSON.parse(store.get('creds') || 'null'); } catch (e) {}
+  let seq = Number(store.get('seq')) || 0;
+  function nextSeq() { seq = Math.max(seq + 1, (Number(store.get('seq')) || 0) + 1, Date.now()); store.set('seq', String(seq)); return seq; }
+
+  async function bytesOf(b) {
+    if (b == null) return new Uint8Array(0);
+    if (typeof b === 'string') return utf8(b);
+    if (b instanceof Uint8Array) return b;
+    return new Uint8Array(await (b.arrayBuffer ? b.arrayBuffer() : new Response(b).arrayBuffer()));
+  }
+  async function sign(path, opts) {
+    const method = (opts.method || 'GET').toUpperCase(), body = await bytesOf(opts.body);
+    const n = nextSeq(), bh = hex(sha256(body));
+    const sig = hex(hmac(unhex(creds.key), utf8([creds.id, n, method, path, bh].join('\n'))));
+    const headers = Object.assign({}, opts.headers || {}, { 'X-Dream-Phone': creds.id, 'X-Dream-Seq': String(n), 'X-Dream-Body': bh, 'X-Dream-Sig': sig });
+    return Object.assign({}, opts, { method, headers, body: method === 'GET' ? undefined : body });
+  }
+  async function pair(code) {
+    try {
+      const r = await fetch('/pair', { method: 'POST', body: code, cache: 'no-store', headers: { 'Content-Type': 'text/plain;charset=utf-8' } });
+      if (!r.ok) { setOnline(false, r.status === 403 ? 'Scan the code on your TV again' : 'Couldn’t pair'); return; }
+      const j = await r.json();
+      creds = { id: j.id, key: j.key }; store.set('creds', JSON.stringify(creds));
+      toast('Paired with your TV');
+    } catch (e) { setOnline(false, 'TV not reachable'); }
+  }
+
+  function toast(msg) { const t = $('toast'); t.textContent = msg; t.classList.add('show');
+                        clearTimeout(t._h); t._h = setTimeout(() => t.classList.remove('show'), 1800); }
+  const buzz = ms => { try { navigator.vibrate && navigator.vibrate(ms); } catch (e) {} };
+
+  // ---- Connection status ----
+  let online = true, pingTimer = 0, appsLoaded = false;
+  function setOnline(ok, why) {
+    $('dot').classList.toggle('off', !ok);
+    $('stxt').textContent = ok ? '' : (why || 'Reconnecting…');
+    if (ok && !online) { toast('Connected to TV'); if (!appsLoaded) loadApps(); }
+    online = ok;
+    schedulePing();
+  }
+  function req(path, opts = {}, ms = 4000) {
+    if (!creds) return Promise.reject(new Error('Not paired'));
+    const ctl = window.AbortController ? new AbortController() : null;
+    const timer = ctl && setTimeout(() => ctl.abort(), ms);
+    return sign(path, opts)
+      .then(o => fetch(path, Object.assign({ cache: 'no-store' }, o, { signal: ctl && ctl.signal })))
+      .then(r => { setOnline(r.status !== 403, r.status === 403 ? 'Scan the code on your TV again' : ''); return r; },
+            e => { setOnline(false); throw e; })
+      .finally(() => clearTimeout(timer));
+  }
+  const ping = () => { if (creds && !pmMode && !document.hidden) req('/ping', {}, 3000).catch(() => {}); };
+  // Every 10s while connected; every 3s while trying to get back.
+  function schedulePing() { clearTimeout(pingTimer); if (creds && !pmMode) pingTimer = setTimeout(ping, online ? 10000 : 3000); }
+  document.addEventListener('visibilitychange', () => { if (!document.hidden) ping(); });
+  window.addEventListener('pageshow', ping);
+  window.addEventListener('online', ping);
+
+  // ---- Keys: fire immediately, but keep them in order and drop the backlog if the TV stalls ----
+  let keyChain = Promise.resolve(), queued = 0;
+  function key(k) {
+    if (queued >= 6) return;
+    queued++;
+    keyChain = keyChain.then(() => req('/key?k=' + k, { method: 'POST' }, 2500).catch(() => {})).then(() => { queued--; });
+  }
+  document.querySelectorAll('[data-k]').forEach(b => b.addEventListener('click', () => { buzz(8); key(b.dataset.k); }));
+
+  // ---- Trackpad ----
+  const pad = $('pad');
+  const SWIPE = 30, STEP = 44, REPEAT_MS = 180, TAP_SLOP = 12, TAP_MS = 450;
+  let g = null; // current gesture
+
+  function ripple(x, y, swipe) {
+    const r = pad.getBoundingClientRect(), d = document.createElement('div');
+    d.className = 'ripple' + (swipe ? ' swipe' : '');
+    d.style.left = (x - r.left) + 'px'; d.style.top = (y - r.top) + 'px';
+    d.addEventListener('animationend', () => d.remove());
+    pad.appendChild(d);
+  }
+  function flash(dir) {
+    const e = pad.querySelector('.edge.' + dir); e.classList.add('flash');
+    clearTimeout(e._h); e._h = setTimeout(() => e.classList.remove('flash'), 160);
+  }
+  function start(x, y) { g = { x0: x, y0: y, ax: x, ay: y, t0: Date.now(), last: 0, fired: false, far: false }; }
+  function move(x, y) {
+    if (!g) return;
+    if (Math.abs(x - g.x0) > TAP_SLOP || Math.abs(y - g.y0) > TAP_SLOP) g.far = true;
+    const dx = x - g.ax, dy = y - g.ay, dist = Math.max(Math.abs(dx), Math.abs(dy));
+    // First key after a short swipe; a long continuous drag repeats every STEP px, at most every REPEAT_MS.
+    if (dist < (g.fired ? STEP : SWIPE) || Date.now() - g.last < REPEAT_MS) return;
+    const dir = Math.abs(dx) > Math.abs(dy) ? (dx > 0 ? 'right' : 'left') : (dy > 0 ? 'down' : 'up');
+    g.ax = x; g.ay = y; g.last = Date.now(); g.fired = true;
+    key(dir); buzz(6); flash(dir); ripple(x, y, true); pad.classList.add('used');
+  }
+  function end(x, y) {
+    if (!g) return;
+    if (!g.fired && !g.far && Date.now() - g.t0 < TAP_MS) { key('ok'); buzz(12); ripple(x, y, false); pad.classList.add('used'); }
+    g = null;
+  }
+  const pt = e => e.changedTouches ? e.changedTouches[0] : e;
+  pad.addEventListener('touchstart', e => { e.preventDefault(); if (e.touches.length === 1) { const p = pt(e); start(p.clientX, p.clientY); } else g = null; }, { passive: false });
+  pad.addEventListener('touchmove', e => { e.preventDefault(); const p = pt(e); move(p.clientX, p.clientY); }, { passive: false });
+  pad.addEventListener('touchend', e => { e.preventDefault(); const p = pt(e); end(p.clientX, p.clientY); }, { passive: false });
+  pad.addEventListener('touchcancel', () => { g = null; });
+  // Mouse fallback, handy when testing from a laptop.
+  pad.addEventListener('mousedown', e => start(e.clientX, e.clientY));
+  window.addEventListener('mousemove', e => { if (g && e.buttons) move(e.clientX, e.clientY); });
+  window.addEventListener('mouseup', e => end(e.clientX, e.clientY));
+  // Arrow keys / Enter / Backspace / Space from a keyboard.
+  document.addEventListener('keydown', e => {
+    if (e.target.tagName === 'INPUT' || (e.target.tagName === 'BUTTON' && (e.key === 'Enter' || e.key === ' '))) return;
+    const k = { ArrowUp: 'up', ArrowDown: 'down', ArrowLeft: 'left', ArrowRight: 'right', Enter: 'ok', Backspace: 'back', Escape: 'back', ' ': 'playpause' }[e.key];
+    if (k) { e.preventDefault(); key(k); }
+  });
+
+  // Arrow buttons stay available for people who prefer them; the choice is remembered.
+  function showPad(on) {
+    $('dpad').hidden = !on; $('padToggle').setAttribute('aria-expanded', on);
+    $('padToggle').textContent = on ? 'Hide arrow buttons' : 'Show arrow buttons'; store.set('dpad', on ? '1' : '');
+  }
+  $('padToggle').addEventListener('click', () => showPad($('dpad').hidden));
+  showPad(store.get('dpad') === '1');
+
+  // ---- Search ----
+  $('searchForm').addEventListener('submit', e => {
+    e.preventDefault(); const input = $('q'), q = input.value.trim(); if (!q) return;
+    req('/text', { method: 'POST', body: q, headers: { 'Content-Type': 'text/plain;charset=utf-8' } })
+      .then(r => { if (r.ok) { toast(go === 'type' ? 'Sent to your TV' : 'Searching “' + q + '”'); input.value = ''; input.blur(); } else toast('Search failed'); },
+            () => toast('TV not reachable'));
+  });
+
+  // ---- AirPods: the TV answers once they've moved (or with why not), so wait a little longer ----
+  document.querySelectorAll('[data-to]').forEach(b => b.addEventListener('click', async () => {
+    const all = document.querySelectorAll('[data-to]'), tv = b.dataset.to === 'tv';
+    buzz(10); all.forEach(x => x.disabled = true); toast(tv ? 'Connecting AirPods to TV…' : 'Sending AirPods to iPhone…');
+    try {
+      const r = await req('/airpods/' + b.dataset.to, { method: 'POST' }, 20000), msg = await r.text();
+      toast(r.status === 200 ? (tv ? 'AirPods on the TV' : 'AirPods sent to iPhone') : r.status === 202 ? 'Still working…' : 'Didn’t work');
+      $('podsMsg').textContent = msg; $('podsMsg').hidden = !msg;
+    } catch (e) { toast('TV not reachable'); }
+    all.forEach(x => x.disabled = false);
+  }));
+
+  // ---- Apps ----
+  async function loadApps() {
+    const box = $('apps');
+    try {
+      const r = await req('/apps'); if (!r.ok) throw 0;
+      const apps = await r.json(); box.innerHTML = '';
+      apps.forEach(a => { const b = document.createElement('button'); b.textContent = a.label; b.setAttribute('aria-label', 'Open ' + a.label);
+        b.onclick = () => { buzz(8); req('/launch?pkg=' + encodeURIComponent(a.pkg), { method: 'POST' }).catch(() => {}); toast('Opening ' + a.label); };
+        box.appendChild(b); });
+      if (!apps.length) box.innerHTML = '<p class="note">No apps found.</p>';
+      appsLoaded = true;
+    } catch (e) { box.innerHTML = '<p class="note">Couldn’t load apps — retrying when the TV is back.</p>'; }
+  }
+
+  // ---- Wallpaper ----
+  function decode(file) {
+    if (window.createImageBitmap) return createImageBitmap(file);
+    return new Promise((res, rej) => { const i = new Image(); i.onload = () => res(i); i.onerror = rej; i.src = URL.createObjectURL(file); });
+  }
+  $('photo').addEventListener('change', async e => {
+    const f = e.target.files[0]; e.target.value = ''; if (!f) return; toast('Sending photo…');
+    try {
+      // Downscale on the phone so huge camera photos upload fast.
+      const img = await decode(f), w = img.width, h = img.height, scale = Math.min(1, 1920 / w, 1080 / h);
+      const c = document.createElement('canvas'); c.width = Math.round(w * scale); c.height = Math.round(h * scale);
+      c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
+      const blob = await new Promise(res => c.toBlob(res, 'image/jpeg', 0.9));
+      const r = await req('/photo', { method: 'POST', body: blob, headers: { 'Content-Type': 'image/jpeg' } }, 60000);
+      toast(r.ok ? 'Wallpaper set ✨' : r.status === 503 ? 'TV is busy, try again' : 'Upload failed');
+    } catch (err) { toast('Upload failed'); }
+  });
+
+  // ---- Connect Premiumize: the pasted key goes to the TV, which checks it with Premiumize and answers ----
+  $('pmForm').addEventListener('submit', async e => {
+    e.preventDefault();
+    const input = $('pmKey'), msg = $('pmMsg'), btn = $('pmLink'), k = input.value.replace(/\s+/g, '');
+    if (!k) { msg.className = 'note'; msg.textContent = 'Paste your API key first.'; return; }
+    btn.disabled = true; input.blur(); msg.className = 'note'; msg.textContent = 'Checking your key…';
+    try {
+      const r = await req('/pmkey', { method: 'POST', body: k, headers: { 'Content-Type': 'text/plain;charset=utf-8' } }, 25000), t = await r.text();
+      if (r.status === 200) { input.value = ''; $('pmForm').hidden = true; msg.className = 'pmDone'; msg.textContent = t; buzz(20); }
+      else msg.textContent = r.status === 403 ? 'Scan the code on your TV again.' : t;
+    } catch (err) { msg.textContent = 'Your TV isn’t answering. Check that it’s on the same Wi-Fi.'; }
+    btn.disabled = false;
+  });
+
+  (async () => {
+    if (pairCode) await pair(pairCode);
+    if (pmMode) {
+      appsLoaded = true;
+      if (!creds) $('pmMsg').textContent = 'Scan the code on your TV again.';
+      return;
+    }
+    if (!creds) { if (!pairCode) setOnline(false, 'Scan the code on your TV'); $('apps').innerHTML = '<p class="note">Scan the code on your TV first.</p>'; return; }
+    loadApps();
+    schedulePing();
+    if (go === 'type') { $('searchForm').scrollIntoView({ behavior: 'smooth' }); $('q').placeholder = 'Type here, then tap Send'; $('q').focus(); toast('Type here, then tap Send'); }
+  })();
+</script>
+</body>
+</html>

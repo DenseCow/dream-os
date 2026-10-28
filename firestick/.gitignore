@@ -1,0 +1,16 @@
+.gradle/
+build/
+local.properties
+# Signing keys and their passwords never go in the repository.
+*.jks
+*.keystore
+dreamos-release.properties
+
+# Build outputs and IDE files
+dist/
+*.apk
+.idea/
+*.iml
+.DS_Store
+__pycache__/
+*.pyc

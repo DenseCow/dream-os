@@ -1,0 +1,60 @@
+name: Bug Report
+description: Something in Dream OS doesn't work or looks wrong.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting! Please **don't** include API keys, debrid tokens, account emails or scraper
+        repository addresses. Security problems go to the Security tab instead (see SECURITY.md).
+  - type: dropdown
+    id: platform
+    attributes:
+      label: Platform
+      options:
+        - Fire TV
+        - iPhone
+    validations:
+      required: true
+  - type: input
+    id: device
+    attributes:
+      label: Device Model
+      description: "Fire TV: Settings > My Fire TV > About. iPhone: Settings > General > About > Model Name."
+      placeholder: "Fire TV Stick 4K Max (1st generation) / iPhone 15"
+    validations:
+      required: true
+  - type: input
+    id: os
+    attributes:
+      label: OS Version
+      description: "Fire OS version, or iOS version."
+      placeholder: "Fire OS 7.7.1.3 / iOS 27.2"
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Dream Version
+      description: "Fire TV: Settings > Updates. iPhone: the release you installed."
+      placeholder: "4.0"
+  - type: textarea
+    id: what
+    attributes:
+      label: What Happened?
+      description: What you did, what you expected, and what happened instead.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to Reproduce
+      placeholder: |
+        1. Open ...
+        2. Choose ...
+        3. See ...
+  - type: textarea
+    id: media
+    attributes:
+      label: Photos or Screenshots
+      description: A photo of the TV screen or a phone screenshot helps a lot. Hide any personal details first.

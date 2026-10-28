@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Everything must be HTTPS: debrid links are upgraded (Found), the weather location uses an HTTPS
+     service (Weather). The phone remote's own server is unaffected (it serves, it doesn't fetch). -->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="false" />
+</network-security-config>

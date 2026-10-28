@@ -1,0 +1,6 @@
+.build/
+.swiftpm/
+xtool/
+*.ipa
+# API keys: generated from fire-home/local.properties by tools/gen-secrets.sh
+Sources/DreamCore/Secrets.swift

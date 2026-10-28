@@ -1,0 +1,11 @@
+app/.build/
+app/.swiftpm/
+app/xtool/
+app/.bsp/
+app/Sources/DreamCore/Secrets.swift
+*.ipa
+sdk/
+builds/
+
+# Build-time keys (tools/gen-secrets.sh)
+secrets.properties

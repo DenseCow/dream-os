@@ -1,0 +1,5 @@
+version: 1
+bundleID: com.dreamos.DreamOS
+product: DreamOS
+infoPath: Info.plist
+iconPath: Resources/AppIcon.png

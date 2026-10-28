@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The window behind everything, shown for a moment before the boot intro draws: the brand's near-black
+     (was a navy gradient from the old look, which flashed blue at start). -->
+<shape xmlns:android="http://schemas.android.com/apk/res/android">
+    <gradient android:angle="270" android:startColor="#000000" android:endColor="#050506" />
+</shape>

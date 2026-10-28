@@ -1,0 +1,60 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  The Dream OS loading ring (LoadingCurtain.Spinner): a faint track and a 300° arc running through the
+  rainbow from a clear tail, turning once every 0.9 s. An AnimatedVectorDrawable, so the turn runs on the
+  RenderThread and keeps going while the main thread is busy (the play hand-off). Drawn for 20 dp with a
+  2.5 dp stroke.
+-->
+<animated-vector xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:aapt="http://schemas.android.com/aapt">
+    <aapt:attr name="android:drawable">
+        <vector
+            android:width="20dp"
+            android:height="20dp"
+            android:viewportWidth="20"
+            android:viewportHeight="20">
+            <path
+                android:pathData="M18.35,10 A8.35,8.35 0 1,1 1.65,10 A8.35,8.35 0 1,1 18.35,10 Z"
+                android:strokeWidth="2.5"
+                android:strokeColor="#2EFFFFFF" />
+            <group
+                android:name="turn"
+                android:pivotX="10"
+                android:pivotY="10">
+                <path
+                    android:pathData="M18.35,10 A8.35,8.35 0 1,1 14.175,2.769"
+                    android:strokeWidth="2.5"
+                    android:strokeLineCap="round">
+                    <aapt:attr name="android:strokeColor">
+                        <gradient
+                            android:type="sweep"
+                            android:centerX="10"
+                            android:centerY="10">
+                            <item android:offset="0" android:color="#00000000" />
+                            <item android:offset="0.125" android:color="#FF2F7BFF" />
+                            <item android:offset="0.25" android:color="#FF8B5CFF" />
+                            <item android:offset="0.375" android:color="#FFFF3DC8" />
+                            <item android:offset="0.5" android:color="#FFFF4D6D" />
+                            <item android:offset="0.625" android:color="#FFFF8A1F" />
+                            <item android:offset="0.75" android:color="#FFFFD21F" />
+                            <item android:offset="0.875" android:color="#FF7CFF4F" />
+                            <item android:offset="1" android:color="#FF19E3D6" />
+                        </gradient>
+                    </aapt:attr>
+                </path>
+            </group>
+        </vector>
+    </aapt:attr>
+    <target android:name="turn">
+        <aapt:attr name="android:animation">
+            <objectAnimator
+                android:propertyName="rotation"
+                android:valueFrom="0"
+                android:valueTo="360"
+                android:valueType="floatType"
+                android:duration="900"
+                android:repeatCount="infinite"
+                android:interpolator="@android:anim/linear_interpolator" />
+        </aapt:attr>
+    </target>
+</animated-vector>

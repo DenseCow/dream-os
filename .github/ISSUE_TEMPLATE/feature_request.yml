@@ -1,0 +1,20 @@
+name: Feature Idea
+description: Suggest something new for Dream OS.
+labels: ["idea"]
+body:
+  - type: dropdown
+    id: platform
+    attributes:
+      label: Platform
+      multiple: true
+      options:
+        - Fire TV
+        - iPhone
+        - Windows, Mac or Linux (coming soon)
+  - type: textarea
+    id: idea
+    attributes:
+      label: Your Idea
+      description: What would you like Dream to do, and why would it help?
+    validations:
+      required: true

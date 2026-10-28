@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security Problem
+    url: https://github.com/DenseCow/dream-os/security/advisories/new
+    about: Report security problems privately, not as a public issue.
+  - name: Install Help
+    url: https://github.com/DenseCow/dream-os/blob/main/INSTALL-FIRESTICK.md#troubleshooting
+    about: Check the install guides' troubleshooting first.

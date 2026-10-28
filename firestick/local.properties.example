@@ -1,0 +1,38 @@
+# Copy to local.properties (never commit local.properties) and fill in what you have.
+# Every key is optional: Dream OS builds and runs without them and asks in Settings where it can.
+# Anything set here is compiled into the APK, so leave them empty for builds you share with others.
+
+# Android SDK location (Android Studio writes this for you).
+sdk.dir=C\:\Users\you\AppData\Local\Android\Sdk
+
+# TMDB (titles, artwork, search). Free key: https://www.themoviedb.org/settings/api
+# Empty = Dream OS asks for one in Settings > Advanced > TMDB API Key.
+tmdb.key=
+
+# OMDb (Rotten Tomatoes and IMDb scores). Free key: https://www.omdbapi.com/apikey.aspx
+# Empty = the scores stay hidden until a key is entered in Settings > Advanced > OMDb API Key.
+omdb.key=
+
+# Premiumize device sign-in. Register your own app with Premiumize (premiumize.me, API / developer
+# contact) to get a client id for the device-code flow. Empty = Premiumize is linked with the
+# account's API key (premiumize.me/account) instead.
+premiumize.client_id=
+
+# Trakt sync. Register an app at https://trakt.tv/oauth/applications
+# (redirect URI urn:ietf:wg:oauth:2.0:oob). Empty = Trakt sync stays hidden.
+trakt.client_id=
+trakt.client_secret=
+
+# Release signing (optional): path to a properties file OUTSIDE the project with
+# storeFile, storePassword, keyAlias and keyPassword. Default: ~/.android/dreamos-release.properties
+# Without it, release builds are signed with the debug key (fine for your own testing).
+#release.signing=C:/Users/you/.android/dreamos-release.properties
+
+# Embedded Python (scrapers): path to a Python 3.11 on this PC, used at build time only.
+# Empty = the build looks for "py -3.11" (the Windows Python launcher).
+#python.build=C:/Users/you/tools/python311/python.exe
+
+# Self-updater (Settings > Updates): the GitHub repository whose Releases carry Dream OS, as owner/name.
+# Each release: tag v<version>, the signed APK and its <apk>.sha256 (tools/release.sh makes both).
+# Empty = the updater is hidden (builds you install by hand).
+update.repo=

@@ -1,0 +1,4 @@
+<resources>
+    <string name="app_name">Dream OS</string>
+    <string name="a11y_desc">Sends the Home button and power-on to Dream OS instead of the Amazon home screen.</string>
+</resources>
