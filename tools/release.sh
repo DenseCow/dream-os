@@ -39,8 +39,22 @@ bash "$ROOT/tools/sync.sh"
 VERSION=$(sed -n 's/^val dreamVersion = "\([0-9.]*\)".*/\1/p' "$ROOT/firestick/app/build.gradle.kts")
 [ -n "$VERSION" ] || { echo "Couldn't read dreamVersion"; exit 1; }
 TAG="v$VERSION"
+# One version for both apps: the iPhone's Info.plist (DreamOS-iOS tools/set-version.sh) must say the same as the
+# Fire Stick's dreamVersion (fire-home tools/set-version.sh), with the same build number (major*10000+minor*100+patch).
+plist_value() { grep -A1 "<key>$1</key>" "$ROOT/ios/app/Info.plist" | tr -d '\r' | sed -n 's|.*<string>\(.*\)</string>.*|\1|p' | head -1 || true; }
+IFS=. read -r V1 V2 V3 <<< "$VERSION"
+CODE=$(( V1 * 10000 + ${V2:-0} * 100 + ${V3:-0} ))
+IOS_VERSION=$(plist_value CFBundleShortVersionString)
+IOS_BUILD=$(plist_value CFBundleVersion)
+echo "  Fire Stick: Version $VERSION ($CODE)"
+echo "  iPhone:     Version ${IOS_VERSION:-?} (${IOS_BUILD:-?})"
+if [ "$IOS_VERSION" != "$VERSION" ] || [ "$IOS_BUILD" != "$CODE" ]; then
+  echo "The two apps' versions differ. Run tools/set-version.sh $VERSION in both apps (fire-home and DreamOS-iOS),"
+  echo "commit them, then run this again."
+  exit 1
+fi
 if gh release view "$TAG" --repo "$REPO" >/dev/null 2>&1; then
-  echo "Release $TAG already exists in $REPO. Bump dreamVersion in the Fire TV app first."; exit 1
+  echo "Release $TAG already exists in $REPO. Run tools/set-version.sh <new version> in both apps first."; exit 1
 fi
 
 echo "== 2/5 Build the Fire TV APK $VERSION (no keys)"
@@ -54,6 +68,7 @@ cp -r "$ROOT/firestick/." "$WORK/build/"
   echo "tmdb.key="; echo "omdb.key="; echo "premiumize.client_id="
   echo "trakt.client_id="; echo "trakt.client_secret="
   echo "update.repo=$REPO"
+  echo "build.channel=PUBLIC"   # the boot intro and Settings › About show "(PUBLIC)"; every other build is DEV
   echo "release.signing=$(winpath "$SIGNING")"
 } > "$WORK/build/local.properties"
 (cd "$WORK/build" && "$GRADLE" assembleRelease --console=plain -q) > "$WORK/gradle.log" 2>&1 \

@@ -10,6 +10,11 @@ dst=/tmp/dream-publish
 mkdir -p "$dst"
 rsync -a --delete --exclude .build --exclude .swiftpm --exclude xtool "$SRC/app/" "$dst/"
 cd "$dst"
+# The build channel: PUBLIC for published builds (the launch intro and Settings > About show "(PUBLIC)"). Only this
+# build copy changes; the source keeps DEV, so every build installed any other way says "(DEV)".
+grep -q '<key>DreamBuildChannel</key>' Info.plist || { echo "ipa: no DreamBuildChannel key in Info.plist"; exit 1; }
+sed -i '/<key>DreamBuildChannel<\/key>/{n;s|<string>[^<]*</string>|<string>PUBLIC</string>|;}' Info.plist
+grep -A1 '<key>DreamBuildChannel</key>' Info.plist | grep -q '<string>PUBLIC</string>' || { echo "ipa: couldn't set the build channel"; exit 1; }
 set +e
 xtool dev build 2>&1 | tr '\r' '\n' | grep -vE "^\[[0-9]+/[0-9]+\]" | tail -8
 status=${PIPESTATUS[0]}
