@@ -165,7 +165,7 @@ is streaming on the services you already pay for.
 
 ### Made for the Fire Stick
 Optionally replace Amazon's home screen, search with the voice remote, type from your phone with Phone Remote,
-check AirPods battery, rest on the Dream screensaver, and get updates right inside the app.
+see at a glance whether your AirPods are connected, rest on the Dream screensaver, and get updates right inside the app.
 
 ### Made for iPhone
 A touch-first take on the same experience: portrait browsing, a landscape player, background audio, and the

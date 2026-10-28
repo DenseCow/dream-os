@@ -141,7 +141,7 @@ If you prefer, give the same permissions from a Windows, Mac or Linux computer o
    # App sizes on the System page
    adb shell appops set com.firehome.launcher GET_USAGE_STATS allow
 
-   # AirPods battery (Android needs location permission for Bluetooth scans)
+   # AirPods connection status (Android needs location permission for Bluetooth scans)
    adb shell pm grant com.firehome.launcher android.permission.ACCESS_FINE_LOCATION
 
    # The Home button: turn on Dream's Home button service
