@@ -47,3 +47,7 @@ network	*.ipa!Payload/DreamOS.app/DreamOS_DreamPythonStdlib.bundle/python/lib/py
 
 # Generic WSL network range in the build guide (not an address).
 network	BUILDING.md	-RemoteAddress 172.16.0.0/12
+
+# Fire Stick setup guide drawing: made-up example TMDB key and token (same fake key as the iPhone drawing; checked 2026-10-28, not the real key).
+credential	firestick/app/src/main/java/com/firehome/launcher/SetupGuide.kt	"8f3a1c9e2b7d4f60a5e1c3b9d2f7a4e8"
+credential	firestick/app/src/main/java/com/firehome/launcher/SetupGuide.kt	"eyJhbGciOiJIUzI1NiJ9.eyJhdWQiOiI4ZjNhMWM5ZTJiN2Q0ZjYwYTVlMWMzYjlkMmY3YTRlOCIs"

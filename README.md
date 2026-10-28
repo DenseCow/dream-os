@@ -76,7 +76,7 @@ The easy way is the free **Downloader** app on your Fire Stick. Open it, choose 
   <tr>
     <td align="center">
       <sub>DOWNLOADER CODE</sub><br>
-      <h2><!--dl-code-->Coming Soon<!--/dl-code--></h2>
+      <h2><!--dl-code-->5988263<!--/dl-code--></h2>
     </td>
   </tr>
 </table>

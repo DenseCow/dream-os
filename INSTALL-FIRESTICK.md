@@ -62,7 +62,7 @@ The Fire Stick only installs apps from the Appstore until you allow another app 
 1. Open **Downloader**. If it asks for access to your files, choose **Allow**.
 2. Select the address box on the Home tab and type the Downloader code:
 
-   <table><tr><td align="center"><sub>DOWNLOADER CODE</sub><br><h2><!--dl-code-->Coming Soon<!--/dl-code--></h2></td></tr></table>
+   <table><tr><td align="center"><sub>DOWNLOADER CODE</sub><br><h2><!--dl-code-->5988263<!--/dl-code--></h2></td></tr></table>
 
    Or type the full address instead:
    `github.com/DenseCow/dream-os/releases/latest/download/DreamOS.apk`
