@@ -23,8 +23,8 @@ Dream OS is an app for finding and watching movies and shows. It has large artwo
 title you're on, rows built from what you watch, and one Play button. On a Fire Stick it can also take the place of
 Amazon's home screen.
 
-Dream doesn't host or include anything to watch. It connects the services you already use and puts them behind
-one interface.
+Dream doesn't host or include anything to watch, and it doesn't connect to streaming apps like Netflix or Prime
+Video. It plays from the accounts and scraper repositories you add yourself.
 
 ## What You Need
 
@@ -113,8 +113,8 @@ The Dream Cinema look is black and gray with a soft rainbow glow. Trailers play 
 rows like Continue Watching, Top 10 Today, In Theaters, New Episodes and Because You Watched, and seasonal hubs
 gather holiday favorites when it's their time of year. Anime lives on its own page instead of filling every row.
 
-Title pages show IMDb and Rotten Tomatoes scores (with a free OMDb key), cast, season guides, air times, and which of
-the services you already pay for are streaming it.
+Title pages show IMDb and Rotten Tomatoes scores (with a free OMDb key), cast, season guides, air times, and which
+streaming services list it (shown as information only).
 
 ### Dream Player
 
