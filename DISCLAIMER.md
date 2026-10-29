@@ -34,7 +34,7 @@ the companies or services below. All names, logos and trademarks belong to their
 describe compatibility or what a row shows. Dream OS uses no company logos; the colored service tiles inside the
 app are Dream's own designs, not official artwork.
 
-**Streaming services** (Dream shows rows and pages of what's on them, and opens their own apps)
+**Streaming services** (Dream shows rows and pages of what's on them)
 - Netflix (Netflix, Inc.)
 - Hulu (The Walt Disney Company)
 - Disney+ (The Walt Disney Company)
