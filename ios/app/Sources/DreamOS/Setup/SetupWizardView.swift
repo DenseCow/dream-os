@@ -72,7 +72,7 @@ enum SetupStep: String, CaseIterable {
 
 /// Pages pushed on setup's own navigation stack (long lists live on a page of their own; swipe back returns).
 enum SetupPage: Hashable {
-    case zones, quality, audio, allSourceSettings, manageScrapers, unlockFireStick
+    case zones, quality, audio, sizes, allSourceSettings, manageScrapers, unlockFireStick
 }
 
 /// Where setup is and what it holds between steps. Steps decide when they're done and call `forward()`.
@@ -306,6 +306,8 @@ struct SetupWizardView: View {
             PageChoiceList(title: "Audio Language", note: nil,
                            options: PlaybackPrefs.audio.map { .init(id: $0.code, label: $0.name) },
                            current: { PlaybackPrefs.audioLang }) { PlaybackPrefs.setAudioLang($0) }
+        case .sizes:
+            SizeLimitsView()
         case .allSourceSettings:
             SourcesQualityView()
         case .manageScrapers:

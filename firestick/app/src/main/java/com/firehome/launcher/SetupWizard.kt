@@ -1345,7 +1345,7 @@ class SetupWizard(
     }
 
     /**
-     * Picture and Sound: the defaults as three plain facts (they suit most TVs), so Continue has the focus.
+     * Picture and Sound: the defaults as four plain facts (they suit most TVs), so Continue has the focus.
      * Change Settings opens the whole Playback page as a sub-page.
      */
     private fun playbackStep(): Built {
@@ -1362,6 +1362,8 @@ class SetupWizard(
         val q = fact("Maximum Quality")
         val a = fact("Audio Language")
         val s = fact("Subtitles")
+        // Shown in setup (owner, 2026-10-29): limits keep oversized files from pausing on a slow connection.
+        val z = fact("Source Size Limits")
         fun paint() {
             PlaybackPrefs.ensureDefaults(ctx.applicationContext)
             val app = ctx.applicationContext
@@ -1369,6 +1371,8 @@ class SetupWizard(
             setTextIfNew(a.getChildAt(1) as TextView, PlaybackPrefs.audioLabel(app))
             setTextIfNew(s.getChildAt(1) as TextView,
                 if (PlaybackPrefs.subsOn(app)) PlaybackPrefs.subLabel(PlaybackPrefs.subLang(app) ?: "English") else "Off")
+            setTextIfNew(z.getChildAt(1) as TextView,
+                if (PlaybackPrefs.sizeMode(app, false) == "off" && PlaybackPrefs.sizeMode(app, true) == "off") "No Limit" else "On")
         }
         first.add(facts, 0)
         first.add(k.label(if (DeviceVideo.plays4k(ctx)) "Your Fire Stick and TV can play 4K." else "Your Fire Stick and TV play up to 1080p.",

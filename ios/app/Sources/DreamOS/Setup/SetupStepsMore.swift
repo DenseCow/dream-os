@@ -155,7 +155,8 @@ private struct WhoList: View {
 // MARK: Picture and Sound
 
 /// The defaults as rows the viewer can change in one tap: Maximum Quality and Audio Language open their lists (picking
-/// saves and comes back), Subtitles switches in place. Change Settings opens the full Sources & Quality page.
+/// saves and comes back), Subtitles switches in place, Source Size Limits opens its page. Change Settings opens the
+/// full Sources & Quality page.
 struct PictureSoundStep: View {
     @Environment(SetupFlow.self) private var flow
     @State private var tick = 0
@@ -175,6 +176,10 @@ struct PictureSoundStep: View {
                         lead: .symbol("captions.bubble"), toggle: PlaybackPrefs.subsOn) {
                     PlaybackPrefs.setSubsOn(!PlaybackPrefs.subsOn); tick += 1
                 }
+                // Shown in setup (owner, 2026-10-29): limits keep oversized files from pausing on a slow connection.
+                PageRow(title: "Source Size Limits", caption: "Skip files too large for your internet",
+                        value: PlaybackPrefs.sizeMode(false) == "off" && PlaybackPrefs.sizeMode(true) == "off" ? "No Limit" : "On",
+                        lead: .symbol("slider.horizontal.3"), chevron: true) { flow.path.append(.sizes) }
             }
             .padding(.top, SetupSpace.headToBody)
         }
