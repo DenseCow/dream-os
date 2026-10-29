@@ -10,7 +10,12 @@ optional extra at the end.
 - [Step 2: Let Downloader Install Apps](#step-2-let-downloader-install-apps)
 - [Step 3: Download and Install Dream OS](#step-3-download-and-install-dream-os)
 - [Step 4: First Launch and Setup](#step-4-first-launch-and-setup)
+- [Recommended: Debloat Your Fire Stick](#recommended-debloat-your-fire-stick)
 - [Optional: Make Dream Your Home Screen](#optional-make-dream-your-home-screen)
+
+> [!TIP]
+> If your Fire Stick feels slow, even on Amazon's home screen, [debloat it](#recommended-debloat-your-fire-stick).
+> It frees the memory Amazon's background apps hold so Dream OS has room to run.
 - [Updating](#updating)
 - [Uninstalling](#uninstalling)
 - [Troubleshooting](#troubleshooting)
@@ -92,6 +97,107 @@ Dream's setup walks you through everything, one simple screen at a time:
 
 Every choice is saved as you go, and everything lives in **Settings** later. You can run setup again from
 **Settings › Profiles › Run Setup Again**.
+
+<br>
+
+## Recommended: Debloat Your Fire Stick
+
+Amazon runs dozens of its own apps in the background on every Fire Stick: ads, shopping, telemetry, Alexa extras,
+Amazon Music, photo screensavers and more. They hold memory even when you never open them. On a stick with about
+1 GB of memory, like the Fire TV Stick HD, that's enough to make everything lag, Amazon's home screen included.
+Turning them off frees that memory for Dream OS.
+
+Nothing is deleted. Each app is only switched off, and you can switch any of them back on with one command. Your
+streaming apps (Prime Video, Netflix and the rest), the Appstore and Downloader aren't touched.
+
+You need a Windows, Mac or Linux computer on the same Wi-Fi as the Fire Stick.
+
+1. Install Android's platform tools (they include `adb`) from
+   [developer.android.com/tools/releases/platform-tools](https://developer.android.com/tools/releases/platform-tools).
+2. On the Fire Stick, open **Settings › My Fire TV › Developer Options** and turn on **ADB Debugging**. Then find
+   its IP address in **Settings › My Fire TV › About › Network**.
+3. On the computer, connect (replace `FIRE-TV-IP` with that address). The TV asks **Allow USB debugging?**: tick
+   **Always allow from this computer** and choose **OK**.
+
+   ```sh
+   adb connect FIRE-TV-IP:5555
+   ```
+
+4. Run these commands. Some models don't have every app, so a few lines may answer `Unknown package`. That's
+   normal; skip past it.
+
+   ```sh
+   # Ads, shopping and promotions
+   adb shell pm disable-user --user 0 com.amazon.tv.acr
+   adb shell pm disable-user --user 0 com.amazon.hybridadidservice
+   adb shell pm disable-user --user 0 com.amazon.kso.blackbird
+   adb shell pm disable-user --user 0 com.amazon.device.sale.service
+   adb shell pm disable-user --user 0 com.amazon.shoptv.client
+   adb shell pm disable-user --user 0 com.amazon.shoptv.firetv.client
+   adb shell pm disable-user --user 0 com.amazon.sneakpeek
+   adb shell pm disable-user --user 0 com.amazon.minitv.android.app
+   adb shell pm disable-user --user 0 com.amazon.gamehub
+
+   # Usage reports and diagnostics sent to Amazon
+   adb shell pm disable-user --user 0 com.amazon.dp.logger
+   adb shell pm disable-user --user 0 com.amazon.tv.fw.metrics
+   adb shell pm disable-user --user 0 com.amazon.wirelessmetrics.service
+   adb shell pm disable-user --user 0 com.amazon.perfcollection
+   adb shell pm disable-user --user 0 com.amazon.connectivitydiag
+
+   # Tutorials, release notes and help videos
+   adb shell pm disable-user --user 0 com.amazon.tv.releasenotes
+   adb shell pm disable-user --user 0 com.amazon.tv.support
+   adb shell pm disable-user --user 0 com.amazon.storm.lightning.tutorial
+   adb shell pm disable-user --user 0 com.amazon.tmm.tutorial
+
+   # Amazon Photos screensaver, smart home and Matter
+   adb shell pm disable-user --user 0 com.amazon.bueller.photos
+   adb shell pm disable-user --user 0 com.amazon.smarthomemapviewapp
+   adb shell pm disable-user --user 0 com.amazon.tv.matter
+   adb shell pm disable-user --user 0 com.amazon.tv.mattercohost
+   adb shell pm disable-user --user 0 com.amazon.wifilocker
+
+   # Alexa extras: alerts, notifications, music and multi-room audio
+   adb shell pm disable-user --user 0 com.amazon.tv.alexaalerts
+   adb shell pm disable-user --user 0 com.amazon.tv.alexanotifications
+   adb shell pm disable-user --user 0 com.amazon.alexa.externalmediaplayer.fireos
+   adb shell pm disable-user --user 0 com.amazon.alexamediaplayer.runtime.ftv
+   adb shell pm disable-user --user 0 com.amazon.whad
+   adb shell pm disable-user --user 0 com.amazon.whasettings
+   adb shell pm disable-user --user 0 com.amazon.wha.mediabrowserservice
+   adb shell pm disable-user --user 0 com.amazon.audiohome
+   adb shell pm disable-user --user 0 com.amazon.bueller.music
+   adb shell pm disable-user --user 0 com.amazon.spotify.mediabrowserservice
+
+   # Frustration-Free Setup: keeps a Bluetooth scan running that can make AirPods stutter
+   adb shell pm disable-user --user 0 com.amazon.whisperjoin.middleware.np
+
+   # Fire OS updates that install on their own
+   adb shell pm disable-user --user 0 com.amazon.tv.forcedotaupdater.v2
+   ```
+
+5. Optional, for snappier menus: halve the animation times.
+
+   ```sh
+   adb shell settings put global window_animation_scale 0.5
+   adb shell settings put global transition_animation_scale 0.5
+   adb shell settings put global animator_duration_scale 0.5
+   ```
+
+6. Restart the Fire Stick (**Settings › My Fire TV › Restart**). Turn **ADB Debugging** off again if you like.
+
+Leave Alexa's voice apps (`com.amazon.vizzini`, `com.amazon.vizzini.ftvcds` and
+`com.amazon.alexadirectivebrokerservice`) switched on. Dream OS's voice search listens through them, so the voice
+remote stops searching without them.
+
+### Undo It
+
+To switch an app back on, run the same command with `enable` in place of `disable-user --user 0`, for example:
+
+```sh
+adb shell pm enable com.amazon.bueller.photos
+```
 
 <br>
 

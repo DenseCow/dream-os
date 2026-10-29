@@ -83,6 +83,13 @@ The easy way is the free **Downloader** app on your Fire Stick. Open it, choose 
 
 Or type this address instead: `github.com/DenseCow/dream-os/releases/latest/download/DreamOS.apk`
 
+> [!TIP]
+> **Debloat your Fire Stick first (recommended).** Amazon keeps dozens of its own apps running in the background:
+> ads, shopping, telemetry, Alexa extras and more. On a stick with about 1 GB of memory, like the Fire TV Stick HD,
+> they make everything lag, Amazon's own home screen included. Turning them off takes about five minutes from a
+> computer, and you can turn any of them back on later.
+> [How to debloat your Fire Stick](INSTALL-FIRESTICK.md#recommended-debloat-your-fire-stick)
+
 The [Fire Stick Install Guide](INSTALL-FIRESTICK.md) walks through every step, including allowing Downloader to
 install apps and the optional steps that make Dream your Home screen.
 
