@@ -3,6 +3,9 @@
 
 # Example addresses shown to the viewer when moving settings from an old TV (not a real network).
 network	firestick/app/src/main/java/com/firehome/launcher/BackupTransfer.kt	192.168.1.23
+# Example address in the iPhone's Unlock Fire Stick screen (placeholder and doc comment; not a real network).
+network	ios/app/Sources/DreamOS/Unlock/FireStickUnlock.swift	"192.168.1.20" or "192.168.1.20:5555"
+network	ios/app/Sources/DreamOS/Unlock/UnlockFireStickView.swift	placeholder: "192.168.1.20"
 # Upstream Python and requests: documentation examples and the private-range table.
 network	ios/app/Vendor/Python/Stdlib/python/lib/python3.13/ipaddress.py	IPv4Network('
 network	ios/app/Vendor/Python/Stdlib/python/lib/python3.13/urllib/request.py	192.168.0.1
