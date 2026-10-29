@@ -150,7 +150,7 @@ final class DreamUpdates {
         DreamStore.shared.set(saved, Self.key)
         if case .available(let v) = status {
             // Once per version (a notice key is posted only once, even after it's removed).
-            NoticeCenter.shared.post(key: "update:\(v)", type: .update, title: "A New Version of Dream Is Available",
+            NoticeCenter.shared.post(key: "update:\(v)", type: .update, title: "There's a New Version Available",
                                      body: "Version \(v) is out. Settings › About has the link.", severity: .info)
         }
     }

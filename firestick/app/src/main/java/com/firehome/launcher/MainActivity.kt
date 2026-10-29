@@ -118,7 +118,7 @@ class MainActivity : Activity() {
     /** The debrid premium check (DebridExpiry): a few seconds after Home shows, so it never competes with the first frames. */
     private val expiryCheck = Runnable {
         DebridExpiry.maybeCheck(this)
-        // Dream OS's own updates (DreamUpdate): the daily check, and the new-version notice card on a free Home.
+        // Dream OS's own updates (DreamUpdate): the daily check, and the new-version notice (a banner with its buttons) on a free Home.
         // Every launch also checks once, with a live "Checking for Updates…" banner (Dream Cinema; DreamNotices.live).
         DreamUpdate.onHome(this) { notices.canShowBanner() && !notices.bannerShowing }
     }

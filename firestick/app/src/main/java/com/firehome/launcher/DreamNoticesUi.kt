@@ -25,8 +25,10 @@ import android.widget.TextView
 /**
  * How Dream OS shows its notices (DreamNotices), in the Dream Cinema look:
  *  - a banner that slides in at the top right over the home screen: smoked glass, a small severity dot
- *    (amber for a warning, red for a critical one, soft white for news), the title and one line; it
- *    rests ~6 s and leaves on its own, never taking focus;
+ *    (amber for a warning, red for a critical one, soft white for news), the title and its line (either
+ *    wraps rather than being cut); it rests ~6 s and leaves on its own, never taking focus;
+ *  - the same banner with buttons ([showPrompt], the new-version notice: Install Now and Later): it takes
+ *    focus and stays until the viewer picks one or presses Back;
  *  - the Notifications panel, sliding in from the right: rows (icon, title, body, "2 Days Ago"), the
  *    pearl-and-rainbow focus of every Dream row, Mark All Read / Clear All; OK runs a row's action,
  *    Menu removes the row, Back closes it;
@@ -57,12 +59,12 @@ class DreamNoticesUi(private val act: Activity, private val host: Host) : DreamN
     private val queue = ArrayList<DreamNotices.Notice>()
     private var hideRun: Runnable? = null
 
-    /** Not over the panel, the renewal sheet or the update card (both sit where banners land). */
+    /** Not over the panel, the renewal sheet or Settings › Updates. */
     override fun canShowBanner() = host.homeFree() && panel == null && sheet == null && !UpdatePage.isOpen()
 
     override fun screenFreed() = onHomeBack()
 
-    /** A banner is on screen right now (the update card waits for it). */
+    /** A banner is on screen right now (the new-version notice waits for it). */
     val bannerShowing get() = banner != null
 
     override fun showBanner(n: DreamNotices.Notice) {
@@ -160,13 +162,54 @@ class DreamNoticesUi(private val act: Activity, private val host: Host) : DreamN
                     then?.let { handler.postDelayed(it, 450) }
                 }.also { handler.postDelayed(it, holdMs) }
             }
-            override fun dismiss() {
+            override fun dismiss(then: (() -> Unit)?) {
                 if (done) return
                 done = true
                 spin.stop()
-                if (banner === v) hideBanner(animate = true)
+                if (banner === v) {
+                    hideBanner(animate = true)
+                    then?.let { handler.postDelayed(it, 450) }
+                } else then?.invoke()
             }
         }
+    }
+
+    // ---- actionable banner (DreamNotices.prompt) ----
+
+    /** The banner on screen has buttons and holds focus: what Back runs and where focus goes back to. */
+    private class Prompt(val view: View, val onBack: () -> Unit, val back: View?)
+    private var prompt: Prompt? = null
+
+    /**
+     * The standard banner (same disc, type, glass, place, motion and sound) with the notice's [choices] as
+     * buttons under its line. Focus lands on the first choice and stays inside the banner (Home is locked
+     * under it); a choice or Back ([handleBack]) takes the banner away, gives focus back, then runs. It
+     * stays until the viewer picks (no timer), and its icon swaps a few times, then rests on the smiley.
+     */
+    override fun showPrompt(n: DreamNotices.Notice, choices: List<DreamNotices.Choice>, sound: Boolean, onBack: () -> Unit): Boolean {
+        if (banner != null || prompt != null || !canShowBanner() || choices.isEmpty()) return false
+        val back = act.currentFocus
+        val row = LinearLayout(act).apply {
+            orientation = LinearLayout.HORIZONTAL
+            clipChildren = false
+            clipToPadding = false
+        }
+        val b = bannerView(n, row)
+        val v = b.root
+        for (c in choices) row.addView(kit.button(c.label, null, primary = c.primary) {
+            if (prompt?.view !== v) return@button
+            hideBanner(animate = true) // gives focus back first, so a page the choice opens returns there
+            c.run()
+        })
+        (row.getChildAt(row.childCount - 1).layoutParams as LinearLayout.LayoutParams).marginEnd = 0
+        prompt = Prompt(v, onBack, back)
+        host.setHomeFocusable(false)
+        slideIn(v)
+        row.getChildAt(0).requestFocus()
+        if (sound) host.chime()
+        glow(b)
+        startSwaps(b, n, emojiFor(n), max = PROMPT_SWAPS)
+        return true
     }
 
     private var swapRun: Runnable? = null
@@ -174,20 +217,22 @@ class DreamNoticesUi(private val act: Activity, private val host: Host) : DreamN
     /**
      * Like an Xbox 360 notification: every [SWAP_MS] while banner [b] is on screen, its icon morphs between the
      * notice's own [emoji] and the smiley, back and forth. A timer and one short animation per swap, nothing
-     * per frame in between; it stops when the banner leaves ([stopSwaps] from [hideBanner]).
+     * per frame in between; it stops when the banner leaves ([stopSwaps] from [hideBanner]), or after [max]
+     * swaps (an odd count, so it rests on the smiley) on a banner that stays until the viewer acts.
      */
-    private fun startSwaps(b: BannerViews, n: DreamNotices.Notice, emoji: String) {
+    private fun startSwaps(b: BannerViews, n: DreamNotices.Notice, emoji: String, max: Int = Int.MAX_VALUE) {
         stopSwaps()
         val smile = if (n.severity == DreamNotices.Severity.CRITICAL) GENTLE_SMILE else SMILE
         swapSmile = smile
         swapFace = b.face
         smiling = false
+        var left = max
         swapRun = object : Runnable {
             override fun run() {
                 if (banner !== b.root) { if (swapRun === this) swapRun = null; return }
                 smiling = !smiling
                 morph(b.face, if (smiling) smile else emoji)
-                handler.postDelayed(this, SWAP_MS)
+                if (--left > 0) handler.postDelayed(this, SWAP_MS) else if (swapRun === this) swapRun = null
             }
         }.also { handler.postDelayed(it, SWAP_MS) }
     }
@@ -230,6 +275,14 @@ class DreamNoticesUi(private val act: Activity, private val host: Host) : DreamN
         stopSwaps()
         val v = banner ?: return
         banner = null
+        val p = prompt
+        if (p != null && p.view === v) {
+            // An actionable banner: its buttons let go of focus, Home takes it back where it was.
+            prompt = null
+            (v as? ViewGroup)?.descendantFocusability = ViewGroup.FOCUS_BLOCK_DESCENDANTS
+            host.setHomeFocusable(true)
+            if (p.back != null && p.back.isAttachedToWindow) p.back.requestFocus()
+        }
         if (!animate) {
             swapFace = null
             v.animate().cancel()
@@ -311,7 +364,17 @@ class DreamNoticesUi(private val act: Activity, private val host: Host) : DreamN
         return SummaryGrid(grid, rows)
     }
 
-    private fun bannerView(n: DreamNotices.Notice): BannerViews {
+    /** A banner line that wraps in full (never cut with "…"), whole words only. */
+    private fun bannerLine(t: CharSequence, size: Float, color: Int, face: android.graphics.Typeface) =
+        kit.label(t, size, color, face, lines = 0).apply {
+            maxWidth = (BANNER_MAX_W - 90).dp
+            hyphenationFrequency = android.text.Layout.HYPHENATION_FREQUENCY_NONE
+            breakStrategy = android.text.Layout.BREAK_STRATEGY_BALANCED // two even lines, never one word left alone
+            setLineSpacing(2 * density, 1f)
+        }
+
+    /** [actions]: an actionable banner's buttons, under its line ([showPrompt]). */
+    private fun bannerView(n: DreamNotices.Notice, actions: View? = null): BannerViews {
         val accent = severityColor(n.severity)
         // The leading icon: the type's emoji in a small dark disc, the severity's soft halo behind it.
         val halo = View(act).apply { background = oval(Ui.alpha(accent, 0.34f)); alpha = 0.35f }
@@ -328,24 +391,30 @@ class DreamNoticesUi(private val act: Activity, private val host: Host) : DreamN
             addView(View(act).apply { background = oval(0xFF26262C.toInt()) }, FrameLayout.LayoutParams(30.dp, 30.dp, Gravity.CENTER))
             addView(face, FrameLayout.LayoutParams(30.dp, 30.dp, Gravity.CENTER))
         }
-        // One bold line and one short detail line, both near-white; the values in them colored by band.
-        val titleView = kit.label(colorize(n.title), 16.5f, Color.WHITE, kit.semibold).apply { maxWidth = (BANNER_MAX_W - 90).dp }
+        // One bold line and one short detail line, both near-white; the values in them colored by band. A longer
+        // line wraps to the next one, never cut.
+        val titleView = bannerLine(colorize(n.title), 16.5f, Color.WHITE, kit.semibold)
         val texts = LinearLayout(act).apply {
             orientation = LinearLayout.VERTICAL
+            clipChildren = false
+            clipToPadding = false
             addView(titleView)
             val grid = if (isSummary(n)) summaryGrid(n.body, 14f) else null
             if (grid != null) addView(grid.view, LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT).apply { topMargin = 6.dp })
-            else if (n.body.isNotBlank()) addView(kit.label(colorize(n.body), 13.5f, DETAIL, kit.medium).apply { maxWidth = (BANNER_MAX_W - 90).dp },
+            else if (n.body.isNotBlank()) addView(bannerLine(colorize(n.body), 13.5f, DETAIL, kit.medium),
                 LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT).apply { topMargin = 4.dp })
+            // Buttons sit under the words, their focus glow and lift inside the banner's padding.
+            if (actions != null) addView(actions, LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT).apply { topMargin = 14.dp })
         }
         val root = LinearLayout(act).apply {
             orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
+            // With buttons, the icon stays beside the title instead of floating to the middle of the stack.
+            gravity = if (actions != null) Gravity.TOP else Gravity.CENTER_VERTICAL
             clipChildren = false
             clipToPadding = false
             isFocusable = false
-            descendantFocusability = ViewGroup.FOCUS_BLOCK_DESCENDANTS
-            setPadding(10.dp, 9.dp, 20.dp, 9.dp)
+            descendantFocusability = if (actions != null) ViewGroup.FOCUS_AFTER_DESCENDANTS else ViewGroup.FOCUS_BLOCK_DESCENDANTS
+            if (actions != null) setPadding(10.dp, 10.dp, 22.dp, 16.dp) else setPadding(10.dp, 9.dp, 20.dp, 9.dp)
             background = Ui.rounded(act, SMOKE, 16, 1f, Ui.alpha(Color.WHITE, 0.10f))
             elevation = 16.dp.toFloat()
             addView(icon, LinearLayout.LayoutParams(36.dp, 36.dp))
@@ -472,6 +541,7 @@ class DreamNoticesUi(private val act: Activity, private val host: Host) : DreamN
 
     /** Back: the renewal sheet first, then the panel. True when it was ours. */
     fun handleBack(): Boolean {
+        prompt?.let { p -> hideBanner(animate = true); p.onBack(); return true }
         if (sheet != null) { closeSheet(); return true }
         if (panel != null) { closePanel(); return true }
         return false
@@ -574,7 +644,7 @@ class DreamNoticesUi(private val act: Activity, private val host: Host) : DreamN
     }
 
     /**
-     * A new Dream OS version (DreamUpdate): the notice ("A New Version of Dream OS Is Available", "Version 4.1")
+     * A new Dream OS version (DreamUpdate): the notice ("There's a New Version Available", "Dream OS 4.1")
      * with its three actions right on it: Install Now (the rainbow), View Changes and Later (not on Home again
      * until tomorrow; the notice stays here). Menu on any of them removes the notice.
      */
@@ -761,6 +831,8 @@ class DreamNoticesUi(private val act: Activity, private val host: Host) : DreamN
         const val SMILE = "🙂"        // slightly smiling face
         const val GENTLE_SMILE = "😊" // smiling face with smiling eyes (after a critical notice)
         private const val BANNER_MS = 6_000L
+        /** Icon swaps on a banner with buttons before it rests on the smiley (odd: it ends smiling). */
+        private const val PROMPT_SWAPS = 3
         private const val PANEL_W = 520
         /** Dark smoked glass. */
         private const val SMOKE = 0xF0141417.toInt()

@@ -14,15 +14,14 @@ import android.view.ViewGroup
 import android.view.ViewGroup.LayoutParams.MATCH_PARENT
 import android.view.ViewGroup.LayoutParams.WRAP_CONTENT
 import android.widget.FrameLayout
-import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.TextView
 
 /**
  * What the user sees of [DreamUpdate]:
- *  - [prompt]: the new-version notice on Home, an actionable card where banners slide in: "A New Version
- *    of Dream OS Is Available", "Version 4.1", "Would you like to install it now?", with Install Now (the
- *    rainbow), View Changes and Later (not again until tomorrow; it stays in the notifications list).
+ *  - [prompt]: the new-version notice on Home, the standard notification banner with its buttons:
+ *    "There's a New Version Available", "Dream OS 4.1", Install Now (the rainbow) and Later (not again
+ *    until tomorrow; it stays in the notifications list, with View Changes).
  *  - [open]: Settings › Updates: the version, its status, Install Now while a newer one waits, Check for
  *    Updates (with the last check), the Automatic Updates switch and What's New for the installed version.
  *    Installing shows its progress here, and guides the user to Fire TV's "Install unknown apps" switch
@@ -37,9 +36,8 @@ object UpdatePage {
     const val CHANGES = "changes"
 
     private var page: View? = null
-    private var card: View? = null
 
-    fun isOpen() = page != null || card != null
+    fun isOpen() = page != null
 
     // ---- Settings rows ----
 
@@ -87,92 +85,22 @@ object UpdatePage {
     // ---- the notice on Home ----
 
     /**
-     * The new-version notice on Home: a card where banners slide in, taking focus (Install Now first). Back is
-     * Later. Never shown over playback ([DreamUpdate] only calls it on a free Home).
+     * The new-version notice on Home: the standard notification banner ("There's a New Version Available",
+     * "Dream OS 4.3") with Install Now (the rainbow, focused) and Later on it (DreamNotices.prompt). Install Now
+     * opens Settings › Updates and starts the verified install; Later and Back keep it off Home until tomorrow
+     * (it stays in the notifications list, where View Changes is too). [sound]: the notification sound (the
+     * first time per version). Never shown over playback ([DreamUpdate] only calls it on a free Home). True
+     * when it showed.
      */
-    fun prompt(a: Activity, r: DreamUpdate.Release) {
-        if (isOpen()) return
-        val kit = CinemaKit(a)
-        val dp = { v: Int -> Ui.dp(a, v) }
-        val back = a.currentFocus
-        lateinit var root: Root
-        fun close(then: (() -> Unit)? = null) {
-            val v = root
-            if (card !== v) return
-            card = null
-            val c = v.getChildAt(0)
-            c.animate().translationX(dp(64).toFloat()).alpha(0f).setDuration(280).setInterpolator(Ui.EXIT).start()
-            v.animate().alpha(0f).setDuration(300).withEndAction { (v.parent as? ViewGroup)?.removeView(v) }.start()
-            if (then != null) then() else if (back != null && back.isAttachedToWindow) back.requestFocus()
-            DreamNotices.screenFreed()
-        }
-        fun later() { DreamUpdate.snooze(a, r); close() }
-        root = Root(a) { later() }
-        root.isClickable = true
-        root.setBackgroundColor(Color.argb(70, 0, 0, 0))
-        val icon = ImageView(a).apply {
-            setImageDrawable(SettingsGlyph.of(SettingsGlyph.SPARKLE).apply { setTint(Color.WHITE) })
-            val p = dp(10)
-            setPadding(p, p, p, p)
-            background = GradientDrawable().apply { shape = GradientDrawable.OVAL; setColor(Ui.alpha(Color.WHITE, 0.12f)) }
-        }
-        val texts = LinearLayout(a).apply {
-            orientation = LinearLayout.VERTICAL
-            addView(kit.label("A New Version of Dream OS Is Available", 17f, Color.WHITE, kit.semibold, lines = 2))
-            addView(kit.label("Version ${r.version}", 14f, Ui.alpha(Color.WHITE, 0.62f), kit.medium),
-                LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT).apply { topMargin = dp(4) })
-        }
-        val head = LinearLayout(a).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-            addView(icon, LinearLayout.LayoutParams(dp(40), dp(40)))
-            addView(texts, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f).apply { marginStart = dp(16) })
-        }
-        val install = kit.button("Install Now", null, primary = true) {
-            DreamNotices.markRead(a, DreamUpdate.NOTICE_PREFIX + r.version)
-            close { open(a, INSTALL) }
-        }
-        val buttons = LinearLayout(a).apply {
-            orientation = LinearLayout.HORIZONTAL
-            clipChildren = false
-            clipToPadding = false
-            addView(install)
-            addView(kit.button("View Changes", null, primary = false) {
-                DreamNotices.markRead(a, DreamUpdate.NOTICE_PREFIX + r.version)
-                close { open(a, CHANGES) }
-            })
-            addView(kit.button("Later", null, primary = false) { later() })
-        }
-        val c = LinearLayout(a).apply {
-            orientation = LinearLayout.VERTICAL
-            clipChildren = false
-            clipToPadding = false
-            setPadding(dp(24), dp(22), dp(24), dp(22))
-            background = GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM, intArrayOf(0xF5161619.toInt(), 0xF50E0E10.toInt())).apply {
-                cornerRadius = dp(22).toFloat()
-                setStroke(dp(1).coerceAtLeast(1), Ui.alpha(Color.WHITE, 0.10f))
-            }
-            elevation = dp(20).toFloat()
-            addView(head, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
-            addView(kit.label("Would you like to install it now?", 15f, Ui.alpha(Color.WHITE, 0.86f), kit.font, lines = 2),
-                LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { topMargin = dp(16); marginStart = dp(56) })
-            addView(buttons, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { topMargin = dp(18); marginStart = dp(56) })
-        }
-        root.addView(c, FrameLayout.LayoutParams(dp(560), WRAP_CONTENT, Gravity.TOP or Gravity.END).apply {
-            topMargin = dp(CinemaStyle.BAR_H + 12)
-            marginEnd = dp(44)
-        })
-        (a.window.decorView as FrameLayout).addView(root, MATCH_PARENT, MATCH_PARENT)
-        card = root
-        Ui.onDetach(root) { if (card === root) card = null } // Activity recreated with it open: it can open again
-        // In from the right like the notices' banners: a soft spring, a touch of growth, then focus on Install Now.
-        root.alpha = 0f
-        root.animate().alpha(1f).setDuration(Ui.OVERLAY_IN).setInterpolator(Ui.EASE).start()
-        c.translationX = dp(96).toFloat()
-        c.scaleX = 0.96f; c.scaleY = 0.96f
-        c.pivotX = dp(560).toFloat(); c.pivotY = 0f
-        c.animate().translationX(0f).scaleX(1f).scaleY(1f).setDuration(560).setInterpolator(Ui.SPRING).start()
-        install.requestFocus()
+    fun prompt(a: Activity, r: DreamUpdate.Release, sound: Boolean): Boolean {
+        val key = DreamUpdate.NOTICE_PREFIX + r.version
+        val n = DreamNotices.Notice(key, DreamNotices.TYPE_UPDATE, DreamUpdate.NOTICE_TITLE, DreamUpdate.noticeBody(r),
+            DreamNotices.Severity.INFO, System.currentTimeMillis(), false, null)
+        fun later() = DreamUpdate.snooze(a, r)
+        return DreamNotices.prompt(n, listOf(
+            DreamNotices.Choice("Install Now", primary = true) { DreamNotices.markRead(a, key); open(a, INSTALL) },
+            DreamNotices.Choice("Later") { later() },
+        ), sound) { later() }
     }
 
     // ---- the page ----
@@ -183,7 +111,6 @@ object UpdatePage {
      */
     fun open(a: Activity, action: String? = null, onClose: (() -> Unit)? = null) {
         if (page != null) return
-        card?.let { (it.parent as? ViewGroup)?.removeView(it); card = null }
         Page(a, action, onClose)
     }
 

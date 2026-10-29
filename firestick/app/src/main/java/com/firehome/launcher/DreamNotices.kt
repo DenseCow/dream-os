@@ -85,9 +85,14 @@ object DreamNotices {
         fun showBanner(n: Notice)
         /** A live banner (see [live]); null when it can't show now. */
         fun showLive(title: String): Live? = null
-        /** Something that covered the banners' place closed (the update card): waiting banners may show now. */
+        /** An actionable banner (see [prompt]); false when it can't show now. */
+        fun showPrompt(n: Notice, choices: List<Choice>, sound: Boolean, onBack: () -> Unit): Boolean = false
+        /** Something that covered the banners' place closed (Settings › Updates): waiting banners may show now. */
         fun screenFreed() {}
     }
+
+    /** One button on an actionable banner ([prompt]): [primary] wears the rainbow (one per banner, first). */
+    class Choice(val label: String, val primary: Boolean = false, val run: () -> Unit)
 
     /** A banner for work under way, changed in place when it's done ([live]). Main thread. */
     interface Live {
@@ -96,8 +101,8 @@ object DreamNotices {
          * sound; the banner leaves [holdMs] later, then [then] runs.
          */
         fun finish(title: String, good: Boolean, holdMs: Long, then: (() -> Unit)? = null)
-        /** Leaves quietly (nothing worth saying). */
-        fun dismiss()
+        /** Leaves quietly (nothing worth saying); [then] runs once it has gone. */
+        fun dismiss(then: (() -> Unit)? = null)
     }
 
     /**
@@ -105,6 +110,15 @@ object DreamNotices {
      * Updates…"), never stored. Null when Home isn't free or another banner is on screen. Main thread.
      */
     fun live(title: String): Live? = presenter?.get()?.showLive(title)
+
+    /**
+     * Notice [n] as the standard banner with its [choices] built in, for the remote (the new-version notice:
+     * Install Now and Later). It takes focus (the first choice), stays until one is picked, and Back runs
+     * [onBack]; [sound] plays the notification sound. Never stored by this call (post the notice for the list).
+     * False when Home isn't free or another banner is on screen. Main thread.
+     */
+    fun prompt(n: Notice, choices: List<Choice>, sound: Boolean, onBack: () -> Unit): Boolean =
+        presenter?.get()?.showPrompt(n, choices, sound, onBack) ?: false
 
     @Volatile private var app: Context? = null
     private val main = Handler(Looper.getMainLooper())
@@ -278,8 +292,9 @@ object DreamNotices {
             "Renew by ${DebridExpiry.shortDate(t + 3 * 86_400_000L)} to Keep Streaming",
             Severity.WARNING, Action("Renew", "renew:ad"))
         main.postDelayed({
+            // The longest line a real notice carries (three services to fall back on): it wraps, never cut.
             post(ctx, "demo:crit:$t", TYPE_EXPIRY, "Premiumize Premium Expired",
-                "Streaming Through AllDebrid Instead",
+                "Streaming Through Real-Debrid and AllDebrid and TorBox Instead",
                 Severity.CRITICAL, Action("Renew", "renew:pm"))
         }, 900)
         main.postDelayed({

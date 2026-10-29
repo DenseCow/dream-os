@@ -777,7 +777,12 @@ class CinemaEndCap(kit: CinemaKit, onTop: () -> Unit) : FlatLinear(kit.ctx), Cin
         addView(View(context).apply {
             background = GradientDrawable(GradientDrawable.Orientation.LEFT_RIGHT, intArrayOf(Color.TRANSPARENT, Ui.alpha(kit.text, 0.28f), Color.TRANSPARENT))
         }, LinearLayout.LayoutParams(Ui.dp(context, 420), Math.max(1, Ui.dp(context, 1))))
-        addView(kit.label("You're All Caught Up", 13.5f, kit.dim, kit.medium, tracking = 0.02f).apply { setPadding(0, Ui.dp(context, 16), 0, Ui.dp(context, 16)) })
+        // Its own width, centered: a vertical LinearLayout's default params stretch it across the screen with
+        // the words at its start, cut by the screen's left edge (4.3).
+        addView(kit.label("You're All Caught Up", 13.5f, kit.dim, kit.medium, tracking = 0.02f).apply {
+            gravity = Gravity.CENTER
+            setPadding(0, Ui.dp(context, 16), 0, Ui.dp(context, 16))
+        }, LinearLayout.LayoutParams(LayoutParams.WRAP_CONTENT, LayoutParams.WRAP_CONTENT))
         (button.layoutParams as LinearLayout.LayoutParams).marginEnd = 0
         addView(button)
     }

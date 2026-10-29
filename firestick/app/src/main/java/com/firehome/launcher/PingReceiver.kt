@@ -100,7 +100,7 @@ class PingReceiver : BroadcastReceiver() {
         }
         if (intent.getBooleanExtra("seasonCheck", false)) { Seasons.selfCheck(windows = true); return }
         // Self-updater for the developer (DreamUpdate.dev): ... PingReceiver --es update check [--es repo owner/name | build]
-        // | prompt | install | reset   (then: adb logcat -s FireHome | grep Update)
+        // | prompt | install | reset | installed ("You're Up To Date!" banner)   (then: adb logcat -s FireHome | grep Update)
         intent.getStringExtra("update")?.let { what -> DreamUpdate.dev(context.applicationContext, what, intent.getStringExtra("repo")); return }
         // Notification preview for the developer: ... PingReceiver --es notice demo   (or clear-demo; check: runs the premium check now)
         intent.getStringExtra("notice")?.let { what ->

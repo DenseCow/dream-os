@@ -36,10 +36,10 @@ import java.util.TimeZone
  * silently, and nothing installs while something plays ([playing]).
  *
  * Automatic: [onHome] (MainActivity, a few seconds after Home shows) checks at most once a day. A new
- * version posts a notice ("A New Version of Dream OS Is Available", "Version 4.1", no change list), kept in
- * the notifications list until the user updates or removes it, and badges Settings. On Home (never over
- * playback) it shows as an actionable card ([UpdatePage.prompt]): "Would you like to install it now?" with
- * Install Now, View Changes and Later (Later = not again until tomorrow; it stays in the list). With
+ * version posts a notice ("There's a New Version Available", "Dream OS 4.1", no change list), kept in the
+ * notifications list until the user updates or removes it, and badges Settings. On Home (never over
+ * playback) it shows as the standard notification banner with Install Now and Later on it
+ * ([UpdatePage.prompt]; Later = not again until tomorrow; it stays in the list, with View Changes). With
  * Automatic Updates on, the update is downloaded in the background meanwhile, so Install Now goes straight
  * to Fire OS's install confirmation. Settings › Updates is [UpdatePage.open].
  */
@@ -54,6 +54,7 @@ object DreamUpdate {
     private const val K_LATEST = "latest"         // JSON: the newest release seen (newer or not)
     private const val K_SNOOZE = "snooze"         // "version:until": Later on the notice (until tomorrow)
     private const val K_INSTALLING = "installing" // version handed to the installer (its notice once it's in)
+    private const val K_SOUNDED = "sounded"       // version whose notice has played the notification sound
     private const val K_READY = "ready"           // the verified download: "name:length:modified"
     private const val K_MINE = "mine_notes"       // the installed version's notes: "version\n" + notes
     private const val K_DEV_REPO = "dev_repo"     // developer override (PingReceiver), else BuildConfig
@@ -63,6 +64,9 @@ object DreamUpdate {
     const val NOTICE_PREFIX = "update:"
     /** The notice's action target (DreamNoticesUi: Install and View Changes). */
     const val TARGET = "update"
+    /** The new-version notice's title; its line is [noticeBody]. */
+    const val NOTICE_TITLE = "There's a New Version Available"
+    fun noticeBody(r: Release) = "Dream OS ${r.version}"
 
     const val MSG_UNVERIFIED = "This update couldn't be verified, so it wasn't installed."
     const val MSG_PERMISSION = "Allow Dream OS to Install Updates"
@@ -386,13 +390,14 @@ object DreamUpdate {
 
     /**
      * "There's a New Version Available" / "Dream OS 4.3": kept in the notifications list (Install Now, View Changes,
-     * Later) until Dream OS is updated or the user removes it. Its banner and sound play once (owner), waiting for Home
-     * and for the update card (never over playback). One per version; a newer version's notice replaces an older one.
+     * Later) until Dream OS is updated or the user removes it. One per version; a newer version's notice replaces an
+     * older one. No banner of its own: on a free Home the notice shows as one banner with its buttons
+     * ([maybePrompt], [UpdatePage.prompt]), with the notification sound the first time only (owner).
      */
     private fun postNotice(ctx: Context, r: Release) {
         for (n in DreamNotices.all(ctx)) if (n.key.startsWith(NOTICE_PREFIX) && n.key != NOTICE_PREFIX + r.version) DreamNotices.dismiss(ctx, n.key)
-        DreamNotices.post(ctx, NOTICE_PREFIX + r.version, DreamNotices.TYPE_UPDATE, "There's a New Version Available",
-            "Dream OS ${r.version}", DreamNotices.Severity.INFO, DreamNotices.Action("Install Now", TARGET))
+        DreamNotices.post(ctx, NOTICE_PREFIX + r.version, DreamNotices.TYPE_UPDATE, NOTICE_TITLE,
+            noticeBody(r), DreamNotices.Severity.INFO, DreamNotices.Action("Install Now", TARGET), banner = false)
     }
 
     // ---- download and verify ----
@@ -594,7 +599,7 @@ object DreamUpdate {
             .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK)
         return try {
             app.startActivity(i)
-            // Cancelled on Fire TV's screen: the notice card doesn't come straight back on Home (30 minutes).
+            // Cancelled on Fire TV's screen: the new-version notice doesn't come straight back on Home (30 minutes).
             prefs(app).edit().putString(K_SNOOZE, "${r.version}:${System.currentTimeMillis() + 30 * 60_000L}").apply()
             Log.w(TAG, "Update: v${r.version} handed to the installer")
             true
@@ -645,8 +650,8 @@ object DreamUpdate {
      * The launch check: once Home has settled (no intro, setup, profile picker, screensaver, player or other
      * banner: [homeFree], tried again every few seconds until it is), Dream Cinema shows a silent live banner
      * of the notification system (DreamNotices.live: "Checking for Updates…", the rainbow loader in its icon
-     * slot) that turns in place into "You're Up to Date!" (green, silent) or "Update Available · Version 4.1"
-     * (red, with the notification sound), after which the update card takes over. A failed check just fades.
+     * slot) that turns in place into "You're Up To Date!" (green, silent). A new version: it leaves quietly and
+     * the new-version notice takes its place (one banner, with its buttons). A failed check just fades.
      */
     private fun launchCheck(a: Activity, homeFree: () -> Boolean) {
         val app = a.applicationContext
@@ -672,8 +677,8 @@ object DreamUpdate {
             main.postDelayed({
                 when {
                     failed -> live?.dismiss()
-                    r == null -> live?.finish("You're Up to Date!", good = true, holdMs = 2_500)
-                    live != null -> live.finish("Update Available  ·  Version ${r.version}", good = false, holdMs = 3_200) { maybePrompt(a, r, homeFree) }
+                    r == null -> live?.finish("You're Up To Date!", good = true, holdMs = 2_500)
+                    live != null -> live.dismiss { maybePrompt(a, r, homeFree) }
                     else -> maybePrompt(a, r, homeFree)
                 }
             }, wait)
@@ -706,11 +711,22 @@ object DreamUpdate {
         return s.substringBeforeLast(':') == r.version && System.currentTimeMillis() < (s.substringAfterLast(':').toLongOrNull() ?: 0L)
     }
 
-    /** The new-version card, only on a free Home (no player, nothing opened over Home) and not after Later today. */
-    private fun maybePrompt(a: Activity, r: Release, homeFree: () -> Boolean) {
+    /** Bumped by every new [maybePrompt] call: an older call's retries stop. */
+    private var promptGen = 0
+
+    /**
+     * The new-version notice with its buttons, only on a free Home (no player, nothing opened over Home) and not
+     * after Later today. Another banner on screen (the account summary, say): it tries again every few seconds
+     * for about a minute, then waits for the next Home.
+     */
+    private fun maybePrompt(a: Activity, r: Release, homeFree: () -> Boolean, gen: Int = ++promptGen, tries: Int = 0) {
         val app = a.applicationContext
-        if (a.isFinishing || a.isDestroyed || playing() || !homeFree() || UpdatePage.isOpen()) return
+        if (gen != promptGen || a.isFinishing || a.isDestroyed || playing() || UpdatePage.isOpen()) return
         if (available(app)?.version != r.version || snoozed(app, r)) return
+        if (!homeFree()) {
+            if (tries < 20) main.postDelayed({ maybePrompt(a, r, homeFree, gen, tries + 1) }, 3_000)
+            return
+        }
         // The notice was removed from the list: the user is done with this version.
         if (DreamNotices.find(app, NOTICE_PREFIX + r.version) == null) return
         // Focus must be on Home itself (not Settings, a menu or a sheet over it).
@@ -719,8 +735,11 @@ object DreamUpdate {
         var inside = false
         while (v != null) { if (v === content) { inside = true; break }; v = v.parent as? android.view.View }
         if (!inside) return
+        val p = prefs(app)
+        val sound = p.getString(K_SOUNDED, null) != r.version
+        if (!UpdatePage.prompt(a, r, sound)) return
+        if (sound) p.edit().putString(K_SOUNDED, r.version).apply()
         Log.w(TAG, "Update: showing the v${r.version} notice on Home")
-        UpdatePage.prompt(a, r)
     }
 
     /** First start after an update: a notice once; the download and the old version's notice go. */
@@ -733,15 +752,21 @@ object DreamUpdate {
         DreamNotices.dismissPrefix(ctx, NOTICE_PREFIX)
         latest(ctx)?.takeIf { !newer(it.version, currentVersion()) && !newer(currentVersion(), it.version) }?.let { setMine(ctx, it.version, it.notes) }
         Log.w(TAG, "Update: now on v${currentVersion()}")
-        DreamNotices.post(ctx, "updated:${currentVersion()}", DreamNotices.TYPE_UPDATE, "You're Up To Date!",
-            "Dream OS ${currentVersion()} is installed. See what's new in Settings  ›  Updates.", DreamNotices.Severity.INFO, null, store = false)
+        postInstalled(ctx, "updated:${currentVersion()}")
+    }
+
+    /** "You're Up To Date!" / "Dream OS 4.3 is installed.": a banner only. */
+    private fun postInstalled(ctx: Context, key: String) {
+        DreamNotices.post(ctx, key, DreamNotices.TYPE_UPDATE, "You're Up To Date!",
+            "Dream OS ${currentVersion()} is installed.", DreamNotices.Severity.INFO, null, store = false)
     }
 
     // ---- developer ----
 
     /**
      * PingReceiver (adb only): `--es update check [--es repo owner/name]` checks now (against a test
-     * repository; `--es repo build` goes back to the build's own), `prompt` shows the notice card again at the next Home (forgets Later),
+     * repository; `--es repo build` goes back to the build's own), `prompt` shows the new-version notice again at the
+     * next Home (forgets Later and that its sound played), `installed` shows the "You're Up To Date!" banner now,
      * `install` downloads and opens the installer, `reset` forgets every check, question and download,
      * `launch` runs the launch check (its "Checking for Updates…" notice) again at the next Home.
      * Then: adb logcat -s FireHome | grep Update
@@ -760,12 +785,13 @@ object DreamUpdate {
                 val r = checkNow(app) { Log.w(TAG, "Update: [dev] $it") }
                 if (r != null && autoEnabled(app)) prepare(app, r) { Log.w(TAG, "Update: [dev] $it") }
             }
-            "prompt" -> { p.edit().remove(K_SNOOZE).apply(); lastAuto = 0L; lastAutoDownload = 0L }
+            "prompt" -> { p.edit().remove(K_SNOOZE).remove(K_SOUNDED).apply(); lastAuto = 0L; lastAutoDownload = 0L }
+            "installed" -> postInstalled(app, "updated:dev:${System.currentTimeMillis()}")
             // The launch check again at the next Home (as if Dream OS had just started).
             "launch" -> { launchChecked = false; launchTries = 0 }
             "install" -> Net.run { available(app)?.let { r -> install(app, r) { Log.w(TAG, "Update: [dev] $it") } } ?: Log.w(TAG, "Update: [dev] nothing to install") }
             "reset" -> {
-                p.edit().remove(K_LAST).remove(K_ERROR).remove(K_LATEST).remove(K_SNOOZE).remove(K_INSTALLING).remove(K_MINE).apply()
+                p.edit().remove(K_LAST).remove(K_ERROR).remove(K_LATEST).remove(K_SNOOZE).remove(K_SOUNDED).remove(K_INSTALLING).remove(K_MINE).apply()
                 cleanFiles(app, keep = null)
                 DreamNotices.dismissPrefix(app, NOTICE_PREFIX)
                 DreamNotices.forget(app, NOTICE_PREFIX)
