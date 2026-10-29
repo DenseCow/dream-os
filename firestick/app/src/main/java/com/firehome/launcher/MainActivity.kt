@@ -1356,7 +1356,10 @@ class MainActivity : Activity() {
 
     private val onHistoryChanged: () -> Unit = { shell?.historyChanged(); titlePage?.historyChanged() }
 
-    private fun resumeWatching(e: WatchHistory.Entry) {
+    private fun resumeWatching(card: WatchHistory.Entry) {
+        // The history as it is now, never the card's copy: a card built before the last viewing still holds the
+        // episode and spot it had then (an older episode, a quarter in), and that's not where the viewer is.
+        val e = WatchHistory.entries(this).firstOrNull { it.key == card.key } ?: card
         if (!WatchHistory.ours(e)) {
             if (!AppWatch.resume(this, e)) Toast.makeText(this, "Couldn't open that app", Toast.LENGTH_SHORT).show()
             return
@@ -2351,7 +2354,7 @@ class MainActivity : Activity() {
                     InstantPlay.setEnabled(this, !InstantPlay.enabled(this)); refreshSettings()
                 },
                 // Dream Player's play flow (PlayFlow / PostPlay).
-                I("Autoplay Next Episode", null, R.drawable.ic_play, PlayFlow.autoplayNext(this), "Up Next Counts Down at the Credits") {
+                I("Autoplay Next Episode", null, R.drawable.ic_play, PlayFlow.autoplayNext(this), "Up Next Counts Down in the Final Minute") {
                     PlayFlow.setAutoplayNext(this, !PlayFlow.autoplayNext(this)); refreshSettings()
                 },
                 I("Are You Still Watching?", null, R.drawable.ic_moon, PlayFlow.stillWatchingCheck(this), "Asks After 3 Episodes in a Row") {

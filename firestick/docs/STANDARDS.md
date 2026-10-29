@@ -112,6 +112,13 @@ because something broke or looked wrong before. Check new work against the **che
 - **Plainly bad titles** (under 5.0 with 100+ votes, `RowMix.poorlyRated`) never make a discovery row.
 - **Continue Watching is real watching:** a title joins it only after 90 s of actual playback in Dream Player (seeks
   and skips add nothing, `DreamPlayerActivity.realWatchedMs`); one already on the row keeps saving as before.
+- **Continue Watching shows where the viewer really is:** the row is rebuilt whenever the history changes, focus
+  resting on it included (focus stays on the same title), and a card plays the history as stored when pressed, never
+  its own copy. A show never moves back by itself: an older episode's finish, a Trakt paused point or a late scrobble
+  never replaces a later episode (`WatchHistory.later`), and an older episode started by hand plays 90 s for real
+  before it takes the row back. A queued Trakt paused point the history has moved past is dropped, never sent late.
+- **The Up Next card shows only in an episode's last minute** (`PostPlay` `UP_NEXT_LEAD_MS`), whatever the credits
+  markers, estimates or fallbacks say, for short and long episodes alike.
 - **Where playback starts is the watch history's call** (`PlayFlow.historyStart`), never a spot a page, card or button
   captured earlier: a finished, removed or moved-on title starts from the beginning. A page that shows Resume /
   progress redoes it on `TitlePage.historyChanged` (a details page waits behind the player while a movie ends).

@@ -43,9 +43,9 @@ object PostPlayStyle {
 /**
  * Up next countdown, "Are you still watching?", and end-of-movie recommendations.
  *
- * Episodes: about 90 s before the credits ([SkipMarkers], with a fallback near the end) the next
- * episode is looked up (TMDB season data, rolling over to the next season) and its still fetched,
- * and its stream found ahead; at the credits an Up next card counts down 10 s (OK plays now, BACK keeps the
+ * Episodes: about 90 s before the card the next episode is looked up (TMDB season data, rolling over to
+ * the next season) and its still fetched, and its stream found ahead; in the episode's last minute (never
+ * sooner, whatever the credits markers say) an Up next card counts down 10 s (OK plays now, BACK keeps the
  * credits), then [PlayerHost.playNext]. At the end of a series, or for movies, "More like this"
  * (TMDB recommendations) with Watch credits / Back to browse. After 3 episodes in a row that the
  * countdown started with no key pressed, the next one pauses and asks "Are you still watching?".
@@ -130,7 +130,7 @@ class PostPlayController(private val host: PlayerHost) {
             }
             return
         }
-        val c = creditsAt ?: return
+        val c = cardAt(r, dur, creditsAt ?: return)
         if (!prepared && !preparing && pos >= c - 90_000) prepare(r)
         when {
             // Seeked back before the credits: put the card away; it comes back at the credits.
@@ -139,6 +139,14 @@ class PostPlayController(private val host: PlayerHost) {
             mode == Mode.NONE && !dismissed && pos >= c -> showPostPlay(r)
         }
     }
+
+    /**
+     * Where the card comes up. An episode's Up Next only in its last minute ([UP_NEXT_LEAD_MS] before the end), never
+     * before, whatever the credits look says (a marker, an estimate, the fallback) and however long the episode is.
+     * A movie's More Like This at its credits.
+     */
+    private fun cardAt(r: PlaybackRequest, dur: Long, credits: Long): Long =
+        if (r.type == "episode") (dur - UP_NEXT_LEAD_MS).coerceAtLeast(dur / 2) else credits
 
     /** Without markers: the last 30 s of an episode, the last ~6 % (at most 3 min) of a movie. */
     private fun fallbackCredits(r: PlaybackRequest, dur: Long): Long =
@@ -603,6 +611,8 @@ class PostPlayController(private val host: PlayerHost) {
     }
 
     private companion object {
+        /** An episode's Up Next card shows this long before the end (owner, 2026-10-28: about a minute, never sooner). */
+        const val UP_NEXT_LEAD_MS = 60_000L
         /** Cinema's Up Next pills, left to right. */
         const val UP_NEXT = 0
         const val UP_CREDITS = 1

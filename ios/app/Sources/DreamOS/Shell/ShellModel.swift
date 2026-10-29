@@ -67,6 +67,17 @@ final class ShellModel {
         PlayLauncher.play(item.playRequest) { [weak self] message in self?.playMessage = message }
     }
 
+    /// A Continue Watching card: plays the watch history as stored now, never the card's copy (a card built before the
+    /// last viewing still holds the episode and spot it had then: an older episode, a quarter in). fire-home
+    /// `MainActivity.resumeWatching`.
+    func resume(_ item: CatalogItem) {
+        let key = item.title.key
+        Task { @MainActor [weak self] in
+            let now = await Services.shared.history.entry(for: key)
+            self?.play(now.map { ContinueCard.item($0) } ?? item)
+        }
+    }
+
     // ---- My List ----
 
     func refreshMyList() async {

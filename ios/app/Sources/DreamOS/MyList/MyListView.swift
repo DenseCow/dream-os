@@ -72,7 +72,7 @@ struct MyListView: View {
 
         if !inProgress.isEmpty {
             section("Continue Watching", inProgress.map(\.title), count: nil, progress: progress) { t in
-                if let e = inProgress.first(where: { $0.title.key == t.key }) { shell.play(ContinueCard.item(e)) }
+                if let e = inProgress.first(where: { $0.title.key == t.key }) { shell.resume(ContinueCard.item(e)) }
             }
         }
         if type != 2, !movies.isEmpty { section("Movies", movies, count: movies.count, progress: [:]) { shell.open($0) } }

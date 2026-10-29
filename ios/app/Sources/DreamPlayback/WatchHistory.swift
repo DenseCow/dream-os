@@ -71,6 +71,17 @@ public final class WatchHistory: @unchecked Sendable {
     /// Played in Dream OS itself (any source that isn't an app's package name): resumed by the play flow.
     public static func ours(_ e: Entry) -> Bool { !e.source.contains(".") }
 
+    /// [e] (a show's entry) is for an episode after S[season]E[episode]: the viewer has moved on past that one
+    /// (WatchHistory.kt `later`).
+    public static func later(_ e: Entry, _ season: Int, _ episode: Int) -> Bool {
+        e.isShow && (e.season > season || (e.season == season && e.episode > episode))
+    }
+
+    /// Per profile and title, the stamp (`HistoryEntry.updatedAt`, set when the player made the report) of the newest
+    /// report seen. `record` waits on TMDB before it writes, so two saves can land out of order; one older than a
+    /// report already seen is dropped, so a periodic save never overwrites a newer pause / exit save.
+    private var newestStamp: [String: Date] = [:]
+
     private func load() -> [Entry] { DreamStore.shared.get([Entry].self, "history", perProfile: true) ?? [] }
 
     private func save(_ list: [Entry]) {
@@ -170,13 +181,22 @@ public final class WatchHistory: @unchecked Sendable {
         let next: Entry? = progress >= Self.finished && isShow ? await nextEpisode(base) : nil
         if progress >= Self.finished { Self.markWatched(base) } // the Watched pill (outside the lock: the ledger reads history)
         let token = UUID()
+        let stampKey = DreamStore.shared.profileId + "|" + base.key
         let skipped: Bool = lock.withLock {
+            // Out of order (an older save that waited longer on TMDB than a newer one): the newer one stands.
+            if let seen = newestStamp[stampKey], h.updatedAt < seen {
+                plog.info("watch history: older save for \(base.title.name, privacy: .public) S\(season)E\(episode) dropped (a newer one landed first)")
+                return false
+            }
+            if newestStamp.count > 200 { newestStamp.removeAll() } // only the titles playing now matter
+            newestStamp[stampKey] = h.updatedAt
             var list = load()
             let old = list.first { $0.key == base.key }
             // Keep the player that played it when this report doesn't know.
             if base.player == nil, let o = old, o.player != nil, o.source == base.source { base.player = o.player }
-            // Credits still rolling after we already queued the next episode: keep the Up Next card.
-            if let o = old, isShow, o.upNext, progress >= Self.finished, o.season > season || (o.season == season && o.episode > episode) { return false }
+            // An older episode finishing (credits still rolling after the next one was queued, a late save) never takes
+            // the show back from a later one: the Up Next card, or the later episode's own spot, stays.
+            if let o = old, isShow, !o.hidden, progress >= Self.finished, Self.later(o, season, episode) { return false }
             // Ignore a peek (under 90 s) at something that isn't on the row yet.
             if (old == nil || old!.hidden) && h.positionMs < 90_000 && progress < Self.finished { return false }
             // Same thing still playing and barely moved: skip the write (replayed a minute later).
@@ -232,12 +252,15 @@ public final class WatchHistory: @unchecked Sendable {
 
     /// Trakt sync: titles watched or paused on other devices, already matched to TMDB, with `updatedAt` = when that
     /// happened there. Last write wins: one replaces ours only when it's newer. Finished ones leave the row (a movie) or
-    /// move on to Up Next (a show). Returns how many entries changed.
+    /// move on to Up Next (a show). A show never goes back: an earlier episode's leftover progress or finish (a paused
+    /// point Trakt kept, a scrobble sent late) never replaces a later episode we have, in progress, up next or finished.
+    /// Returns how many entries changed.
     @discardableResult
     public func mergeRemote(_ items: [Entry]) async -> Int {
         func newer(_ e: Entry, _ old: Entry?) -> Bool {
             guard let old else { return true }
             return e.updatedAt > old.updatedAt && !(old.season == e.season && old.episode == e.episode && e.updatedAt - old.updatedAt < Self.echoMs)
+                && !Self.later(old, e.season, e.episode)
         }
         let current = Dictionary(lock.withLock { load() }.map { ($0.key, $0) }, uniquingKeysWith: { a, _ in a })
         var resolved: [Entry] = []

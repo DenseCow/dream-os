@@ -54,6 +54,9 @@ struct TraktOp: Codable, Sendable {
     var progress: Double?
     /// pb_remove: Trakt's playback id.
     var pbId: Int64?
+    /// progress: when the pause happened here (ms). Trakt stamps a paused point with the time it's sent, so one sent
+    /// late is dropped once the history moved past it (`Trakt.staleProgress`). nil: queued by an older build.
+    var when: Int64? = nil
 
     /// Newest wins for the same title and kind.
     var sameKey: String {

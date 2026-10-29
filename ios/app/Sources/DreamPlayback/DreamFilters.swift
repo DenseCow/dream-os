@@ -198,47 +198,131 @@ public enum HDRPreference {
     public static var active: Bool { chosen && heldBack == nil }
 }
 
-/// The phone's network path for source choices (metered = cellular, hotspot, Low Data Mode).
+/// The phone's network path for source choices. Two separate questions:
+/// - metered (`unmetered` false): cellular, personal hotspot or other expensive Wi-Fi, Low Data Mode, offline. For
+///   bandwidth caution only (Prefer HDR held back).
+/// - mobile data (`mobileData`): the path actually uses the cellular radio and not Wi-Fi or wired, decided by the
+///   interface the path uses, never by `isExpensive` / `isConstrained`. Only this drives Cellular Data Saver (the
+///   question, the saver itself, its session). Expensive Wi-Fi (a hotspot), Low Data Mode and offline moments are
+///   never mobile data (owner, 2026-10-28: "on Wi-Fi and it's giving me the data saver pop-up"); Wi-Fi with no
+///   internet that falls back to cellular, and Wi-Fi Assist, are (they really spend mobile data; owner, same day). A
+///   mobile-data stretch counts once it has held `settleMs`, so a blip while Wi-Fi joins (launch, unlock, roaming)
+///   never starts a session; a working Wi-Fi path ends one.
 final class PlaybackPath: @unchecked Sendable {
     static let shared = PlaybackPath()
+    /// How long the path must stay on mobile data before Dream treats it as a mobile-data session.
+    static let settleMs: Int64 = 2_500
+    enum Kind: Equatable { case wifi, cellular, none }
     private let monitor = NWPathMonitor()
+    private let queue = DispatchQueue(label: "dreamos.playback.path", qos: .utility)
     private let lock = NSLock()
     private var free = true
+    private var kind = Kind.none
+    /// When the current mobile-data stretch began (Mono ms); nil when not on mobile data.
+    private var cellSince: Int64?
+    /// Bumped on every kind change, so a settle check scheduled for an older stretch does nothing.
+    private var generation = 0
+    /// The saver was told this mobile-data stretch settled (a session runs); false once Wi-Fi is back.
+    private var sessionCell = false
     private var about = "not known yet"
     /// Signalled by the monitor's first answer: the first lookup after launch reads the real path, not the default.
     private var seen = false
     private let first = DispatchSemaphore(value: 0)
     private init() {
-        monitor.pathUpdateHandler = { [weak self] p in
-            guard let self else { return }
-            let ok = Self.unmetered(p)
-            let text = Self.describe(p)
-            let (wasFirst, flipped) = self.lock.withLock { () -> (Bool, Bool) in
-                let flip = self.seen && self.free != ok
-                self.free = ok
-                self.about = text
-                defer { self.seen = true }
-                return (!self.seen, flip)
-            }
-            if wasFirst { self.first.signal() }
-            if flipped || wasFirst { Log.core.info("Sources: network now \(text, privacy: .public)") }
-            // Wi-Fi <-> mobile data: links remembered under the other network's rules are dropped or wait (Dream Core).
-            // Cellular Data Saver's mobile-data session: begins (Ask Me asks) or ends (back on Wi-Fi, the saver turns off).
-            if flipped || wasFirst { CellularSaver.networkSeen(unmetered: ok, first: wasFirst) }
-            if flipped { NativeResolver.shared.networkChanged(unmetered: ok) }
-        }
-        monitor.start(queue: DispatchQueue(label: "dreamos.playback.path", qos: .utility))
+        monitor.pathUpdateHandler = { [weak self] p in self?.update(p) }
+        monitor.start(queue: queue)
     }
+
+    private func update(_ p: NWPath) {
+        let ok = Self.unmetered(p)
+        let k = Self.kind(p)
+        let text = Self.describe(p)
+        let now = Mono.now()
+        let (wasFirst, meterFlip, kindFlip, gen, endSession) = lock.withLock { () -> (Bool, Bool, Bool, Int, Bool) in
+            let wasFirst = !seen
+            let meterFlip = seen && free != ok
+            let kindFlip = !seen || kind != k
+            free = ok
+            about = text
+            seen = true
+            var end = false
+            if kindFlip {
+                kind = k
+                generation += 1
+                cellSince = k == .cellular ? now : nil
+                // Wi-Fi (or wired) is back: the mobile-data session ends. Offline keeps it (Wi-Fi decides).
+                if k == .wifi && sessionCell { sessionCell = false; end = true }
+            }
+            return (wasFirst, meterFlip, kindFlip, generation, end)
+        }
+        if wasFirst { first.signal() }
+        if wasFirst || meterFlip || kindFlip { Log.core.info("Sources: network now \(text, privacy: .public)") }
+        if k == .wifi && (wasFirst || endSession) {
+            // Cellular Data Saver turns itself off (quiet notice when it was on).
+            CellularSaver.networkSeen(mobileData: false, first: wasFirst)
+        }
+        // Links found under the saver are dropped (the next Play ranks at full quality; Dream Core).
+        if endSession { NativeResolver.shared.networkChanged(unmetered: true) }
+        if kindFlip && k == .cellular {
+            queue.asyncAfter(deadline: .now() + .milliseconds(Int(Self.settleMs))) { [weak self] in self?.settle(gen) }
+        }
+    }
+
+    /// The settle check for a mobile-data stretch: still the same stretch and the path read fresh still says mobile data.
+    private func settle(_ gen: Int) {
+        let fresh = monitor.currentPath
+        // 0: the session starts; 1: it was already running (back from an offline moment); 2: mobile data didn't hold.
+        let r: Int = lock.withLock {
+            guard generation == gen, kind == .cellular, Self.kind(fresh) == .cellular else { return 2 }
+            if sessionCell { return 1 }
+            sessionCell = true
+            return 0
+        }
+        if r == 1 { return }
+        guard r == 0 else {
+            Log.core.info("Sources: cellular saver: mobile data did not hold \(Self.settleMs, privacy: .public) ms (now \(Self.describe(fresh), privacy: .public)); no session")
+            return
+        }
+        Log.core.info("Sources: cellular saver: on mobile data for \(Self.settleMs, privacy: .public) ms (\(Self.describe(fresh), privacy: .public))")
+        CellularSaver.networkSeen(mobileData: true, first: false)
+        NativeResolver.shared.networkChanged(unmetered: false)
+    }
+
     /// Metered: cellular (also when the path names it without `isExpensive`), personal hotspot, Low Data Mode.
     private static func unmetered(_ p: NWPath) -> Bool {
         p.status == .satisfied && !p.isExpensive && !p.isConstrained && !p.usesInterfaceType(.cellular)
     }
-    /// "Wi-Fi, unmetered (expensive no, constrained no)" for the log.
-    private static func describe(_ p: NWPath) -> String {
-        let kind = p.status != .satisfied ? "offline" : p.usesInterfaceType(.wifi) ? "Wi-Fi" : p.usesInterfaceType(.cellular) ? "cellular"
+    /// By the interface the satisfied path uses: Wi-Fi or wired in use = Wi-Fi; cellular in use without either = mobile
+    /// data (also when a Wi-Fi with no internet is joined but the traffic goes over cellular, or Wi-Fi Assist).
+    /// `isExpensive` / `isConstrained` never decide this; not satisfied = neither.
+    private static func kind(_ p: NWPath) -> Kind {
+        guard p.status == .satisfied else { return .none }
+        if p.usesInterfaceType(.wifi) || p.usesInterfaceType(.wiredEthernet) { return .wifi }
+        return p.usesInterfaceType(.cellular) ? .cellular : .none
+    }
+    private static func typeName(_ t: NWInterface.InterfaceType) -> String {
+        switch t {
+        case .wifi: return "wifi"
+        case .cellular: return "cellular"
+        case .wiredEthernet: return "wired"
+        case .loopback: return "loopback"
+        case .other: return "other"
+        @unknown default: return "unknown"
+        }
+    }
+    /// "Wi-Fi, unmetered, not mobile data (uses wifi; available wifi, cellular; expensive no, constrained no)".
+    static func describe(_ p: NWPath) -> String {
+        let k = p.status != .satisfied ? "offline" : p.usesInterfaceType(.wifi) ? "Wi-Fi" : p.usesInterfaceType(.cellular) ? "cellular"
             : p.usesInterfaceType(.wiredEthernet) ? "wired" : "other"
         let yn = { (b: Bool) in b ? "yes" : "no" }
-        return "\(kind), \(unmetered(p) ? "unmetered" : "metered") (expensive \(yn(p.isExpensive)), constrained \(yn(p.isConstrained)))"
+        let types: [NWInterface.InterfaceType] = [.wifi, .cellular, .wiredEthernet, .other]
+        let used = types.filter { p.usesInterfaceType($0) }.map(typeName)
+        let avail = p.availableInterfaces.map { typeName($0.type) }
+        let joined = kind(p) == .cellular && p.availableInterfaces.contains { $0.type == .wifi || $0.type == .wiredEthernet }
+        let md = kind(p) == .cellular ? (joined ? "mobile data, Wi-Fi joined but not carrying traffic" : "mobile data") : "not mobile data"
+        let u = used.isEmpty ? "none" : used.joined(separator: ", ")
+        let a = avail.isEmpty ? "none" : avail.joined(separator: ", ")
+        return "\(k), \(unmetered(p) ? "unmetered" : "metered"), \(md) (uses \(u); available \(a); expensive \(yn(p.isExpensive)), constrained \(yn(p.isConstrained)))"
     }
     private func waitFirst() {
         // The monitor answers within milliseconds of starting; wait for that once (each waiter passes the signal on).
@@ -249,6 +333,18 @@ final class PlaybackPath: @unchecked Sendable {
         waitFirst()
         if lock.withLock({ seen }) { return Self.unmetered(monitor.currentPath) }
         return lock.withLock { free }
+    }
+    /// Really on mobile data right now: the fresh path is cellular-only and the stretch has held `settleMs`.
+    var mobileData: Bool { settleLeftMs == 0 }
+    /// On mobile data by a fresh read: the ms left before the stretch counts (0 = settled mobile data); nil = not on
+    /// mobile data (Wi-Fi, wired, offline, or not known yet).
+    var settleLeftMs: Int64? {
+        waitFirst()
+        guard lock.withLock({ seen }), Self.kind(monitor.currentPath) == .cellular else { return nil }
+        let (running, since) = lock.withLock { (sessionCell, kind == .cellular ? cellSince : nil) }
+        if running { return 0 }
+        guard let since else { return Self.settleMs }
+        return max(0, Self.settleMs - (Mono.now() - since))
     }
     /// The path in plain log words, read fresh.
     var description: String {
@@ -265,9 +361,12 @@ public extension Notification.Name {
     static let dreamCellularSaverAsk = Notification.Name("dreamCellularSaverAsk")
     /// Back on Wi-Fi after a mobile-data session where the saver was on: the app shows its quiet notice.
     static let dreamCellularSaverWifiBack = Notification.Name("dreamCellularSaverWifiBack")
+    /// Wi-Fi is back and the mobile-data session ended: a question still on screen goes away (it never stays up on Wi-Fi).
+    static let dreamCellularSaverSessionEnded = Notification.Name("dreamCellularSaverSessionEnded")
 }
 
-/// "Cellular Data Saver": on a metered network (cellular, personal hotspot, Low Data Mode; `PlaybackPath`) copies within
+/// "Cellular Data Saver": on mobile data (`PlaybackPath.mobileData`: the path uses the cellular radio, not Wi-Fi; never
+/// a hotspot, expensive Wi-Fi or Low Data Mode on Wi-Fi; owner, 2026-10-28) copies within
 /// the limit (720p / 1080p, DreamFilters "quality.cellular", default 1080p) rank before every copy above it, smaller
 /// files win ties, and when nothing within it is ready the smallest copy above it plays (never "no streams").
 ///
@@ -330,18 +429,35 @@ public enum CellularSaver {
     }
     private static let session = Session()
 
-    /// The phone is on a metered network right now (cellular, hotspot, Low Data Mode).
+    /// The phone is on a metered network right now (cellular, hotspot, Low Data Mode). Not the saver's test.
     public static var onMeteredNetwork: Bool { !PlaybackPath.shared.unmetered }
+    /// The phone is really on mobile data right now (fresh read, held `PlaybackPath.settleMs`): the saver's only test.
+    public static var onMobileData: Bool { PlaybackPath.shared.mobileData }
+    /// On mobile data by a fresh read but for less than the settle time: the ms left (nil = not on mobile data).
+    public static var mobileDataSettleLeftMs: Int64? { PlaybackPath.shared.settleLeftMs }
+    /// The network in plain log words, read fresh (interfaces, `isExpensive`, `isConstrained`).
+    public static var pathDescription: String { PlaybackPath.shared.description }
     /// Starts the network monitor (the app's first moments, so the first mobile-data moment is seen).
     public static func start() { _ = PlaybackPath.shared }
     /// This session's answer (none until asked).
     public static var answer: Answer { session.lock.withLock { session.answer } }
     /// Ask Me, on mobile data, not answered this session: the app asks (now, or right before the next Play).
-    public static var needsAnswer: Bool { answer == .none && mode == .ask && onMeteredNetwork }
+    public static var needsAnswer: Bool { answer == .none && mode == .ask && onMobileData }
+    /// The prompt decision ([why]: where the app would show it), read fresh, with one log line naming the interfaces,
+    /// `isExpensive` and `isConstrained`, so a test shows exactly why it asked or didn't. Logs only when Ask Me is
+    /// unanswered (the network is then the deciding fact).
+    public static func shouldAsk(_ why: String) -> Bool {
+        guard answer == .none, mode == .ask else { return false }
+        let ask = onMobileData
+        let left = mobileDataSettleLeftMs
+        let net = left == nil ? "not on mobile data" : left == 0 ? "on mobile data" : "mobile data for under \(PlaybackPath.settleMs) ms"
+        Log.core.info("Sources: cellular saver prompt decision (\(why, privacy: .public)): \(ask ? "ask" : "don't ask", privacy: .public), \(net, privacy: .public); \(PlaybackPath.shared.description, privacy: .public)")
+        return ask
+    }
     /// Whether the saver applies right now (mobile data and Always On, or Ask Me answered Use Data Saver).
     public static var applies: Bool { applies(DreamFilters.stored()) }
     static func applies(_ v: [String: String]) -> Bool {
-        guard onMeteredNetwork else { return false }
+        guard onMobileData else { return false }
         switch mode(v) {
         case .on: return true
         case .off: return false
@@ -361,7 +477,7 @@ public enum CellularSaver {
         if dontAsk { setMode(.off) }
         // Answered after Wi-Fi came back (the question was still up): the session is over, so nothing carries over to
         // the next mobile-data session (it asks again); the mode choices above still count.
-        let metered = onMeteredNetwork
+        let metered = onMobileData
         if metered {
             session.lock.withLock {
                 session.answer = use ? .use : .notNow
@@ -375,9 +491,10 @@ public enum CellularSaver {
         if use && metered { NativeResolver.shared.networkChanged(unmetered: false) }
     }
 
-    /// The network flipped or was first seen (`PlaybackPath`).
-    static func networkSeen(unmetered: Bool, first: Bool) {
-        if unmetered {
+    /// `PlaybackPath`: Wi-Fi first seen or back ([mobileData] false: the session ends, the saver turns itself off), or a
+    /// mobile-data stretch held its settle time ([mobileData] true: the session starts; Ask Me asks).
+    static func networkSeen(mobileData: Bool, first: Bool) {
+        if !mobileData {
             let wasOn: Bool = session.lock.withLock {
                 let on = session.wasOn
                 session.answer = .none
@@ -388,6 +505,7 @@ public enum CellularSaver {
                 Log.core.info("Sources: cellular saver off by itself (back on Wi-Fi; full quality again)")
                 NotificationCenter.default.post(name: .dreamCellularSaverWifiBack, object: nil)
             }
+            if !first { NotificationCenter.default.post(name: .dreamCellularSaverSessionEnded, object: nil) }
             return
         }
         let m = mode
@@ -411,7 +529,7 @@ public enum CellularSaver {
         let m = mode(v)
         let state: String
         if cap(v) != nil { state = "applies, up to \(limit(v)) (\(label(m))\(m == .ask ? ", answered Use Data Saver" : ""))" }
-        else if !onMeteredNetwork { state = "not needed on this network (\(label(m)))" }
+        else if !onMobileData { state = "not needed on this network (\(label(m)))" }
         else if m == .off { state = "off" }
         else { state = answer == .notNow ? "not used this session (Not Now)" : "not answered yet (Ask Me), not applied" }
         Log.core.info("Sources: cellular saver at Play for \(what, privacy: .public): \(PlaybackPath.shared.description, privacy: .public); \(state, privacy: .public)")

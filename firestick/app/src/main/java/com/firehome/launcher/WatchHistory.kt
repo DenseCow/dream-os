@@ -117,6 +117,9 @@ object WatchHistory {
 
     /** Played in Dream OS itself (any source that isn't an app's package name, older history included): resumed by the play flow. */
     fun ours(e: Entry) = '.' !in e.source
+
+    /** [e] (a show's entry) is for an episode after S[season]E[episode]: the viewer has moved on past that one. */
+    fun later(e: Entry, season: Int, episode: Int) = e.isShow && (e.season > season || e.season == season && e.episode > episode)
     private const val MAX = 40
     /** Watched this far into something, it counts toward recommendations ([watchedEnough]). */
     private const val MEANINGFUL_MS = 10 * 60_000L
@@ -198,11 +201,14 @@ object WatchHistory {
      * Trakt sync (Trakt.kt): titles watched or paused on other devices, already matched to TMDB, with
      * [Entry.updatedAt] = when that happened there. Last write wins: one replaces ours only when it's
      * newer. Finished ones leave the row (a movie) or move on to Up Next (a show), like [record].
+     * A show never goes back: an earlier episode's leftover progress or finish (a paused point Trakt kept, a
+     * scrobble sent late) never replaces a later episode we have, in progress, up next or finished.
      * Returns how many entries changed. Blocking (TMDB lookups for Up Next).
      */
     internal fun mergeRemote(ctx: Context, items: List<Entry>): Int {
         fun newer(e: Entry, old: Entry?) = old == null || e.updatedAt > old.updatedAt &&
-            !(old.season == e.season && old.episode == e.episode && e.updatedAt - old.updatedAt < ECHO_MS)
+            !(old.season == e.season && old.episode == e.episode && e.updatedAt - old.updatedAt < ECHO_MS) &&
+            !later(old, e.season, e.episode)
         for (e in items) if (e.progress >= FINISHED) Watched.finished(ctx, e) // Trakt's finished ones count as watched
         val current = synchronized(lock) { load(ctx) }.associateBy { it.key }
         val resolved = items.filter { newer(it, current[it.key]) }.map { e ->
@@ -285,10 +291,9 @@ object WatchHistory {
             val old = list.firstOrNull { it.key == base.key }
             // Keep the add-on that played it when this report doesn't know.
             val base = if (base.player == null && old?.player != null && old.source == base.source) base.copy(player = old.player) else base
-            // Credits still rolling after we already queued the next episode: keep the Up Next card.
-            if (old != null && isShow && old.upNext && progress >= FINISHED &&
-                (old.season > season || old.season == season && old.episode > episode)
-            ) return
+            // An older episode finishing (credits still rolling after the next one was queued, a late save) never takes
+            // the show back from a later one: the Up Next card, or the later episode's own spot, stays.
+            if (old != null && isShow && !old.hidden && progress >= FINISHED && later(old, season, episode)) return
             // Ignore a peek (under 90 s) at something that isn't on the row yet.
             if ((old == null || old.hidden) && s.positionMs < 90_000 && progress < FINISHED) return
             // Same thing still playing and barely moved: skip the write (and the Home row rebuild it triggers).

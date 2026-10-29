@@ -361,7 +361,7 @@ struct CatalogFeed: View {
     private func isResumeRow(_ row: CatalogRow) -> Bool { row.style == .continueWatching && row.name == "Continue Watching" }
 
     private func open(_ item: CatalogItem, in row: CatalogRow) {
-        if isResumeRow(row) { shell.play(item) }
+        if isResumeRow(row) { shell.resume(item) }
         else if row.style == .brand {
             // A service tile: that service's page (its name is the item's title).
             shell.push(.page(.service(ServiceSpec(id: item.title.name.lowercased(), name: item.title.name, logoPath: item.title.posterPath))))

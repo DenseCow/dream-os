@@ -33,22 +33,51 @@ enum CellularPrompt {
         observers.append(nc.addObserver(forName: .dreamCellularSaverWifiBack, object: nil, queue: .main) { _ in
             MainActor.assumeIsolated { wifiBack() }
         })
+        observers.append(nc.addObserver(forName: .dreamCellularSaverSessionEnded, object: nil, queue: .main) { _ in
+            MainActor.assumeIsolated { withdraw() }
+        })
         CellularSaver.start() // the network monitor runs from launch, so opening on mobile data is seen
     }
 
     /// A Play from a page (`PagesServices.play`): asks first when the answer is due, then plays with it.
+    /// Only on mobile data read fresh now (never Wi-Fi, a hotspot, Low Data Mode or Wi-Fi Assist); a Play pressed in the
+    /// first moments of a switch to mobile data waits out the rest of the settle time (at most 2.5 s) and decides then.
     static func beforePlay(_ go: @escaping () -> Void) {
         if shown != nil { waiting.append(go); return }
-        guard CellularSaver.needsAnswer, present("before Play") else { go(); return }
+        if CellularSaver.answer == .none, CellularSaver.mode == .ask, let left = CellularSaver.mobileDataSettleLeftMs, left > 0 {
+            DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(Int(left) + 50)) {
+                MainActor.assumeIsolated { beforePlay(go) }
+            }
+            return
+        }
+        guard CellularSaver.shouldAsk("before Play"), present("before Play") else { go(); return }
         waiting.append(go)
     }
 
     /// Mobile data seen (or Dream is back in front): ask now when it's due and Dream can show it.
     static func consider(_ why: String) {
-        guard shown == nil, SetupGate.isDone, UIApplication.shared.applicationState == .active,
-              CellularSaver.needsAnswer else { return }
+        guard shown == nil, SetupGate.isDone, UIApplication.shared.applicationState == .active else { return }
         let p = DreamPlayerPresenter.shared
-        _ = present(p.isShowing ? "over the player" : p.isMinimized ? "over the mini player" : why)
+        let place = p.isShowing ? "over the player" : p.isMinimized ? "over the mini player" : why
+        guard CellularSaver.shouldAsk(place) else { return } // fresh read: really on mobile data right now
+        _ = present(place)
+    }
+
+    /// Wi-Fi is back while the question is up: it goes away without an answer (nothing is set; the next mobile-data
+    /// session asks again); a paused title resumes and a waiting Play goes ahead at full quality.
+    private static func withdraw() {
+        guard let vc = shown else { return }
+        Log.core.info("Sources: cellular saver prompt withdrawn (back on Wi-Fi; \(CellularSaver.pathDescription, privacy: .public))")
+        let paused = pausedSession
+        pausedSession = nil
+        let go = waiting
+        waiting = []
+        let done = {
+            shown = nil
+            if let paused, DreamPlayerPresenter.shared.currentSession === paused { paused.engine.play() }
+            for g in go { g() }
+        }
+        if vc.presentingViewController != nil { vc.dismiss(animated: true) { MainActor.assumeIsolated { done() } } } else { done() }
     }
 
     // MARK: Showing

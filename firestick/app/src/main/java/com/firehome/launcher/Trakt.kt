@@ -570,10 +570,13 @@ object Trakt {
                 if (action == "start" || tokens(app, sfx) == null) return
                 val item = JSONObject(body.toString()).apply { remove("progress") }
                 if (progress >= WATCHED_PCT && action == "stop") queue(app, sfx, JSONObject().put("op", "history").put("item", item).put("at", iso(System.currentTimeMillis())))
-                else queue(app, sfx, JSONObject().put("op", "progress").put("item", item).put("progress", progress.toDouble()))
+                // "when" (ms): a paused point sent later gets Trakt's time of sending, so [flushLocked] drops it once it's stale.
+                else queue(app, sfx, JSONObject().put("op", "progress").put("item", item).put("progress", progress.toDouble()).put("when", System.currentTimeMillis()))
                 Log.w(TAG, "Trakt: couldn't reach Trakt, queued $action $label")
             }
             r.ok || r.code == 409 -> { // 409: already scrobbled a moment ago
+                // Trakt has this title's newer state now: an older paused point still queued for it must never follow.
+                if (action != "start") dropQueuedProgress(app, sfx, JSONObject(body.toString()).apply { remove("progress") })
                 if (action == "stop") {
                     if (progress >= WATCHED_PCT) Log.w(TAG, "Trakt: $label marked watched")
                     markDirty(app, sfx)
@@ -679,6 +682,34 @@ object Trakt {
         else -> op + ":" + o.optJSONObject("item")?.toString()
     }
 
+    /** Removes a queued paused point for [item] (the scrobble that just went through says more). */
+    private fun dropQueuedProgress(ctx: Context, sfx: String, item: JSONObject) = synchronized(store) {
+        val same = "progress:" + item.toString()
+        val q = loadQueue(ctx, sfx)
+        val ids = (0 until q.length()).mapNotNull { q.optJSONObject(it)?.takeIf { o -> opKey(o) == same }?.optLong("id") }.toSet()
+        dropFromQueue(ctx, sfx, ids)
+    }
+
+    /**
+     * A queued paused point that's out of date: Trakt stamps it with the time it's sent, so sent late it would look
+     * like the newest thing watched and pull Continue Watching back to it (an older episode, an older spot). Stale when
+     * the watch history here has moved on since: a later episode of the show, or the same title saved again well after.
+     */
+    private fun staleProgress(ctx: Context, sfx: String, o: JSONObject): Boolean {
+        if (o.optString("op") != "progress" || Profiles.suffix(ctx) != sfx) return false
+        val item = o.optJSONObject("item") ?: return false
+        val at = o.optLong("when") // 0: queued by an older build, before it was kept
+        val show = item.optJSONObject("show")?.optJSONObject("ids")?.optInt("tmdb") ?: 0
+        val movie = item.optJSONObject("movie")?.optJSONObject("ids")?.optInt("tmdb") ?: 0
+        val key = if (show > 0) "tv:$show" else if (movie > 0) "movie:$movie" else return false
+        val e = WatchHistory.recent(ctx).firstOrNull { it.key == key } ?: return false
+        if (show > 0) {
+            val ep = item.optJSONObject("episode") ?: return false
+            if (WatchHistory.later(e, ep.optInt("season"), ep.optInt("number"))) return true
+        }
+        return e.updatedAt > at + 60_000
+    }
+
     private fun dropFromQueue(ctx: Context, sfx: String, ids: Set<Long>) = synchronized(store) {
         if (ids.isEmpty()) return@synchronized
         val q = loadQueue(ctx, sfx)
@@ -701,6 +732,11 @@ object Trakt {
         try {
             for (i in 0 until q.length()) {
                 val o = q.optJSONObject(i) ?: continue
+                if (staleProgress(ctx, sfx, o)) {
+                    done += o.optLong("id")
+                    Log.w(TAG, "Trakt: queued paused point dropped (watched further here since)")
+                    continue
+                }
                 val r = sendOp(ctx, sfx, o)
                 if (r == null || r.transient) { allSent = false; break }
                 done += o.optLong("id")

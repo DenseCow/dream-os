@@ -586,8 +586,13 @@ class DreamPlayerActivity : Activity(), PlayerHost {
         sessionSrc = src
         sessionStartMs = startMs
         retriedFromTop = false
+        // On the row for this title, and not for a later episode: an older episode started by mistake (a stale card, a
+        // misplaced press) must play 90 s for real before it takes the show back from where the viewer is.
         onRow = req != null && req.tmdbId > 0 && (if (req.type == "episode") "tv:" else "movie:").let { p ->
-            WatchHistory.recent(this).any { it.key == p + req.tmdbId && !it.hidden }
+            WatchHistory.recent(this).any { e ->
+                e.key == p + req.tmdbId && !e.hidden &&
+                    (req.type != "episode" || !WatchHistory.later(e, req.season ?: 0, req.episode ?: 0))
+            }
         }
         creditsStartMs = null
         markersAsked = false

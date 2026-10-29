@@ -5,9 +5,9 @@
 	<key>CFBundleDisplayName</key>
 	<string>Dream</string>
 	<key>CFBundleShortVersionString</key>
-	<string>4.2</string>
+	<string>4.2.1</string>
 	<key>CFBundleVersion</key>
-	<string>40200</string>
+	<string>40201</string>
 	<key>DreamBuildChannel</key>
 	<string>DEV</string>
 	<key>LSApplicationQueriesSchemes</key>

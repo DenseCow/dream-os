@@ -941,10 +941,13 @@ class CinemaRow(val kit: CinemaKit, title: String?) : FlatLinear(kit.ctx), Cinem
     /**
      * The real cards ([pairs]: each unit as laid out, and the card in it). The ones on screen glide in once if
      * [animate]. Focus resting on a placeholder moves to the card in its place before the placeholders go, so
-     * it never leaves the row and the page doesn't move.
+     * it never leaves the row and the page doesn't move. [focusTo]: the row is rebuilt under focus resting on one
+     * of its cards (Continue Watching after playback); focus goes straight to new card [focusTo] the same way.
      */
-    fun fill(pairs: List<Pair<View, CinemaCard>>, animate: Boolean) {
-        val keep = ghosts.indexOfFirst { it.isFocused }
+    fun fill(pairs: List<Pair<View, CinemaCard>>, animate: Boolean, focusTo: Int = -1) {
+        val ghost = ghosts.indexOfFirst { it.isFocused }
+        val held = if (ghost < 0 && focusTo >= 0 && cards.any { it.hasFocus() }) focusTo else -1
+        val keep = if (ghost >= 0) ghost else held
         // Nothing to put in place of a placeholder focus rests on: the row stays as it is.
         if (keep >= 0 && pairs.isEmpty()) return
         val leaving = if (keep < 0) emptyList() else (0 until strip.childCount).map { strip.getChildAt(it) }

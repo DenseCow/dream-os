@@ -1138,7 +1138,7 @@ public final class NativeResolver: @unchecked Sendable {
     /// After a Play's link: what Cellular Data Saver did (log only; the Info note is set at hand-over, `CellularSaver.mark`).
     private func noteCellular(_ req: PlayRequest, _ found: StreamLink, _ kept: [Parsed], _ f: DreamFilters.Values, lookAhead: Bool = false) {
         guard let c = f.cellCap else {
-            if !lookAhead && CellularSaver.onMeteredNetwork { plog.info("Sources: cellular saver not in use for \(self.label(req), privacy: .public) on mobile data (\(CellularSaver.modeLabel, privacy: .public), answer \(CellularSaver.answer.rawValue, privacy: .public))") }
+            if !lookAhead && CellularSaver.onMobileData { plog.info("Sources: cellular saver not in use for \(self.label(req), privacy: .public) on mobile data (\(CellularSaver.modeLabel, privacy: .public), answer \(CellularSaver.answer.rawValue, privacy: .public))") }
             return
         }
         let cap = Self.capLabel(c)

@@ -213,11 +213,20 @@ public final class PlayerSession: ObservableObject {
         realWatched = 0
         lastTickPos = -1
         onRow = false
-        if let key = request?.title.key {
+        lastExact = nil
+        if let r = request {
+            let g = gen
+            // On the row for this title, and not for a later episode: an older episode started by mistake (a stale
+            // card, a misplaced tap) must play `realWatchToSave` for real before it takes the show back from where
+            // the viewer is (fire-home DreamPlayerActivity onRow).
             Task { [weak self] in
-                let e = await Services.shared.history.entry(for: key)
-                let on = e != nil && e?.hidden != true
-                await MainActor.run { self?.onRow = on }
+                let e = await Services.shared.history.entry(for: r.title.key)
+                var on = e != nil && e?.hidden != true
+                if on, let e, let ep = r.episode, r.title.kind == .tv {
+                    let s = r.season ?? 0, es = e.season ?? 0, ee = e.episode ?? 0
+                    if es > s || (es == s && ee > ep) { on = false } // WatchHistory.later
+                }
+                await MainActor.run { if self?.gen == g { self?.onRow = on } }
             }
         }
         finished = false
@@ -518,7 +527,8 @@ public final class PlayerSession: ObservableObject {
         switch e {
         case .state:
             if state.isPlaying, itemStartedAt == nil { itemStartedAt = Date() }
-            if !state.isPlaying { saveProgress(force: true) }
+            // Paused or stopped: an exact save. A buffering stall (still meant to play) is only a periodic one.
+            if !state.isPlaying { saveProgress(force: !(state.isBuffering && !state.paused)) }
             NowPlaying.update(self)
             pip?.refresh()
         case .progress(let t):
@@ -639,13 +649,31 @@ public final class PlayerSession: ObservableObject {
         // Not on Continue Watching yet: it only joins after real watching (skipping ahead to test doesn't count).
         guard onRow || realWatched >= Self.realWatchToSave else { return }
         if !force && Date().timeIntervalSince(lastSaveAt) < Self.saveEvery { return }
-        lastSaveAt = Date()
         let pos = finished ? d : state.position
+        // A forced save (pause, exit, background, hand-off) is written exactly; the same spot twice in a row (a pause
+        // that buffers, close right after pause) is written once.
+        if force, let l = lastExact, l.finished == finished, abs(l.pos - pos) < 0.5 { return }
+        lastExact = force ? (pos, finished) : nil
+        lastSaveAt = Date()
+        // Stamped now (`updatedAt`): WatchHistory drops a save that lands after a newer one (each waits on TMDB).
         let entry = HistoryEntry(title: r.title, season: r.season, episode: r.episode,
                                  episodeName: r.episodeName ?? episodeInfo?.name, stillPath: episodeInfo?.stillPath,
-                                 positionMs: Int64(pos * 1000), durationMs: Int64(d * 1000))
-        Task { await Services.shared.history.record(entry) }
+                                 positionMs: Int64(pos * 1000), durationMs: Int64(d * 1000), updatedAt: Date())
+        guard force else {
+            Task { await Services.shared.history.record(entry, exact: false) }
+            return
+        }
+        // Exact, and finished even if iOS suspends the app right after (paused in the background): a background task
+        // keeps it running until the write is done.
+        let keep = BackgroundSave()
+        Task {
+            await Services.shared.history.record(entry, exact: true)
+            keep.end()
+        }
     }
+
+    /// The last forced save (where, and whether finished), so the same spot isn't written twice in a row.
+    private var lastExact: (pos: Double, finished: Bool)?
 
     private func onEnded() {
         ended = true
@@ -716,8 +744,10 @@ public final class PlayerSession: ObservableObject {
             return
         }
         if creditsAt == nil { creditsAt = computeCreditsAt() }
-        guard let c = creditsAt else { return }
-        if pos >= c - 90 { prepared = true }
+        guard let credits = creditsAt else { return }
+        let c = cardAt(r, credits: credits)
+        // About 90 s before the card: the next episode's link is looked up now, so autoplay starts at once.
+        if !prepared && pos >= c - 90 { prepare(r) }
         switch postPlay {
         case .upNext, .moreLikeThis:
             if pos < c - 5 { countdownTask?.cancel(); postPlay = .none; dismissedPostPlay = false }
@@ -726,6 +756,29 @@ public final class PlayerSession: ObservableObject {
             if !dismissedPostPlay && pos >= c { showPostPlay() }
         case .stillWatching:
             break
+        }
+    }
+
+    /// Where the card comes up (fire-home PostPlay `cardAt`). An episode's Up Next only in its last minute
+    /// (`upNextLead` before the end), never before, whatever the credits look says (a marker, an estimate, the
+    /// fallback) and however long the episode is. A movie's More Like This at its credits.
+    private func cardAt(_ r: PlayRequest, credits: Double) -> Double {
+        let d = state.duration
+        return r.episode != nil ? max(d - Self.upNextLead, d / 2) : credits
+    }
+
+    /// An episode's Up Next card shows this long before the end (owner, 2026-10-28: about a minute, never sooner).
+    static let upNextLead: Double = 60
+
+    /// The next episode, ahead of its card: Dream Core finds its link now (`postPlay(after:)` -> `ahead`). Episodes only.
+    private func prepare(_ r: PlayRequest) {
+        prepared = true
+        guard r.episode != nil else { return }
+        let g = gen
+        Task { [weak self] in
+            let plan = await Services.shared.playback.postPlay(after: r)
+            guard let self, g == self.gen else { return }
+            if self.next == nil, let n = plan.next { self.next = n.request }
         }
     }
 
@@ -968,5 +1021,24 @@ public final class PlayerSession: ObservableObject {
                 return
             }
         }
+    }
+}
+
+/// Keeps the app running (an iOS background task) until a forced watch history save is written, so a pause or exit
+/// save isn't lost when iOS suspends Dream right after (paused, then the app put away).
+@MainActor
+private final class BackgroundSave {
+    private var id: UIBackgroundTaskIdentifier = .invalid
+
+    init() {
+        id = UIApplication.shared.beginBackgroundTask(withName: "Dream Watch History") { [weak self] in
+            MainActor.assumeIsolated { self?.end() }
+        }
+    }
+
+    func end() {
+        guard id != .invalid else { return }
+        UIApplication.shared.endBackgroundTask(id)
+        id = .invalid
     }
 }

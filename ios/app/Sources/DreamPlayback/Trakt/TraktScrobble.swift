@@ -87,6 +87,7 @@ final class TraktScrobbler {
 
     private nonisolated static func scrobbleNow(_ pid: String, _ action: String, _ item: TraktItem, _ label: String, _ progress: Double, _ key: String) async {
         let trakt = Trakt.shared
+        let happened = wallMs() // when this pause / stop happened here (a queued paused point keeps it)
         var body = item.json
         body["progress"] = progress
         let r = try? await trakt.authed(pid, "POST", "/scrobble/\(action)", TraktHTTP.body(body))
@@ -94,11 +95,14 @@ final class TraktScrobbler {
             // Offline: a start means nothing later; a pause or stop is kept (finished = a history entry at its real time).
             if action == "start" || trakt.vault.tokens(pid) == nil { return }
             if progress >= Trakt.watchedPct && action == "stop" { trakt.queue(pid, TraktOp(op: "history", at: wallMs(), item: item)) }
-            else { trakt.queue(pid, TraktOp(op: "progress", item: item, progress: progress)) }
+            // "when": a paused point sent later gets Trakt's time of sending, so `flushLocked` drops it once it's stale.
+            else { trakt.queue(pid, TraktOp(op: "progress", item: item, progress: progress, when: happened)) }
             plog.notice("Trakt: couldn't reach Trakt, queued \(action, privacy: .public) \(label, privacy: .public)")
             return
         }
         if r.ok || r.code == 409 { // 409: already scrobbled a moment ago
+            // Trakt has this title's newer state now: an older paused point still queued for it must never follow.
+            if action != "start" { trakt.dropQueuedProgress(pid, item) }
             if action == "stop" {
                 if progress >= Trakt.watchedPct { plog.info("Trakt: \(label, privacy: .public) marked watched") }
                 trakt.markDirty(pid)

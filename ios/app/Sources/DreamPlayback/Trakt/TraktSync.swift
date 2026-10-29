@@ -346,6 +346,28 @@ extension Trakt {
         }
     }
 
+    /// Removes a queued paused point for [item] (the scrobble that just went through says more).
+    func dropQueuedProgress(_ p: String, _ item: TraktItem) {
+        let same = TraktOp(op: "progress", item: item).sameKey
+        vault.store.withLock {
+            let q = vault.queue(p)
+            let kept = q.filter { $0.sameKey != same }
+            if kept.count != q.count { vault.setQueue(p, kept) }
+        }
+    }
+
+    /// A queued paused point that's out of date: Trakt stamps it with the time it's sent, so sent late it would look
+    /// like the newest thing watched and pull Continue Watching back to it (an older episode, an older spot). Stale
+    /// when the watch history here has moved on since: a later episode of the show, or the same title saved again
+    /// more than 60 s after the pause (fire-home `Trakt.staleProgress`).
+    private func staleProgress(_ p: String, _ o: TraktOp) -> Bool {
+        guard o.op == "progress", p == pid, let item = o.item, item.tmdb > 0 else { return false }
+        let key = (item.movie ? "movie:" : "tv:") + String(item.tmdb)
+        guard let e = WatchHistory.shared.recent().first(where: { $0.key == key }) else { return false }
+        if !item.movie && WatchHistory.later(e, item.season, item.number) { return true }
+        return e.updatedAt > (o.when ?? 0) + 60_000 // when nil: queued by an older build, before it was kept
+    }
+
     private func dropFromQueue(_ p: String, _ ids: Set<Int64>) {
         guard !ids.isEmpty else { return }
         vault.store.withLock { vault.setQueue(p, vault.queue(p).filter { !ids.contains($0.id) }) }
@@ -367,6 +389,11 @@ extension Trakt {
         var allSent = true
         do {
             for o in q {
+                if staleProgress(p, o) {
+                    done.insert(o.id)
+                    plog.info("Trakt: queued paused point dropped (watched further here since)")
+                    continue
+                }
                 guard let r = try await sendOp(p, o), !r.transient else { allSent = false; break }
                 done.insert(o.id)
                 if !r.ok && r.code != 409 { plog.notice("Trakt: queued \(o.op, privacy: .public) not accepted (\(r.code, privacy: .public)), dropped") }

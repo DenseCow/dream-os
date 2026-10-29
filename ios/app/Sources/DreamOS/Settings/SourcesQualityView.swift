@@ -521,7 +521,7 @@ struct PlaybackSettingsGroups: View {
         PageSection(title: "Playback").padding(.top, PageSpace.group)
         VStack(spacing: PageSpace.row) {
             // One setting for the whole app, as on the TV; Dream Player reads the same values.
-            PageRow(title: "Autoplay Next Episode", caption: "Up Next Counts Down at the Credits", lead: .symbol("play"),
+            PageRow(title: "Autoplay Next Episode", caption: "Up Next Counts Down in the Final Minute", lead: .symbol("play"),
                     toggle: PlaybackSettings.autoplayNext) {
                 PlaybackSettings.autoplayNext.toggle(); tick += 1
             }

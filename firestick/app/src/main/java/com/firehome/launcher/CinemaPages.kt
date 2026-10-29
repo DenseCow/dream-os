@@ -895,27 +895,43 @@ class CinemaHome(shell: CinemaShell) : CinemaRowsPage(shell) {
 
     // ---- Continue Watching, New Episodes, My List ----
 
-    /** Rebuilds Continue Watching when the history changed (never under the user's focus unless [force]). */
+    /**
+     * Rebuilds Continue Watching when the history changed. Focus resting on the row (back from the player, on the
+     * card that was played) doesn't hold it back: the row shows the history as it is now, with focus kept on the
+     * same title ([CinemaRow.fill]'s focusTo). Only while the remote is in use does the rebuild wait a moment.
+     */
     fun refreshContinue(force: Boolean = false) {
         val r = continueRow ?: return
         if (WatchHistory.version == continueShown) return
         // The first fill comes from the saved history at once, even under the boot intro (before onResume), so the
-        // row is laid out before Home shows; later changes rebuild it in place, never under the user's focus.
-        if (!force && continueShown >= 0 && (r.hasFocus() || !host.resumed())) return
+        // row is laid out before Home shows; later changes rebuild it in place once Home is in front.
+        if (!force && continueShown >= 0 && !host.resumed()) return
+        val focused = r.hasFocus()
+        if (!force && continueShown >= 0 && focused && PreResolve.userBusy()) {
+            shell.post(continueLater, 1_600)
+            return
+        }
         continueShown = WatchHistory.version
         val list = WatchHistory.entries(ctx).take(15)
+        val wasOn = if (focused) continueKeys.getOrNull(r.index) else null
+        continueKeys = list.map { it.key }
         if (list.isEmpty()) { setShown(r, false); return }
         val apps = host.apps()
+        val focusTo = if (!focused) -1 else list.indexOfFirst { it.key == wasOn }.takeIf { it >= 0 } ?: minOf(r.index, list.size - 1)
         r.fill(list.map { e ->
             kit.continueCard(e, apps).also { (_, c) ->
                 c.setOnClickListener { host.resume(e) }
                 c.isLongClickable = true
                 c.setOnLongClickListener { host.continueMenu(e, e.toTitle(), c); true }
             }
-        }, animate = false)
+        }, animate = false, focusTo = focusTo)
         setShown(r, true)
         window()
     }
+
+    /** The keys of the Continue Watching cards as shown (which title focus rests on when the row is rebuilt). */
+    private var continueKeys: List<String> = emptyList()
+    private val continueLater = Runnable { if (!released) refreshContinue() }
 
     /** A title was removed from Continue Watching: rebuild now, focus on the card that took its place. */
     fun continueRemoved() {
