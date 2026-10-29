@@ -31,8 +31,8 @@ Dream OS has been tested on two Fire Sticks:
 | Fire TV Stick 4K Max (1st gen, 2021) | AFTKA | Fire OS 7.7.1.3 (Android 9) | 4K with HDR and Dolby Vision |
 | Fire TV Stick HD | AFTSS | Fire OS 7.7.1.7 (Android 9) | 1080p |
 
-- **Fire TV Stick HD:** its video decoders stop at 1920x1088 and it outputs 1080p, so set
-  Maximum Quality to 1080p during setup (4K copies won't play on it). It has about 1 GB of memory, so [debloating](#recommended-debloat-your-fire-stick) is
+- **Fire TV Stick HD:** its video decoders stop at 1920x1088 and it outputs 1080p, so Dream OS
+  picks 1080p copies on it automatically. It has about 1 GB of memory, so [debloating](#recommended-debloat-your-fire-stick) is
   strongly recommended.
 - **Other Fire TV models and Fire OS versions are untested.** They may not work or may behave differently,
   for example Fire OS 8 on newer sticks. The optional Home screen steps rely on Fire OS 7 behavior and are the
@@ -213,19 +213,36 @@ adb shell pm enable com.amazon.bueller.photos
 ## Optional: Make Dream Your Home Screen
 
 Dream can take the place of Amazon's home screen, start up in Dream, answer the voice remote's microphone
-button, show your other apps' shows in Continue Watching, and use the Dream screensaver. The Fire Stick only allows
-these with a one-time permission over ADB. You can do it right on the TV, or from a computer.
+button, add your other apps' shows to Continue Watching, and use the Dream screensaver. The Fire Stick only allows
+these after a one-time permission over ADB. Do it on the TV, from the Dream app on your iPhone, or from a computer.
 
 > These steps were tested on Fire OS 7 only. Fire OS updates can change how they behave.
 
-### On the TV (No Computer Needed)
+### On the TV
 
-1. Open **Settings › My Fire TV › Developer Options** and turn on **ADB Debugging**.
+1. Open **Settings › My Fire TV › Developer Options** and turn on **ADB Debugging**. (No Developer Options? Choose
+   **About** and press Select on your Fire Stick's name **7 times**, then go back.)
 2. In Dream, open **Settings › Accounts & Scrapers › Unlock Features** (it's also a step in setup) and choose
    **Unlock Now**.
-3. Fire Stick asks **Allow USB debugging?** Tick **Always allow from this computer** and choose **OK**.
-   (The "computer" is Dream itself, connecting to your own Fire Stick. Nothing leaves the TV.)
+3. Fire Stick asks **Allow USB debugging?** Check **Always allow from this computer** and choose **OK**.
 4. When every feature shows as on, choose **Turn Off ADB Debugging**. Everything stays unlocked.
+
+If Dream shows **Unlock From Your iPhone**, this Fire Stick only accepts the unlock from another device on your
+Wi-Fi (the Fire TV Stick HD on Fire OS 7.7.1.7 works this way). Use your iPhone or a computer, below. The screen
+shows the address you need, and Dream finishes by itself once the other device is done.
+
+### From the Dream App on Your iPhone (No Computer Needed)
+
+You need [Dream for iPhone](INSTALL-IOS.md), on the same Wi-Fi as the Fire Stick.
+
+1. On the Fire Stick, turn on **ADB Debugging** (step 1 above).
+2. On the Fire Stick, open Dream's **Unlock Features** page and leave it open. Your iPhone finds the Fire Stick by
+   name while it's showing.
+3. On the iPhone, open Dream, tap your profile picture at the top right, then **Settings › Unlock Fire Stick**.
+   When iOS asks to find devices on your local network, choose **Allow**.
+4. Tap your Fire Stick, or type the address the TV shows and tap **Unlock**.
+5. The TV asks **Allow USB debugging?** With the remote, check **Always allow from this computer** and choose **OK**.
+6. When every feature shows **On**, tap **Turn Off ADB Debugging**. Everything stays unlocked.
 
 ### From a Computer With ADB
 
