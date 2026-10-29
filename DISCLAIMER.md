@@ -61,8 +61,7 @@ app are Dream's own designs, not official artwork.
 - JustWatch
 - TVmaze, TheIntroDB, AniSkip, ARM, Kitsu, OpenSubtitles, Open-Meteo, ipwho.is, GeoJS, Cloudflare, GitHub
 
-**Debrid services and sources**
-- Real-Debrid, AllDebrid, Premiumize, TorBox
+**Sources**
 - Torrentio and Stremio (named in Dream's source list and as the subtitle index host)
 
 **Sideloading tools named in the install guides**
