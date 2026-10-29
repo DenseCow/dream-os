@@ -1,6 +1,6 @@
 <p align="center"><img alt="Dream OS" src="docs/assets/icon.png" width="96"></p>
 
-# Install Dream OS on the Fire Stick
+# Install Dream OS on a Fire Stick
 
 This guide takes about ten minutes. All you need is your Fire Stick remote. A computer is only needed for one
 optional extra at the end.
@@ -12,20 +12,28 @@ optional extra at the end.
 - [Step 4: First Launch and Setup](#step-4-first-launch-and-setup)
 - [Recommended: Debloat Your Fire Stick](#recommended-debloat-your-fire-stick)
 - [Optional: Make Dream Your Home Screen](#optional-make-dream-your-home-screen)
+- [Updating](#updating)
+- [Uninstalling](#uninstalling)
+- [Troubleshooting](#troubleshooting)
 
 > [!TIP]
 > If your Fire Stick feels slow, even on Amazon's home screen, [debloat it](#recommended-debloat-your-fire-stick).
 > It frees the memory Amazon's background apps hold so Dream OS has room to run.
-- [Updating](#updating)
-- [Uninstalling](#uninstalling)
-- [Troubleshooting](#troubleshooting)
 
 <br>
 
 ## Compatibility
 
-- **Tested on:** a Fire TV Stick 4K Max (1st generation, 2021) running Fire OS 7.7.1.3 (based on Android 9).
-  That is the only device Dream OS has been tested on.
+Dream OS has been tested on two Fire Sticks:
+
+| Device | Model | Software Tested | Plays Up To |
+| :-- | :-- | :-- | :-- |
+| Fire TV Stick 4K Max (1st gen, 2021) | AFTKA | Fire OS 7.7.1.3 (Android 9) | 4K with HDR and Dolby Vision |
+| Fire TV Stick HD | AFTSS | Fire OS 7.7.1.7 (Android 9) | 1080p |
+
+- **Fire TV Stick HD:** its video decoders stop at 1920x1088 and it outputs 1080p, so Dream OS picks 1080p copies
+  on it automatically. It has about 1 GB of memory, so [debloating](#recommended-debloat-your-fire-stick) is
+  strongly recommended.
 - **Other Fire TV models and Fire OS versions are untested.** They may not work or may behave differently,
   for example Fire OS 8 on newer sticks. The optional Home screen steps rely on Fire OS 7 behavior and are the
   most likely to differ.
@@ -104,7 +112,8 @@ Every choice is saved as you go, and everything lives in **Settings** later. You
 
 Amazon runs dozens of its own apps in the background on every Fire Stick: ads, shopping, telemetry, Alexa extras,
 Amazon Music, photo screensavers and more. They hold memory even when you never open them. On a stick with about
-1 GB of memory, like the Fire TV Stick HD, that's enough to make everything lag, Amazon's home screen included.
+1 GB of memory (see [Compatibility](#compatibility)), that's enough to make everything lag, Amazon's home
+screen included.
 Turning them off frees that memory for Dream OS.
 
 Nothing is deleted. Each app is only switched off, and you can switch any of them back on with one command. Your

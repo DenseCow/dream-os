@@ -80,13 +80,16 @@ watch") data is provided by JustWatch, through TMDB.
 
 ## Tested Devices
 
-Dream OS has been tested on one device per platform:
+Dream OS has been tested on these devices:
 
-- **Fire Stick:** a Fire TV Stick 4K Max (1st generation, 2021) running Fire OS 7.7.1.3 (based on Android 9). Other
-  Fire TV models and Fire OS versions, such as Fire OS 8 on newer sticks, are untested and may not work or may
-  behave differently, especially the optional "make Dream your Home screen" steps, which rely on Fire OS 7
-  behavior. Fire TV devices running Vega OS can't install it at all.
-- **iPhone:** tested on iOS 27.2; requires iOS 17 or later. Other iPhone models and iOS versions are untested.
+- **Fire Stick:** a Fire TV Stick 4K Max (1st generation, 2021, model AFTKA) running Fire OS 7.7.1.3, which plays up
+  to 4K with HDR and Dolby Vision, and a Fire TV Stick HD (model AFTSS) running Fire OS 7.7.1.7, which plays up to
+  1080p. Both versions of Fire OS are based on Android 9. Other Fire TV models and Fire OS versions, such as Fire
+  OS 8 on newer sticks, are untested and may not work or may behave differently, especially the optional "make
+  Dream your Home screen" steps, which rely on Fire OS 7 behavior. Fire TV devices running Vega OS can't install
+  it at all.
+- **iPhone:** an iPhone Air on iOS 27.2; requires iOS 17 or later. Other iPhone models and iOS versions are
+  untested.
 
 Use on other devices at your own risk. Reports are welcome in
 [Issues](https://github.com/DenseCow/dream-os/issues).

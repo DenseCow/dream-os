@@ -12,7 +12,7 @@ Use [Issues](https://github.com/DenseCow/dream-os/issues/new/choose) and pick a 
 - What you did, what you expected, and what happened instead. Photos of the screen help a lot.
 
 **Never paste API keys, debrid tokens, account emails or scraper repository addresses** into an issue.
-Dream OS has only been tested on one Fire Stick and one iPhone, so reports from other devices, good or bad, are
+Dream OS has only been tested on two Fire Sticks and one iPhone, so reports from other devices, good or bad, are
 especially useful.
 
 ## Before You Write Code
