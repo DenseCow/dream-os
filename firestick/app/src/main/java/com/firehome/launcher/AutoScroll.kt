@@ -15,12 +15,10 @@ import android.graphics.Shader
 import android.graphics.Typeface
 import android.text.TextUtils
 import android.util.Log
-import android.util.TypedValue
 import android.view.View
 import android.view.ViewTreeObserver
 import android.view.animation.PathInterpolator
 import android.widget.TextView
-import kotlin.math.abs
 import kotlin.math.ceil
 
 /**
@@ -38,7 +36,7 @@ import kotlin.math.ceil
  * Cost on the stick: one TextView's scroll offset animates (a cheap re-record of a few lines, no
  * re-layout, no offscreen buffer for the text). A hardware layer would be re-rendered every frame here
  * since the text itself moves inside the view, so none is used. The fade edges are drawn into the text's
- * own ink ([InkFade]): no offscreen layer, right over any background. Runs end on their own (only the details synopsis, [AutoScrollText.loop], keeps going while at rest) and everything stops when the view is
+ * own ink ([InkFade]): no offscreen layer, right over any background. Runs end on their own and everything stops when the view is
  * detached, hidden, the window loses focus (player, another activity) or something covers the screen.
  */
 object AutoScroll {
@@ -165,19 +163,11 @@ private class Glide(private val onFrame: (Float) -> Unit, private val onEnd: () 
  * A synopsis box: the same height as before (its max lines), the rest revealed by a slow glide after
  * the viewer rests. Text that fits never moves. See [AutoScroll].
  */
-class AutoScrollText(ctx: Context, private val slack: Float = 0f) : TextView(ctx) {
+class AutoScrollText(ctx: Context) : TextView(ctx) {
     private var ready = false
     /** Between a glide's start and the end of its fade back (see [AutoScroll.othersRunning]). */
     internal var inRun = false
-    /** The size set by the caller; [slack] may step it down by up to that fraction to fit. */
-    private var maxPx = 0f
-    private var fitText: CharSequence? = null
-    private var fitWidth = -1
-    private var fitMax = -1f
-    private val fitPaint = android.text.TextPaint()
     private var cycle = 0
-    /** Keep running (hold, fade back, glide again) for as long as it's on screen and at rest (details page). */
-    var loop = false
     /** The rest before a glide when not focused (ms); 0 = [AutoScroll.REST_MS]. The screensaver's is shorter. */
     var restMs = 0L
     /**
@@ -201,7 +191,7 @@ class AutoScrollText(ctx: Context, private val slack: Float = 0f) : TextView(ctx
 
     init {
         ellipsize = null // the fade edge says "more"
-        maxPx = textSize
+        hyphenationFrequency = android.text.Layout.HYPHENATION_FREQUENCY_NONE // no mid-word breaks (STANDARDS §3)
         ready = true
     }
 
@@ -273,7 +263,7 @@ class AutoScrollText(ctx: Context, private val slack: Float = 0f) : TextView(ctx
             animate().alpha(1f).setStartDelay(0).setDuration(AutoScroll.FADE_IN_MS).setInterpolator(Ui.EASE).withEndAction {
                 fading(false)
                 inRun = false
-                if (loop || cycle < AutoScroll.CYCLES) { removeCallbacks(startGlide); if (armable()) postDelayed(startGlide, AutoScroll.HOLD_MS) }
+                if (cycle < AutoScroll.CYCLES) { removeCallbacks(startGlide); if (armable()) postDelayed(startGlide, AutoScroll.HOLD_MS) }
             }.start()
         }.start()
     }
@@ -311,43 +301,6 @@ class AutoScrollText(ctx: Context, private val slack: Float = 0f) : TextView(ctx
     override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
         super.onSizeChanged(w, h, oldw, oldh)
         if (ready) { stop(); arm() }
-    }
-
-    override fun setTextSize(unit: Int, size: Float) {
-        super.setTextSize(unit, size)
-        if (ready) maxPx = textSize
-    }
-
-    /** With [slack]: the set size, or up to [slack] smaller if that alone fits the text in its lines. */
-    override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
-        if (ready && slack > 0f && MeasureSpec.getMode(widthMeasureSpec) != MeasureSpec.UNSPECIFIED) {
-            val w = MeasureSpec.getSize(widthMeasureSpec) - compoundPaddingLeft - compoundPaddingRight
-            val t = text
-            if (w > 0 && (t !== fitText || w != fitWidth || maxPx != fitMax)) {
-                fitText = t; fitWidth = w; fitMax = maxPx
-                var size = maxPx
-                if (!t.isNullOrEmpty() && linesAt(t, w, maxPx) > maxLines) {
-                    for (k in 1..2) { // 5%, then 10%
-                        val s = maxPx * (1f - slack * k / 2f)
-                        if (linesAt(t, w, s) <= maxLines) { size = s; break }
-                    }
-                }
-                if (abs(size - textSize) > 0.5f) super.setTextSize(TypedValue.COMPLEX_UNIT_PX, size)
-            }
-        }
-        super.onMeasure(widthMeasureSpec, heightMeasureSpec)
-    }
-
-    /** Line count of [t] at [px] in [w] (only when the text, width or size changed). */
-    private fun linesAt(t: CharSequence, w: Int, px: Float): Int {
-        fitPaint.set(paint)
-        fitPaint.textSize = px
-        return android.text.StaticLayout.Builder.obtain(t, 0, t.length, fitPaint, w)
-            .setLineSpacing(lineSpacingExtra, lineSpacingMultiplier)
-            .setIncludePad(includeFontPadding)
-            .setBreakStrategy(breakStrategy)
-            .setHyphenationFrequency(hyphenationFrequency)
-            .build().lineCount
     }
 
     override fun onTextChanged(text: CharSequence?, start: Int, lengthBefore: Int, lengthAfter: Int) {
@@ -544,41 +497,3 @@ fun PremiumKit.scrollLabel(t: CharSequence, size: Float, color: Int = text, face
         maxLines = lines
         text = t
     }
-
-/**
- * [PremiumKit.label] for a big title: a fixed [lines]-tall box at the set size (at most 10% smaller if
- * that alone makes it fit); a title that still overflows auto-scrolls like a synopsis.
- */
-fun PremiumKit.fitTitle(t: CharSequence, size: Float, color: Int = text, face: Typeface = font, tracking: Float = 0f, lines: Int = 2) =
-    AutoScrollText(ctx, slack = 0.10f).apply {
-        typeface = face
-        setTextColor(color)
-        letterSpacing = tracking
-        includeFontPadding = false
-        maxLines = lines
-        textSize = size
-        text = t
-    }
-
-/**
- * [PremiumKit.label] for a card caption: one-line captions glide while [card] is focused
- * ([MarqueeText]); multi-line ones stay plain labels. Chains onto the card's focus listener.
- */
-fun PremiumKit.marqueeLabel(card: View, t: CharSequence, size: Float, color: Int = text, face: Typeface = font, tracking: Float = 0f,
-                            lines: Int = 1): TextView {
-    if (lines != 1) return label(t, size, color, face, tracking, lines)
-    val m = MarqueeText(ctx).apply {
-        textSize = size
-        typeface = face
-        setTextColor(color)
-        letterSpacing = tracking
-        includeFontPadding = false
-        text = t
-    }
-    val base = card.onFocusChangeListener
-    card.setOnFocusChangeListener { v, has ->
-        base?.onFocusChange(v, has)
-        m.cardFocus(has)
-    }
-    return m
-}

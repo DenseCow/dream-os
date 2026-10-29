@@ -312,7 +312,6 @@ class AirPods(private val ctx: Context, private val onUpdate: (Status?) -> Unit)
             val p = d.copyOfRange(2, 2 + len)
             val subtype = p[0].toInt() and 0xFF
             // One line per message shape so a logcat shows what these AirPods actually send.
-            // One line per message shape so a logcat shows what these AirPods actually send.
             if (loggedShapes.add("$len/$subtype")) Log.w(TAG, "broadcast len=$len subtype=0x%02X".format(subtype))
             return when {
                 subtype == 0x01 && len >= OPEN_CASE_LENGTH -> parseOpenCase(p, key)

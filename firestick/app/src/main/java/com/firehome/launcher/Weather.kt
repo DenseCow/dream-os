@@ -109,8 +109,8 @@ object Weather {
 
     private fun summary(code: Int) = when (code) {
         0 -> "Clear"
-        1 -> "Mostly clear"
-        2 -> "Partly cloudy"
+        1 -> "Mostly Clear"
+        2 -> "Partly Cloudy"
         3 -> "Cloudy"
         45, 48 -> "Fog"
         in 51..57 -> "Drizzle"

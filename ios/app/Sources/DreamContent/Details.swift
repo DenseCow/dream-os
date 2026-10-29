@@ -98,6 +98,7 @@ enum Details {
         let code = Tmdb.str(o, "original_language")
         let spoken = objs(o["spoken_languages"]).first { $0["iso_639_1"] as? String == code }.map { Tmdb.str($0, "english_name") } ?? ""
         i.language = !spoken.isEmpty ? spoken : (code.isEmpty ? "" : (Locale(identifier: "en_US").localizedString(forLanguageCode: code) ?? ""))
+        i.spoken = objs(o["spoken_languages"]).map { Tmdb.str($0, "iso_639_1") }.filter { !$0.isEmpty }
         let countries: [String] = show ? ((o["origin_country"] as? [String]) ?? []).filter { $0.count == 2 }.map { countryName($0) }
             : objs(o["production_countries"]).map { countryName(Tmdb.str($0, "iso_3166_1"), Tmdb.str($0, "name")) }
         let original = Tmdb.str(o, show ? "original_name" : "original_title")
@@ -222,7 +223,16 @@ actor AirTimes {
     struct Ep: Sendable { let season: Int; let number: Int; let name: String; let date: String; let at: Date? }
     struct Info: Sendable { let prev: (Int, Int, Date)?; let next: (Int, Int, Date)?; let fetchedAt: Date }
 
-    private var ids: [Int: Int] = DreamStore.shared.get([Int: Int].self, "tvmaze_ids") ?? [:]
+    /// "tvmaze_ids2": "tvmaze_ids" also held lookups that never got an answer as "no such show" (2026-10-29); its
+    /// matches carry over, its misses are asked again once.
+    private var ids: [Int: Int] = AirTimes.storedIds()
+    private static func storedIds() -> [Int: Int] {
+        if let ids = DreamStore.shared.get([Int: Int].self, "tvmaze_ids2") { return ids }
+        let old = (DreamStore.shared.get([Int: Int].self, "tvmaze_ids") ?? [:]).filter { $0.value > 0 }
+        DreamStore.shared.set(old, "tvmaze_ids2")
+        DreamStore.shared.set(nil as [Int: Int]?, "tvmaze_ids")
+        return old
+    }
     private var schedules: [Int: (Date, [Ep])] = [:]
     private var infos: [Int: Info] = [:]
     private var lastCall = Date.distantPast
@@ -231,11 +241,21 @@ actor AirTimes {
     static func info(_ tmdbId: Int) async -> Info? { await shared.info(tmdbId) }
 
     private func fetch(_ url: String) async -> Any? {
+        if case .found(let o) = await ask(url) { return o }
+        return nil
+    }
+
+    private enum Asked { case found(Any?), notFound, noAnswer }
+
+    /// TVmaze's answer, telling "it has no such show" (404) from "it didn't answer" (offline, timeout, 429).
+    private func ask(_ url: String) async -> Asked {
         let wait = 0.55 - Date().timeIntervalSince(lastCall)
         lastCall = Date().addingTimeInterval(max(0, wait))
         if wait > 0 { try? await Task.sleep(nanoseconds: UInt64(wait * 1e9)) }
-        guard let u = URL(string: url), let d = try? await Net.data(u) else { return nil }
-        return try? JSONSerialization.jsonObject(with: d)
+        guard let u = URL(string: url) else { return .noAnswer }
+        do { return .found(try? JSONSerialization.jsonObject(with: try await Net.data(u))) }
+        catch NetError.status(404, _) { return .notFound }
+        catch { return .noAnswer }
     }
 
     private func mazeId(_ tmdbId: Int) async -> Int? {
@@ -244,10 +264,19 @@ actor AirTimes {
         let imdb = Tmdb.str(ext, "imdb_id")
         let tvdb = ext["tvdb_id"] as? Int ?? 0
         var found: Int?
-        if imdb.hasPrefix("tt") { found = (await fetch("https://api.tvmaze.com/lookup/shows?imdb=\(imdb)") as? [String: Any])?["id"] as? Int }
-        if found == nil && tvdb > 0 { found = (await fetch("https://api.tvmaze.com/lookup/shows?thetvdb=\(tvdb)") as? [String: Any])?["id"] as? Int }
+        // "No such show" is kept for good; a lookup that got no answer is asked again next time.
+        var sure = true
+        for url in [imdb.hasPrefix("tt") ? "https://api.tvmaze.com/lookup/shows?imdb=\(imdb)" : nil,
+                    tvdb > 0 ? "https://api.tvmaze.com/lookup/shows?thetvdb=\(tvdb)" : nil].compactMap({ $0 }) where found == nil {
+            switch await ask(url) {
+            case .found(let o): found = (o as? [String: Any])?["id"] as? Int
+            case .notFound: break
+            case .noAnswer: sure = false
+            }
+        }
+        guard found != nil || sure else { return nil }
         ids[tmdbId] = found ?? -1
-        DreamStore.shared.set(ids, "tvmaze_ids")
+        DreamStore.shared.set(ids, "tvmaze_ids2")
         return found
     }
 
@@ -272,8 +301,23 @@ actor AirTimes {
         return eps
     }
 
+    /// What TVmaze said last, any age, without asking.
+    func cached(_ tmdbId: Int) -> Info? { infos[tmdbId] }
+
+    /// One call per show at a time: the New Episodes row, its banner and the pills ask for the same shows at launch.
+    private var infoRunning: [Int: Task<Info?, Never>] = [:]
+
     func info(_ tmdbId: Int) async -> Info? {
         if let i = infos[tmdbId], Date().timeIntervalSince(i.fetchedAt) < 3 * 3600 { return i }
+        if let r = infoRunning[tmdbId] { return await r.value }
+        let t = Task { await self.loadInfo(tmdbId) }
+        infoRunning[tmdbId] = t
+        let i = await t.value
+        infoRunning[tmdbId] = nil
+        return i
+    }
+
+    private func loadInfo(_ tmdbId: Int) async -> Info? {
         guard let maze = await mazeId(tmdbId),
               let o = await fetch("https://api.tvmaze.com/shows/\(maze)?embed%5B%5D=previousepisode&embed%5B%5D=nextepisode") as? [String: Any] else { return infos[tmdbId] }
         let emb = o["_embedded"] as? [String: Any]

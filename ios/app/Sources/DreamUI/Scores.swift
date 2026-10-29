@@ -40,9 +40,9 @@ public struct ScoreBadges: View {
         .fixedSize()
     }
 
-    /// Green 75+, amber 60+, red below, eased a touch toward white.
+    /// Green 75+, amber 60+, red below (the status colors' text tints, STANDARDS §2), eased a touch toward white.
     public static func scoreColor(_ score: Int) -> Color {
-        let c: UInt32 = score >= 75 ? 0x4ADE80 : score >= 60 ? 0xFBBF24 : 0xF87171
+        let c: UInt32 = score >= 75 ? 0x6BEB8F : score >= 60 ? 0xFFE266 : 0xFF8178
         return Color(hex: Rainbow.mixHex(c, 0xFFFFFF, 0.08))
     }
 }

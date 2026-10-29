@@ -65,6 +65,8 @@ public actor TmdbGate {
 
     public func enter(urgent: Bool) async {
         while true {
+            // A cancelled task's sleep returns at once, so it would spin here holding the gate; its request fails anyway.
+            if Task.isCancelled { return }
             let now = Date()
             stamps.removeAll { now.timeIntervalSince($0) >= 1 }
             if urgent || (now >= pausedUntil && stamps.count < perSecond) {

@@ -39,6 +39,8 @@ object XRayData {
 
     private const val MAX_FACES = 24
     private const val MAX_TITLES = 14
+    private val SKIP_GENRES = setOf(10767, 10763) // talk, news
+    private val SELF = Regex("(?i)\\b(self|himself|herself|narrator|host)\\b")
     private val castCache = LruCache<String, List<Face>>(8)
     private val personCache = LruCache<Int, Person>(16)
 
@@ -106,10 +108,11 @@ object XRayData {
 
     /** One person: born / died and birthplace, the start of the biography, and their best-known titles (not [excludeKey]). */
     fun person(ctx: Context, id: Int, excludeKey: String?): Person? {
-        personCache.get(id)?.let { return it.copyWithout(excludeKey) }
+        personCache.get(id)?.let { return it.copyWithout(ctx, excludeKey) }
         val j = WatchHistory.tmdb(ctx, "/person/$id", "&append_to_response=combined_credits") ?: return null
-        val born = clean(j.optString("birthday"))?.let { PlayerMeta.airDate(it) }
-        val died = clean(j.optString("deathday"))?.let { PlayerMeta.airDate(it) }
+        // The title page's long date ("July 31, 1970"), date-only so it never shifts a day.
+        val born = clean(j.optString("birthday"))?.let { TitleInfo.longDate(ctx, it) }
+        val died = clean(j.optString("deathday"))?.let { TitleInfo.longDate(ctx, it) }
         val life = when {
             born != null && died != null -> "$born – $died"
             born != null -> "Born $born"
@@ -118,23 +121,22 @@ object XRayData {
         val meta = listOfNotNull(life, clean(j.optString("place_of_birth"))).joinToString("  ·  ")
         val bio = clean(j.optString("biography")).orEmpty()
         val list = j.optJSONObject("combined_credits")?.optJSONArray("cast")
-        val skipGenres = setOf(10767, 10763) // talk, news
-        val self = Regex("(?i)\\b(self|himself|herself|narrator|host)\\b")
         val all = (0 until (list?.length() ?: 0)).mapNotNull { i ->
             val o = list?.optJSONObject(i) ?: return@mapNotNull null
-            if (self.containsMatchIn(o.optString("character"))) return@mapNotNull null
+            if (SELF.containsMatchIn(o.optString("character"))) return@mapNotNull null
             title(o)
-        }.filter { t -> t.posterPath != null && !t.adult && t.genreIds.none { it in skipGenres } }
+        }.filter { t -> t.posterPath != null && !t.adult && t.genreIds.none { it in SKIP_GENRES } }
             .distinctBy { it.key }.sortedByDescending { it.votes }
         // Known titles first; a newcomer's handful of small ones still shows.
         val known = all.filter { it.votes >= 20 }.let { if (it.size >= 4) it else all }.take(MAX_TITLES + 1)
         val p = Person(id, clean(j.optString("name")).orEmpty(), clean(j.optString("profile_path")), meta, bio, known)
         personCache.put(id, p)
-        return p.copyWithout(excludeKey)
+        return p.copyWithout(ctx, excludeKey)
     }
 
-    private fun Person.copyWithout(key: String?): Person =
-        Person(id, name, profilePath, meta, bio, knownFor.filter { it.key != key }.take(MAX_TITLES))
+    /** Without [key], within this profile's rating limit (a Kids profile; the cache itself holds every title). */
+    private fun Person.copyWithout(ctx: Context, key: String?): Person =
+        Person(id, name, profilePath, meta, bio, KidsFilter.titles(ctx, knownFor.filter { it.key != key }).take(MAX_TITLES))
 
     private fun title(o: JSONObject): Title? {
         val type = o.optString("media_type")
@@ -672,7 +674,7 @@ class PlayerXRay(
 
     private fun kicker(t: String) = kit.kicker(t).apply {
         setTextColor(Ui.alpha(fg, 0.62f))
-        ellipsize = null
+        ellipsize = android.text.TextUtils.TruncateAt.END // a long name ends in "…", never a silent cut (STANDARDS §3)
         setPadding(0, 0, 12.dp, 0)
     }
 

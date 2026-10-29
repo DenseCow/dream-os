@@ -158,16 +158,26 @@ struct TitleDetailsView: View {
                 MetaFlow(spacing: 12, lineSpacing: 8) {
                     WatchedPill(large: true)
                     if model.isShow, let note = model.availability?.note, !note.isEmpty { statusNote(note) }
+                    languagePills
                 }
-            } else if let a = model.availability {
+            } else if let a = model.shownAvailability {
                 MetaFlow(spacing: 12, lineSpacing: 8) {
                     DetailStatusPill(state: a.state, text: a.pageLabels.first, large: true)
                     if let note = a.note, !note.isEmpty { statusNote(note) }
+                    languagePills
                 }
+            } else if !model.languagePills.isEmpty {
+                MetaFlow(spacing: 12, lineSpacing: 8) { languagePills }
             }
         }
         .padding(.top, 14)
         .animation(.easeOut(duration: 0.24), value: model.scores)
+        .animation(.easeOut(duration: 0.24), value: model.languagePills)
+    }
+
+    /// What Play plays when it isn't in the viewer's audio language (LanguagePills); none for a match.
+    private var languagePills: some View {
+        ForEach(model.languagePills) { LanguagePill($0).transition(.opacity) }
     }
 
     private func statusNote(_ note: String) -> some View {
@@ -314,7 +324,8 @@ struct TitleDetailsView: View {
                                 pill: model.progress(for: ep) == nil ? model.episodePills[ep.id] : nil,
                                 watched: model.progress(for: ep) == nil && !ep.upcoming
                                     && WatchedState.shared.episode(show: model.title.id, season: ep.season, episode: ep.number),
-                                fallback: [model.shown.backdrop("w1280")] + model.episodeFallbackArt(season: n)) {
+                                fallback: [model.shown.backdrop("w1280")] + model.episodeFallbackArt(season: n),
+                                language: model.languageWords(for: ep)) {
                         play(model.request(for: ep))
                     }
                 }
@@ -622,6 +633,8 @@ struct EpisodeCard: View {
     var watched = false
     /// Art when TMDB has no still for this episode (or it won't load): the show's backdrop, the season's poster.
     var fallback: [URL?] = []
+    /// "Japanese Audio" once Dream Core has read this episode's copies and they don't carry the viewer's language (LanguagePills).
+    var language: String? = nil
     var play: () -> Void
 
     static let gap: CGFloat = 14
@@ -706,7 +719,7 @@ struct EpisodeCard: View {
             if let at = episode.airsAt { return "Coming " + DreamTime.airLabel(at) }
             return PageTime.shortDate(episode.airDate).map { "Coming \($0)" } ?? "Coming Soon"
         }
-        return [InfoWords.runtime(episode.runtime), PageTime.shortDate(episode.airDate)].compactMap { $0 }.joined(separator: Cinema.dot)
+        return [InfoWords.runtime(episode.runtime), PageTime.shortDate(episode.airDate), language].compactMap { $0 }.joined(separator: Cinema.dot)
     }
 }
 

@@ -1,10 +1,8 @@
 package com.firehome.launcher
 
-import android.app.AppOpsManager
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
-import android.os.Process
 import android.provider.Settings
 import android.util.Log
 import android.view.View
@@ -25,11 +23,16 @@ import java.io.File
  *
  * Nothing leaves the Fire TV: the connection is to the stick itself, and the key stays in Dream OS's
  * private storage.
+ *
+ * Some Fire OS builds (7.7.1.7 on the Fire TV Stick HD) hang up on every ADB connection that starts on
+ * the stick itself, before AUTH and without a prompt. [probeLocal] spots that, and the viewer finishes
+ * from another device on the Wi-Fi: the Dream app on an iPhone (Settings › Unlock Fire Stick, which runs
+ * the same grants) or a computer. [Announce] lets the iPhone find this TV without typing its address.
  */
 object DreamUnlock {
     private const val TAG = "FireHome"
     private const val HOST = "127.0.0.1"
-    private const val PORT = 5555
+    const val PORT = 5555
 
     /** One thing the unlock turns on, in the viewer's words (short enough for a two-column grid). */
     class Feature(val title: String, val caption: String, val on: (Context) -> Boolean)
@@ -38,9 +41,10 @@ object DreamUnlock {
         Feature("Home Button", "Takes the place of Amazon's home screen.") { homeOn(it) },
         Feature("Starts in Dream OS", "Skips the Amazon home screen at startup.") { homeOn(it) },
         Feature("Voice Search", "The microphone button searches Dream OS.") { voiceOn(it) },
-        Feature("Continue Watching", "Includes shows from your other apps.") { listenerOn(it) },
+        // Dream OS's own Continue Watching never needs the unlock; this adds what plays in other apps.
+        Feature("Your Other Apps", "Adds their shows to Continue Watching.") { listenerOn(it) },
         Feature("Screensaver", "Rests on the Dream OS screensaver.") { screensaverOn(it) },
-        Feature("Stays Set Up", "Restores the Home button after Fire TV updates.") { secureOn(it) },
+        Feature("Stays Set Up", "Restores the Home button after Fire Stick updates.") { secureOn(it) },
     )
 
     // ---- what's on ----
@@ -50,16 +54,9 @@ object DreamUnlock {
     fun voiceOn(ctx: Context) = secure(ctx, "voice_interaction_service") == "${ctx.packageName}/.FireVoiceService"
     fun listenerOn(ctx: Context) = secure(ctx, "enabled_notification_listeners").orEmpty().contains("${ctx.packageName}/")
     fun screensaverOn(ctx: Context) = secure(ctx, "screensaver_components").orEmpty().contains(DreamSaver::class.java.name)
-    fun usageOn(ctx: Context) = try {
-        val ops = ctx.getSystemService(Context.APP_OPS_SERVICE) as AppOpsManager
-        @Suppress("DEPRECATION")
-        ops.checkOpNoThrow(AppOpsManager.OPSTR_GET_USAGE_STATS, Process.myUid(), ctx.packageName) == AppOpsManager.MODE_ALLOWED
-    } catch (e: Exception) { false }
-    fun installsOn(ctx: Context) = try { ctx.packageManager.canRequestPackageInstalls() } catch (e: Exception) { false }
 
     /** Everything unlocked. */
     fun allOn(ctx: Context) = FEATURES.all { it.on(ctx) }
-    fun anyLocked(ctx: Context) = !allOn(ctx)
     fun lockedCount(ctx: Context) = FEATURES.count { !it.on(ctx) }
 
     fun adbOn(ctx: Context) = try { Settings.Global.getInt(ctx.contentResolver, Settings.Global.ADB_ENABLED, 0) == 1 } catch (e: Exception) { false }
@@ -75,8 +72,87 @@ object DreamUnlock {
 
     sealed class Result {
         object Done : Result()
+        /** This Fire TV refuses ADB from itself: finish from an iPhone or a computer. */
+        object Blocked : Result()
         /** User-facing, plain words. */
         class Failed(val message: String) : Result()
+    }
+
+    /** What the stick's own ADB does with a connection from Dream OS. */
+    enum class Local { OPEN, BLOCKED, OFF }
+
+    /**
+     * Sends a bare CNXN to 127.0.0.1:5555. A working adbd answers at once (AUTH); a Fire OS that blocks
+     * on-device ADB closes the socket with nothing sent, or never answers. Blocking: off the main thread.
+     */
+    fun probeLocal(): Local = try {
+        java.net.Socket().use { s ->
+            s.connect(java.net.InetSocketAddress(HOST, PORT), 2_000)
+            s.soTimeout = 3_000
+            s.getOutputStream().apply { write(cnxn()); flush() }
+            if (s.getInputStream().read() < 0) Local.BLOCKED else Local.OPEN
+        }
+    } catch (e: java.net.ConnectException) {
+        Local.OFF
+    } catch (e: java.io.IOException) {
+        // Reset by peer, or no answer within 3 s: either way no prompt will ever show.
+        Log.w(TAG, "Unlock: local ADB probe: $e")
+        Local.BLOCKED
+    }
+
+    private fun cnxn(): ByteArray {
+        val payload = "host::\u0000".toByteArray()
+        val cmd = 0x4e584e43 // "CNXN"
+        return java.nio.ByteBuffer.allocate(24 + payload.size).order(java.nio.ByteOrder.LITTLE_ENDIAN)
+            .putInt(cmd).putInt(0x01000000).putInt(256 * 1024).putInt(payload.size)
+            .putInt(payload.sumOf { it.toInt() and 0xff }).putInt(cmd.inv()).put(payload).array()
+    }
+
+    /** This TV's address on the Wi-Fi, for the iPhone or a computer. */
+    fun address(): String? = PhoneRemote.localIp()
+
+    /**
+     * Announces this TV as `_dreamos-adb._tcp` (port 5555) while an Unlock screen shows, so the Dream app on
+     * an iPhone lists it by name. Main thread only. [stop] waits a moment, so moving between Unlock screens
+     * doesn't withdraw and re-announce.
+     */
+    object Announce {
+        const val SERVICE = "_dreamos-adb._tcp"
+        private val main = android.os.Handler(android.os.Looper.getMainLooper())
+        private var nsd: android.net.nsd.NsdManager? = null
+        private var reg: android.net.nsd.NsdManager.RegistrationListener? = null
+        private val stopLater = Runnable { stopNow() }
+
+        fun start(ctx: Context) {
+            main.removeCallbacks(stopLater)
+            if (reg != null) return
+            try {
+                val app = ctx.applicationContext
+                val m = app.getSystemService(Context.NSD_SERVICE) as android.net.nsd.NsdManager
+                val l = object : android.net.nsd.NsdManager.RegistrationListener {
+                    override fun onServiceRegistered(i: android.net.nsd.NsdServiceInfo) { Log.w(TAG, "Unlock: announced as ${i.serviceName}") }
+                    override fun onRegistrationFailed(i: android.net.nsd.NsdServiceInfo, err: Int) { Log.w(TAG, "Unlock: announce failed ($err); the address still works") }
+                    override fun onServiceUnregistered(i: android.net.nsd.NsdServiceInfo) {}
+                    override fun onUnregistrationFailed(i: android.net.nsd.NsdServiceInfo, err: Int) {}
+                }
+                val info = android.net.nsd.NsdServiceInfo().apply {
+                    serviceName = BackupTransfer.deviceName(app).take(60); serviceType = SERVICE; port = PORT
+                }
+                m.registerService(info, android.net.nsd.NsdManager.PROTOCOL_DNS_SD, l)
+                nsd = m
+                reg = l
+            } catch (e: Exception) { Log.w(TAG, "Unlock: announce failed: $e") }
+        }
+
+        fun stop() {
+            main.removeCallbacks(stopLater)
+            main.postDelayed(stopLater, 1_500)
+        }
+
+        private fun stopNow() {
+            reg?.let { r -> try { nsd?.unregisterService(r) } catch (e: Exception) {} }
+            reg = null
+        }
     }
 
     /** Dream OS's own ADB key, made once, kept in private storage. */
@@ -90,21 +166,26 @@ object DreamUnlock {
 
     /**
      * Connects to the stick's own ADB and grants what needs it. Blocking: run off the main thread.
-     * [progress] gets plain status lines ("Waiting for you to choose Allow…").
+     * [progress] gets a headline and a plain sentence under it.
      */
-    fun unlock(ctx: Context, progress: (String) -> Unit): Result {
+    fun unlock(ctx: Context, progress: (headline: String, note: String) -> Unit): Result {
         val app = ctx.applicationContext
         if (!adbOn(app)) return Result.Failed("Turn on ADB Debugging first, then try again.")
         val t0 = System.currentTimeMillis()
         val pkg = app.packageName
+        progress("Connecting to Your Fire Stick", "")
+        when (probeLocal()) {
+            Local.BLOCKED -> { Log.w(TAG, "Unlock: this Fire OS refuses ADB from the stick itself"); return Result.Blocked }
+            Local.OFF -> return Result.Failed("Dream OS couldn't reach ADB Debugging. Make sure it's on, then try again.")
+            Local.OPEN -> {}
+        }
         return try {
-            progress("Connecting to your Fire TV…")
             // The socket timeout covers waiting for the viewer to choose Allow on Fire TV's prompt.
             Dadb.create(HOST, PORT, keyPair(app), connectTimeout = 4_000, socketTimeout = 90_000).use { adb ->
-                progress("On the next screen, check “Always allow from this computer”, then choose OK.")
+                progress("Choose OK on the Next Screen", "Check “Always allow from this computer” first, so it stays allowed.")
                 val hello = adb.shell("echo ready")
-                if (!hello.output.contains("ready")) return Result.Failed("Your Fire TV didn't answer. Try again.")
-                progress("Unlocking…")
+                if (!hello.output.contains("ready")) return Result.Failed("Your Fire Stick didn't answer. Try again.")
+                progress("Unlocking", "This takes a few seconds.")
                 val cmds = listOf(
                     "pm grant $pkg android.permission.WRITE_SECURE_SETTINGS",
                     "cmd notification allow_listener $pkg/$pkg.AppWatchService",
@@ -133,7 +214,7 @@ object DreamUnlock {
             Result.Failed("The Allow prompt timed out. Try again, then choose OK.")
         } catch (e: Exception) {
             Log.w(TAG, "Unlock: failed: $e")
-            Result.Failed("Fire TV didn't allow the connection. Try again and choose OK, with “Always allow” checked.")
+            Result.Failed("Your Fire Stick didn't allow the connection. Try again and choose OK, with “Always allow” checked.")
         }
     }
 
@@ -156,62 +237,24 @@ object DreamUnlock {
 
 /** Settings › Unlock Features: the [UnlockPages] as a full page over the app (the same look as Settings › Accounts). */
 object UnlockSettings {
-    private var openPage: View? = null
+    fun isOpen() = DreamPanelPage.isOpen()
 
     fun value(ctx: Context) = DreamUnlock.lockedCount(ctx).let { if (it == 0) "All Unlocked" else "$it Locked" }
 
-    fun open(a: android.app.Activity, onClose: (() -> Unit)? = null) {
-        if (openPage != null) return
-        val k = PremiumKit(a)
-        val ui = SetupUi(a, k)
-        val panel = SetupPanel(ui)
-        val parts = SetupParts(a, k)
-        val back = a.currentFocus
-        val dp = { v: Int -> Ui.dp(a, v) }
-        lateinit var root: OverlayRoot
-        fun close() {
-            val r = root
-            openPage = null
-            r.animate().alpha(0f).setDuration(Ui.OVERLAY_OUT).setInterpolator(Ui.EXIT).withEndAction {
-                panel.release()
-                (r.parent as? android.view.ViewGroup)?.removeView(r)
-            }.start()
-            if (back != null && back.isAttachedToWindow) back.requestFocus()
-            onClose?.invoke()
-        }
-        root = OverlayRoot(a) { if (!panel.pop()) close() }
-        root.isClickable = true
-        SetupBrand.backdrop(root)
-        val row = android.widget.LinearLayout(a).apply {
-            orientation = android.widget.LinearLayout.HORIZONTAL
-            setPadding(dp(PremiumKit.EDGE), dp(44), dp(56), dp(36))
-        }
-        val left = android.widget.LinearLayout(a).apply { orientation = android.widget.LinearLayout.VERTICAL }
-        val wrap = android.view.ViewGroup.LayoutParams.WRAP_CONTENT
-        val match = android.view.ViewGroup.LayoutParams.MATCH_PARENT
-        left.addView(SetupArt(a, SetupArt.Kind.UNLOCK), android.widget.LinearLayout.LayoutParams(dp(132), dp(132)))
-        left.addView(k.label("SETTINGS", 12f, Ui.alpha(android.graphics.Color.WHITE, 0.62f), k.semibold, Ui.TRACK_CAPS),
-            android.widget.LinearLayout.LayoutParams(wrap, wrap).apply { topMargin = dp(18) })
-        left.addView(k.label("Unlock Features", 32f, SetupBrand.TEXT, k.semibold, Ui.TRACK_TITLE, lines = 2),
-            android.widget.LinearLayout.LayoutParams(wrap, wrap).apply { topMargin = dp(8) })
-        left.addView(parts.note("Let Dream OS fully take over your Fire TV: the Home button, startup, voice search and more. A one-time step.", 16f)
-            .apply { setPadding(0, 0, 0, 0) }, android.widget.LinearLayout.LayoutParams(match, wrap).apply { topMargin = dp(12) })
-        row.addView(left, android.widget.LinearLayout.LayoutParams(0, wrap, 0.36f))
-        row.addView(panel, android.widget.LinearLayout.LayoutParams(0, match, 0.64f).apply { marginStart = dp(56) })
-        root.addView(row, android.widget.FrameLayout.LayoutParams(match, match, android.view.Gravity.TOP))
-        Ui.unclip(row)
-        (a.window.decorView as android.widget.FrameLayout).addView(root, match, match)
-        openPage = root
-        root.alpha = 0f
-        root.animate().alpha(1f).setDuration(Ui.OVERLAY_IN).setInterpolator(Ui.EASE).start()
+    fun open(a: android.app.Activity, onClose: (() -> Unit)? = null) = DreamPanelPage.open(a, SetupArt.Kind.UNLOCK, "Unlock Features",
+        "Let Dream OS fully take over your Fire Stick: the Home button, startup, voice search and more. A one-time step.", onClose) { ui, panel, _ ->
         Log.w("FireHome", "Unlock: Settings page opened (${value(a)})")
-        panel.push(UnlockPages(a, ui, panel, onChange = {}).overview(), animate = false)
+        UnlockPages(a, ui, panel, onChange = {}).overview()
     }
 }
 
 /**
  * The Unlock screens for a [SetupPanel], shared by setup and Settings: why it's needed, what it turns
- * on, the steps, then the result per feature and "Turn Off ADB Debugging".
+ * on, the steps, the unlock itself (or, on a Fire TV that refuses it, how to finish from an iPhone or a
+ * computer), then the result per feature and "Turn Off ADB Debugging".
+ *
+ * Every screen is built once and updated in place: its buttons exist from the start, so focus only moves
+ * when the viewer moves it (or once, onto Try Again, when an attempt fails).
  */
 internal class UnlockPages(
     private val ctx: Context,
@@ -220,13 +263,20 @@ internal class UnlockPages(
     private val onChange: () -> Unit,
     /** After ADB Debugging was turned off here (setup moves focus on to Continue). */
     private val afterTurnOff: (() -> Unit)? = null,
+    /**
+     * First-run setup: the wizard's stage says why and holds the actions (Unlock Now, Show Me How, Not Now:
+     * [begin], [howTo]), so the overview is only what it turns on, in three columns that fit without scrolling.
+     */
+    private val setup: Boolean = false,
 ) {
     private val k = ui.k
     private val parts = SetupParts(ctx, k)
     /** ADB was turned off from this page: its row stays, showing that, so focus never falls off the page. */
     private var turnedOff = false
     private fun app() = ctx.applicationContext
-    @Volatile private var running = false
+    private fun dp(v: Int) = Ui.dp(ctx, v)
+    /** Bumped by every attempt; an older attempt's late answer is dropped. */
+    private var attempt = 0
 
     /**
      * Fits without scrolling: the actions first (the only things to focus), then what it turns on as a
@@ -239,54 +289,57 @@ internal class UnlockPages(
         fun paint() {
             val all = DreamUnlock.allOn(app())
             val adb = DreamUnlock.adbOn(app())
-            s.view("why", 0) {
-                parts.note("Fire TV keeps a few settings locked to outside apps. Dream OS can unlock them itself. " +
-                    "It takes about a minute, and nothing leaves your Fire TV.", 15f)
+            if (!setup) s.view("why", 0) {
+                parts.note("Your Fire Stick keeps a few settings locked to outside apps. Dream OS unlocks them in about a minute, " +
+                    "right here or from the Dream app on your iPhone.", 15f)
             }
             val done = s.view("done", 14) { parts.result(true, "Everything Is Unlocked") }
-            done.visibility = if (all) View.VISIBLE else View.GONE
-            val go = rows.row("go", 14) { parts.row(null, chevron = true) { start(s) } }
-            go.set("Unlock Now", if (adb) "Dream OS connects to your Fire TV and asks you to allow it." else "Turn on ADB Debugging first.")
+            done.visibility = if (all && !setup) View.VISIBLE else View.GONE
+            val go = rows.row("go", 14) { parts.row(null, chevron = true) { start(replace = false) } }
+            go.set("Unlock Now", if (adb) "Dream OS connects to your Fire Stick and asks you to allow it." else "Turn on ADB Debugging first.")
             val steps = rows.row("steps", 6) { parts.row(null, chevron = true) { panel.push(steps()) } }
             steps.set("How to Turn On ADB Debugging", "Four quick steps", if (adb) "On" else null,
                 if (adb) SetupBrand.GREEN else null, if (adb) BrandRow.Mark.OK else BrandRow.Mark.NONE)
-            go.visibility = if (all) View.GONE else View.VISIBLE
-            steps.visibility = if (all) View.GONE else View.VISIBLE
+            go.visibility = if (all || setup) View.GONE else View.VISIBLE
+            steps.visibility = if (all || setup) View.GONE else View.VISIBLE
             val off = rows.row("off", 10) { parts.row(null, chevron = true) { if (DreamUnlock.adbOn(app())) turnOff(s) } }
             if (adb) off.set("Turn Off ADB Debugging", "Recommended. Everything stays unlocked.")
             else off.set("ADB Debugging Is Off", "Everything stays unlocked.", null, SetupBrand.GREEN, BrandRow.Mark.OK)
-            off.visibility = if (all && DreamUnlock.secureOn(app()) && (adb || turnedOff)) View.VISIBLE else View.GONE
-            s.view("k:what", 20) { parts.section("What It Turns On", null) }
-            s.view("grid", 10) { featureGrid(marks) }
+            off.visibility = if (!setup && all && DreamUnlock.secureOn(app()) && (adb || turnedOff)) View.VISIBLE else View.GONE
+            if (!setup) s.view("k:what", 20) { parts.section("What It Turns On", null) }
+            s.view("grid", 10) { featureGrid(marks, if (setup) 3 else 2) }
             for ((i, f) in DreamUnlock.FEATURES.withIndex()) {
                 val want = if (f.on(app())) BrandRow.Mark.OK else BrandRow.Mark.OFF
                 marks.getOrNull(i)?.let { m -> if (m.tag != want) { m.tag = want; m.background = StatusGlyph(want) } }
             }
         }
-        s.onShow = { paint(); onChange() }
+        s.onShow = { DreamUnlock.Announce.start(app()); paint(); onChange() }
         s.onResume = { paint(); onChange() }
+        s.onHide = { DreamUnlock.Announce.stop() }
         return s
     }
 
-    /** Six features in two columns: a status mark, a short title and a one-line caption. Not focusable. */
-    private fun featureGrid(marks: MutableList<View>): View {
-        val dp = { v: Int -> Ui.dp(ctx, v) }
+    /** The six features in [cols] columns: a status mark, a short title and its caption, wrapping in full. Not focusable. */
+    private fun featureGrid(marks: MutableList<View>, cols: Int): View {
         val grid = android.widget.LinearLayout(ctx).apply { orientation = android.widget.LinearLayout.VERTICAL }
-        for (pair in DreamUnlock.FEATURES.chunked(2)) {
+        for (pair in DreamUnlock.FEATURES.chunked(cols)) {
             val line = android.widget.LinearLayout(ctx).apply { orientation = android.widget.LinearLayout.HORIZONTAL }
             for ((j, f) in pair.withIndex()) {
                 val cell = android.widget.LinearLayout(ctx).apply {
                     orientation = android.widget.LinearLayout.HORIZONTAL
                     gravity = android.view.Gravity.TOP
-                    setPadding(dp(14), dp(12), dp(14), dp(12))
+                    if (cols > 2) setPadding(dp(12), dp(10), dp(12), dp(10)) else setPadding(dp(14), dp(12), dp(14), dp(12))
                     background = Ui.rounded(ctx, Ui.alpha(android.graphics.Color.WHITE, 0.035f), Ui.R_MD)
                 }
                 val mark = View(ctx)
                 marks += mark
                 cell.addView(mark, android.widget.LinearLayout.LayoutParams(dp(20), dp(20)).apply { topMargin = dp(2); marginEnd = dp(12) })
                 val texts = android.widget.LinearLayout(ctx).apply { orientation = android.widget.LinearLayout.VERTICAL }
-                texts.addView(k.label(f.title, 15.5f, SetupBrand.TEXT, k.medium, lines = 1))
-                texts.addView(k.label(f.caption, 12.5f, SetupBrand.DIM, k.font, lines = 2).apply { setPadding(0, dp(3), 0, 0) })
+                texts.addView(k.label(f.title, 15.5f, SetupBrand.TEXT, k.medium, lines = 0))
+                texts.addView(k.label(f.caption, 13f, SetupBrand.DIM, k.font, lines = 0).apply {
+                    setPadding(0, dp(3), 0, 0)
+                    hyphenationFrequency = android.text.Layout.HYPHENATION_FREQUENCY_NONE
+                })
                 cell.addView(texts, android.widget.LinearLayout.LayoutParams(0, android.view.ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
                 line.addView(cell, android.widget.LinearLayout.LayoutParams(0, android.view.ViewGroup.LayoutParams.MATCH_PARENT, 1f)
                     .apply { if (j > 0) marginStart = dp(10) })
@@ -297,52 +350,180 @@ internal class UnlockPages(
         return grid
     }
 
-    /** The picture steps for turning on ADB Debugging. */
+    /**
+     * One numbered step: the round badge and the whole sentence, never cut (no line cap). A one-line step
+     * sits centered on its badge; a longer one runs down from the badge's top.
+     */
+    private fun step(n: Int, text: CharSequence, badgeDp: Int, size: Float) = numberedStep(ctx, k, n, text, badgeDp, size)
+
+    /** Two buttons side by side; [first] may be hidden, and then [second] starts at the edge. */
+    private fun actions(first: View, second: View) = android.widget.LinearLayout(ctx).apply {
+        orientation = android.widget.LinearLayout.HORIZONTAL
+        gravity = android.view.Gravity.CENTER_VERTICAL
+        clipChildren = false
+        clipToPadding = false
+        addView(first, android.widget.LinearLayout.LayoutParams(android.view.ViewGroup.LayoutParams.WRAP_CONTENT, dp(46)).apply { marginEnd = dp(14) })
+        addView(second, android.widget.LinearLayout.LayoutParams(android.view.ViewGroup.LayoutParams.WRAP_CONTENT, dp(46)))
+    }
+
+    /** Room below a screen's last button for its focus lift and glow, inside the scroller (its edge clips). */
+    private fun endRoom() = View(ctx).apply {
+        layoutParams = android.widget.LinearLayout.LayoutParams(android.view.ViewGroup.LayoutParams.MATCH_PARENT, dp(16))
+    }
+
+    /** Setup's Unlock Now: the unlock (or the ADB steps first when ADB Debugging is off). */
+    fun begin() = start(replace = false)
+
+    /** Setup's Turn Off ADB Debugging is offered: everything is unlocked and ADB is still on. */
+    fun canTurnOff() = DreamUnlock.allOn(app()) && DreamUnlock.secureOn(app()) && DreamUnlock.adbOn(app())
+
+    /** Setup's Turn Off ADB Debugging (the overview repaints; [afterTurnOff] moves focus on). */
+    fun turnOffAdb() { panel.top?.let { turnOff(it) } }
+
+    /** Setup's Show Me How: the steps for turning on ADB Debugging. */
+    fun howTo() = panel.push(steps())
+
+    /** The picture steps for turning on ADB Debugging. Sized to fit setup's panel at 1080p without scrolling. */
     private fun steps(): SetupScreen {
         val s = SetupScreen(ui, "Turn On ADB Debugging", null)
         val lines = listOf(
-            "1" to "Open Settings › My Fire TV.",
-            "2" to "If you don't see Developer Options, choose About, then press your Fire TV's name 7 times.",
-            "3" to "Go back, open Developer Options, and turn on ADB Debugging.",
-            "4" to "Come back to Dream OS and choose Unlock Now.",
+            "Open Settings › My Fire TV.",
+            "Missing Developer Options? Choose About, then press Select on your Fire Stick's name 7 times.",
+            "Go back, open Developer Options and turn on ADB Debugging.",
+            "Come back to Dream OS and choose Unlock Now.",
         )
         s.onShow = {
-            for ((i, l) in lines.withIndex()) {
-                s.view("s$i", if (i == 0) 0 else 10) { parts.result(null, l.second).apply {
-                    // The step number in the same round badge the other numbered steps use.
-                    removeViewAt(0)
-                    addView(SetupArt.monogram(ctx, l.first, 40), 0, android.widget.LinearLayout.LayoutParams(Ui.dp(ctx, 40), Ui.dp(ctx, 40)))
-                } }
-            }
-            s.view("open", 20) {
-                parts.pills(parts.pill("Open Fire TV Settings", true) { DreamUnlock.openFireTvSettings(ctx) })
-            }
+            for ((i, l) in lines.withIndex()) s.view("s$i", if (i == 0) 0 else 8) { step(i + 1, l, 30, 16f) }
+            s.view("open", 18) { parts.pills(parts.pill("Open Fire Stick Settings", true) { DreamUnlock.openFireTvSettings(ctx) }) }
+            s.view("end", 0) { endRoom() }
         }
         s.onResume = { if (DreamUnlock.adbOn(app())) panel.pop() }
         return s
     }
 
-    private fun start(from: SetupScreen) {
-        if (running) return
+    /**
+     * The unlock on this TV. A status line, a sentence and the actions, made once and updated in place.
+     * "Not Now" is there from the start; "Try Again" joins it after a failed attempt and takes focus once.
+     * [replace] swaps it in for the screen on top (Try Again on the iPhone screen) instead of stacking it.
+     */
+    private fun start(replace: Boolean) {
         if (!DreamUnlock.adbOn(app())) { panel.push(steps()); return }
-        val s = SetupScreen(ui, "Unlocking", null)
-        val line = k.label("Connecting to your Fire TV…", 20f, SetupBrand.TEXT, k.semibold, lines = 3)
-        s.onShow = { s.view("line", 0) { line } }
-        panel.push(s)
-        running = true
-        Thread {
-            val r = DreamUnlock.unlock(app()) { msg -> ui.main.post { line.text = msg } }
-            ui.main.post {
-                running = false
-                when (r) {
-                    is DreamUnlock.Result.Done -> { panel.pop(); onChange() }
-                    is DreamUnlock.Result.Failed -> {
-                        line.text = r.message
-                        s.view("retry", 20) { parts.pills(parts.pill("Try Again", true) { panel.pop(); start(from) }) }
+        val s = SetupScreen(ui, null, null)
+        val glyph = View(ctx)
+        val head = k.label("", 22f, SetupBrand.TEXT, k.semibold, lines = 0)
+        val status = android.widget.LinearLayout(ctx).apply {
+            orientation = android.widget.LinearLayout.HORIZONTAL
+            gravity = android.view.Gravity.CENTER_VERTICAL
+            addView(glyph, android.widget.LinearLayout.LayoutParams(dp(40), dp(40)))
+            addView(head, android.widget.LinearLayout.LayoutParams(0, android.view.ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply { marginStart = dp(16) })
+        }
+        val note = parts.note("", 16f)
+        var busy = false
+        lateinit var run: () -> Unit
+        val retry = parts.pill("Try Again", true) { run() }.apply { visibility = View.GONE }
+        val skip = parts.pill("Not Now", false) { if (s.alive) panel.pop() }
+        fun show(headline: String, sentence: String, mark: BrandRow.Mark) {
+            if (head.text.toString() != headline) head.text = headline
+            note.text = sentence
+            note.visibility = if (sentence.isEmpty()) View.GONE else View.VISIBLE
+            if (glyph.tag != mark) { glyph.tag = mark; glyph.background = StatusGlyph(mark) }
+        }
+        run = {
+            if (!busy) {
+                busy = true
+                val me = ++attempt
+                show("Connecting to Your Fire Stick", "", BrandRow.Mark.BUSY)
+                Thread {
+                    val r = DreamUnlock.unlock(app()) { h, n -> ui.main.post { if (s.alive && me == attempt) show(h, n, BrandRow.Mark.BUSY) } }
+                    ui.main.post {
+                        busy = false
+                        if (me != attempt) return@post
+                        when (r) {
+                            is DreamUnlock.Result.Done -> { if (s.alive) panel.pop(); onChange() }
+                            is DreamUnlock.Result.Blocked -> if (s.alive) panel.replace(phone())
+                            is DreamUnlock.Result.Failed -> {
+                                show("Unlock Didn't Finish", r.message, BrandRow.Mark.WARN)
+                                if (retry.visibility != View.VISIBLE) {
+                                    retry.visibility = View.VISIBLE
+                                    if (s.alive) retry.requestFocus()
+                                }
+                            }
+                        }
                     }
-                }
+                }.start()
             }
-        }.start()
+        }
+        show("Connecting to Your Fire Stick", "", BrandRow.Mark.BUSY)
+        s.onShow = {
+            DreamUnlock.Announce.start(app())
+            s.view("status", 0) { status }
+            s.view("note", 10) { note }
+            s.view("actions", 24) { actions(retry, skip) }
+            s.view("end", 0) { endRoom() }
+        }
+        s.onHide = { DreamUnlock.Announce.stop() }
+        s.focus = { retry.takeIf { it.visibility == View.VISIBLE } ?: skip }
+        if (replace) panel.replace(s) else panel.push(s)
+        run()
+    }
+
+    /**
+     * This Fire TV refuses ADB from itself, so the unlock comes from another device on the Wi-Fi: the Dream
+     * app on an iPhone (it finds this TV by its announcement, or by the address shown here) or a computer.
+     * The screen watches for the grants and moves on by itself once they land.
+     */
+    private fun phone(): SetupScreen {
+        val s = SetupScreen(ui, null, null)
+        val ip = DreamUnlock.address()
+        val where: CharSequence = if (ip == null) "Choose this Fire Stick in the list." else android.text.SpannableStringBuilder("Choose this Fire Stick, or enter ").apply {
+            val from = length
+            append(ip)
+            setSpan(android.text.style.StyleSpan(android.graphics.Typeface.BOLD), from, length, android.text.Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+            append(" (port ${DreamUnlock.PORT}).")
+        }
+        val retry = parts.pill("Try Again", true) { if (s.alive) start(replace = true) }
+        val skip = parts.pill("Not Now", false) { if (s.alive) panel.pop() }
+        val lockedAtStart = DreamUnlock.lockedCount(app())
+        var last = lockedAtStart
+        var steady = 0
+        var homeSet = false
+        val watch = object : Runnable {
+            override fun run() {
+                if (!s.alive) return
+                val a = app()
+                // The iPhone grants WRITE_SECURE_SETTINGS first; with it Dream OS sets the rest itself.
+                if (!homeSet && DreamUnlock.secureOn(a)) { homeSet = true; HomeRedirectService.ensureEnabled(a, userAsked = true) }
+                val locked = DreamUnlock.lockedCount(a)
+                steady = if (locked == last) steady + 1 else 0
+                last = locked
+                if (locked == 0 || (locked < lockedAtStart && steady >= 3)) {
+                    Log.w("FireHome", "Unlock: finished from another device, $locked still locked")
+                    panel.pop()
+                    onChange()
+                    return
+                }
+                ui.main.postDelayed(this, 2_000)
+            }
+        }
+        s.onShow = {
+            DreamUnlock.Announce.start(app())
+            s.view("head", 0) { parts.result(null, "Unlock From Your iPhone") }
+            s.view("why", 10) { parts.note("This Fire Stick only accepts the unlock from another device on your Wi-Fi.", 16f) }
+            s.view("s1", 16) { step(1, "On your iPhone, open Dream, then Settings › Unlock Fire Stick.", 28, 15.5f) }
+            s.view("s2", 8) { step(2, where, 28, 15.5f) }
+            s.view("s3", 8) { step(3, "On this TV, check “Always allow from this computer”, then choose OK.", 28, 15.5f) }
+            s.view("actions", 20) { actions(retry, skip) }
+            s.view("pc", 14) {
+                parts.note("Using a computer instead? Follow “Make Dream Your Home Screen” at github.com/DenseCow/dream-os.", 13.5f)
+            }
+            s.view("end", 0) { endRoom() }
+            ui.main.removeCallbacks(watch)
+            ui.main.postDelayed(watch, 2_000)
+        }
+        s.onResume = { ui.main.removeCallbacks(watch); watch.run() }
+        s.onHide = { ui.main.removeCallbacks(watch); DreamUnlock.Announce.stop() }
+        Log.w("FireHome", "Unlock: showing the iPhone steps (${ip ?: "no address"})")
+        return s
     }
 
     private fun turnOff(s: SetupScreen) {

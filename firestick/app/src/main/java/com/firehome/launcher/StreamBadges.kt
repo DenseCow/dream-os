@@ -44,7 +44,7 @@ object StreamBadges {
         val url = exo.url
         val rel = synchronized(known) { known[url] }
         val name = rel?.name?.takeIf { it.isNotBlank() } ?: fileName(url)
-        val tags = name?.let { " " + stripExt(it).uppercase(Locale.US).replace(Regex("[^A-Z0-9+]+"), " ") + " " }.orEmpty()
+        val tags = name?.let { " " + stripExt(it).uppercase(Locale.US).replace(NON_WORD, " ") + " " }.orEmpty()
         val v = p.videoFormat ?: selected(p, C.TRACK_TYPE_VIDEO)
         val a = p.audioFormat ?: selected(p, C.TRACK_TYPE_AUDIO)
         val out = ArrayList<Badge>()
@@ -55,6 +55,8 @@ object StreamBadges {
         source(tags)?.let { out.add(Badge(it, warn = it == "CAM")) }
         return Facts(out, rel?.size?.takeIf { it > 0 }?.let { sizeText(it) })
     }
+
+    private val NON_WORD = Regex("[^A-Z0-9+]+")
 
     private fun selected(p: Player, type: Int): Format? {
         for (g in p.currentTracks.groups) if (g.type == type) for (i in 0 until g.length) if (g.isTrackSelected(i)) return g.getTrackFormat(i)
@@ -121,12 +123,15 @@ object StreamBadges {
         has(tags, "WEBRIP", "WEB RIP") -> "WEBRip"
         has(tags, "WEB DL", "WEBDL", "WEB") -> "WEB-DL"
         has(tags, "HDTV") -> "HDTV"
-        has(tags, "CAM", "HDCAM", "CAMRIP", "TS", "HDTS", "TELESYNC", "TC", "HDTC", "TELECINE", "SCR", "SCREENER", "DVDSCR") -> "CAM"
+        has(tags, *CAM_TAGS) -> "CAM"
         has(tags, "DVDRIP", "DVD") -> "DVD"
         else -> null
     }
 
     private fun has(tags: String, vararg words: String) = words.any { tags.contains(" $it ") }
+
+    /** The resolver's CAM words ([NativeResolver.CAM_WORDS]) spelled as these tags are: "PRE-DVD" reads "PRE DVD" here. */
+    private val CAM_TAGS by lazy { NativeResolver.CAM_WORDS.map { it.replace(NON_WORD, " ") }.distinct().toTypedArray() }
 
     /** The URL's last path segment when it is a video file's name ("Movie.2024.2160p.WEB-DL....mkv"). */
     private fun fileName(url: String): String? = try {

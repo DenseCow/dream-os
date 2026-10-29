@@ -33,7 +33,7 @@ struct SheetHost: View {
     private var width: CGFloat {
         switch sheet {
         case .audio: return 440
-        case .speed, .sleep: return 360
+        case .speed: return 360
         case .info: return 480
         case .episodes, .source: return 540
         default: return 420
@@ -52,7 +52,6 @@ struct SheetHost: View {
         case .info: InfoSheet(session: session, close: dismiss, openXRay: openXRay)
         case .episodes: EpisodesSheet(session: session, close: dismiss)
         case .source: SourceSheet(session: session, close: dismiss)
-        case .sleep: SleepSheet(session: session, close: dismiss)
         default: EmptyView()
         }
     }
@@ -74,7 +73,7 @@ struct SheetHeader: View {
         HStack(alignment: .top) {
             VStack(alignment: .leading, spacing: 6) {
                 if let kicker, !kicker.isEmpty {
-                    Text(kicker).font(.system(size: 12, weight: .bold)).tracking(2).textCase(.uppercase).foregroundStyle(.white.opacity(0.62)).lineLimit(1)
+                    Text(kicker).font(.system(size: 12, weight: .bold)).foregroundStyle(.white.opacity(0.62)).lineLimit(1)
                 }
                 Text(title).font(.system(size: 24, weight: .bold)).foregroundStyle(.white).lineLimit(1)
             }
@@ -89,7 +88,7 @@ struct SheetHeader: View {
 struct SectionHeading: View {
     let text: String
     var body: some View {
-        Text(text).font(.system(size: 13, weight: .bold)).tracking(1.6).textCase(.uppercase).foregroundStyle(.white.opacity(0.55))
+        Text(text).font(.system(size: 13, weight: .bold)).foregroundStyle(.white.opacity(0.55))
             .padding(.top, 18).padding(.bottom, 6).padding(.horizontal, 8)
     }
 }
@@ -282,21 +281,6 @@ private struct SpeedSheet: View {
     }
 }
 
-private struct SleepSheet: View {
-    @ObservedObject var session: PlayerSession
-    let close: () -> Void
-    var body: some View {
-        SheetHeader(title: "Sleep Timer", close: close)
-        ScrollView {
-            VStack(alignment: .leading, spacing: 2) {
-                ForEach(PlayerSession.sleepChoices, id: \.self) { m in
-                    SheetRow(title: PlayerSession.sleepLabel(m)) { session.setSleep(m); close() }
-                }
-            }
-            .padding(.horizontal, 12)
-        }
-    }
-}
 
 // MARK: Info
 
@@ -477,8 +461,11 @@ private struct EpisodesSheet: View {
     private func load() async {
         guard let id = session.request?.title.id else { return }
         episodes = nil
+        let s = season
         let today = ISO8601DateFormatter.string(from: Date(), timeZone: .current, formatOptions: [.withFullDate])
-        let all = (try? await Services.shared.catalog.episodes(showId: id, season: season)) ?? []
+        let all = (try? await Services.shared.catalog.episodes(showId: id, season: s)) ?? []
+        // Another season picked meanwhile: its own load fills the list (a slow answer showed the wrong season's).
+        guard s == season else { return }
         episodes = all.filter { !$0.airDate.isEmpty && $0.airDate <= today }
     }
 
@@ -705,9 +692,9 @@ private struct SourceSheet: View {
                 }
                 Spacer(minLength: 8)
                 VStack(alignment: .trailing, spacing: 4) {
-                    if playing(c) { pill("Playing", Color(hex: 0x4ADE80)) }
-                    else if otherEpisode(c) { pill("Other Episode", Color(hex: 0xFBBF24)) }
-                    if c.cached == true && !playing(c) { pill("Ready", Color(hex: 0x4ADE80)) }
+                    if playing(c) { pill("Playing", Palette.green) }
+                    else if otherEpisode(c) { pill("Other Episode", Palette.amber) }
+                    if c.cached == true && !playing(c) { pill("Ready", Palette.green) }
                 }
             }
             .contentShape(Rectangle())

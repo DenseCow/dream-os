@@ -101,11 +101,50 @@ object DreamSubtitles {
             ?: PlayerPrefs.normLang(n)?.takeIf { it.length <= 3 }
     }
 
+    /** The viewer's subtitle languages in order (the player's choice, then Settings' first and second); empty when none is set. Blocking. */
+    fun viewerLanguages(ctx: Context): List<String> {
+        val s = settings(ctx)
+        val fromPlayer = PlayerPrefs.subLang(ctx)?.takeIf { it != PlayerPrefs.OFF }
+        return (listOfNotNull(fromPlayer) + listOf(s["subs.lang1"], s["subs.lang2"]).mapNotNull { code(it) }).distinct()
+    }
+
     // ---- the index ----
 
     private fun key(r: PlaybackRequest): String {
         val id = if (r.tmdbId > 0) "${r.tmdbId}" else r.imdb.orEmpty()
         return if (r.type == "episode") "tv:$id:${r.season}:${r.episode}" else "movie:$id"
+    }
+
+    private val indexLangs = ConcurrentHashMap<String, Pair<Set<String>, Long>>()
+
+    /**
+     * Blocking. Every subtitle language the index has for [req] (normalized; "pob" for Brazilian Portuguese), for the
+     * title page's language pills ([LangPills]); null when the index couldn't be asked. Kept for [TTL].
+     */
+    fun indexLanguages(ctx: Context, req: PlaybackRequest): Set<String>? {
+        val k = key(req)
+        indexLangs[k]?.takeIf { SystemClock.elapsedRealtime() - it.second < TTL }?.let { return it.first }
+        val ep = req.type == "episode"
+        if (req.trailer || (ep && (req.season == null || req.episode == null))) return null
+        return try {
+            val id = NativeResolver.imdbFor(ctx.applicationContext, req) ?: return null
+            val r = DebridHttp.get(if (ep) "$API/series/$id:${req.season}:${req.episode}.json" else "$API/movie/$id.json", timeoutMs = 6_000)
+            val a = if (r.ok) r.json().optJSONArray("subtitles") else null
+            if (a == null) null else {
+                val out = HashSet<String>()
+                for (i in 0 until a.length()) {
+                    val o = a.optJSONObject(i) ?: continue
+                    if (ep && o.optInt("season") > 0 && (o.optInt("season") != req.season || o.optInt("episode") != req.episode)) continue
+                    val raw = o.optString("lang").lowercase(Locale.US)
+                    (if (raw == "pob") raw else PlayerPrefs.normLang(raw))?.let { out += it }
+                }
+                if (indexLangs.size > 200) indexLangs.clear()
+                indexLangs[k] = out to SystemClock.elapsedRealtime()
+                out
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Dream Subtitles: index unavailable for the language pills (${e.javaClass.simpleName})"); null
+        }
     }
 
     private val HI = Regex("(?i)(?<![a-z])(sdh|hi|cc|hearing[ ._-]?impaired)(?![a-z])")
@@ -225,8 +264,34 @@ object DreamSubtitles {
         private var pending: List<SubtitleFile>? = null
         private var attached = false
         private var started = false
+        /** A late list while subtitles are off: kept in case the audio turns out to need them ([showWhenReady]). */
+        private var held: List<SubtitleFile>? = null
+        /** The late list's wait ended with nothing to add. */
+        private var none = false
+        private var whenReady: ((Boolean) -> Unit)? = null
 
         init { exo.addListener(this) }
+
+        /** The subtitle languages this stream's list was fetched for, best first (normalized; "pob" for Brazilian). */
+        fun languages(): List<String> = lastPrefs?.langs.orEmpty()
+
+        /**
+         * The audio isn't in the viewer's language ([PlayerOverlay.audioCheck]): a list that comes late goes in at
+         * once, subtitles off or not (a rebuffer beats a film nobody can follow), and [done] hears whether one did.
+         */
+        fun showWhenReady(done: (Boolean) -> Unit) {
+            when {
+                req == null || attached || none -> done(false)
+                held != null -> { pending = held; held = null; whenReady = done; attachNow(force = true) }
+                pending != null -> { whenReady = done; attachNow(force = true) }
+                else -> whenReady = done
+            }
+        }
+
+        private fun settle(added: Boolean) {
+            if (!added) none = true
+            whenReady?.let { whenReady = null; it(added) }
+        }
 
         /**
          * A stream starts: [raw] for [r]. Only Dream OS's own streams (the resolver's link for [r])
@@ -256,13 +321,13 @@ object DreamSubtitles {
                 if (g != gen || attached || r == null) return@postDelayed
                 val p = lastPrefs
                 val list = p?.let { cache[key(r)]?.takeIf { s -> s.fresh && s.langs == p.langs }?.list }
-                if (p == null || list == null) { if (tries < 40) wait(g, tries + 1); return@postDelayed }
+                if (p == null || list == null) { if (tries < 40) wait(g, tries + 1) else settle(false); return@postDelayed }
                 val subs = subtitles(pick(list, p, file), p, preferDownload = !(p.embeddedFirst && hasOwn(p)))
                 when {
-                    subs.isEmpty() -> {}
+                    subs.isEmpty() -> settle(false)
                     // Not shown anyway: no reason to touch the stream (the menu lists the video's own tracks).
-                    !p.show -> Log.w(TAG, "Dream Subtitles: ${subs.size} came after the start; not added (subtitles are off)")
-                    else -> { pending = subs; tryAttach() }
+                    !p.show && whenReady == null -> { held = subs; Log.w(TAG, "Dream Subtitles: ${subs.size} came after the start; not added (subtitles are off)") }
+                    else -> { pending = subs; if (whenReady != null) attachNow(force = true) else tryAttach() }
                 }
             }, 500)
         }
@@ -288,12 +353,13 @@ object DreamSubtitles {
             if (bufferEmpty()) attachNow()
         }
 
-        private fun attachNow() {
+        private fun attachNow(force: Boolean = false) {
             val subs = pending ?: return
-            if (!exo.hasSource || exo.player == null || (exo.player?.playWhenReady != false && !bufferEmpty())) return
+            if (!exo.hasSource || exo.player == null || (!force && exo.player?.playWhenReady != false && !bufferEmpty())) return
             pending = null; attached = true
             exo.addExternalSubtitles(subs)
-            req?.let { log(it, subs, "during a pause") }
+            req?.let { log(it, subs, if (force) "for audio in another language" else "during a pause") }
+            settle(true)
         }
 
         /**
@@ -319,6 +385,7 @@ object DreamSubtitles {
         fun end() {
             gen++
             req = null; file = null; pending = null; attached = false; started = false
+            held = null; none = false; whenReady = null
             main.removeCallbacks(attachLater)
         }
 

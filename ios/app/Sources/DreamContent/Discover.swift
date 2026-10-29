@@ -17,7 +17,6 @@ struct DFilters: Sendable {
 }
 
 enum Discover {
-    static let animeKeyword = 210024
     private static let noAnime = "&without_keywords=210024"
 
     static let anime = -1, tvAdventure = -2, tvFantasy = -3, tvHistory = -4, tvHorror = -5, movieKids = -6, tvMusic = -7
@@ -175,6 +174,17 @@ enum NewReleases {
         return asked ? "" : "&without_keywords=210024"
     }
 
+    /// Keep Anime in Anime Sections off (RowMix.animeApart): [query] without TMDB's anime keyword among the left-out
+    /// keywords, wherever a category or seasonal row wrote it in.
+    static func withAnime(_ query: String) -> String {
+        query.split(separator: "&").map(String.init).compactMap { p -> String? in
+            guard p.hasPrefix("without_keywords=") else { return p }
+            let v = String(p.dropFirst("without_keywords=".count))
+            let ids = v.split(whereSeparator: { $0 == "," || $0 == "|" }).map(String.init).filter { $0 != "210024" }
+            return ids.isEmpty ? nil : "without_keywords=" + ids.joined(separator: v.contains("|") ? "|" : ",")
+        }.map { "&" + $0 }.joined()
+    }
+
     private static func withArt(_ l: [Title]) -> [Title] { l.filter { $0.posterPath != nil || $0.backdropPath != nil } }
 
     /// In Theaters: US theatrical releases of the last ~10 weeks, only films first released recently.
@@ -281,15 +291,6 @@ enum NewReleases {
 
     static func ofType(_ type: MediaKind, _ extra: String = "") async throws -> [Title] {
         type == .movie ? try await movies(extra) : try await shows(extra)
-    }
-
-    static func forGenre(_ spec: GenreSpec) async -> [Title] {
-        let types = GenreShelves.types(spec)
-        let m = types.contains(.movie) ? GenreShelves.clause(spec, .movie) : nil
-        let t = types.contains(.tv) ? GenreShelves.clause(spec, .tv) : nil
-        if !spec.anime { return await mixed(m, t, lead: spec.primary) }
-        func tagged(_ c: String?) -> String? { c?.replacingOccurrences(of: "&with_original_language=ja", with: "&with_keywords=210024") }
-        return RowMix.interleave([await mixed(m, t, lead: spec.primary), await mixed(tagged(m), tagged(t), lead: spec.primary)])
     }
 
     static func onService(_ service: String) async -> [Title] {

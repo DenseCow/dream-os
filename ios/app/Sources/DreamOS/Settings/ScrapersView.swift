@@ -95,12 +95,16 @@ struct ScrapersView: View {
 
 /// Add Scraper Repository: the address (iOS keyboard, paste), then calm progress in its own words, then the result.
 struct AddRepoView: View {
+    /// Setup: Paste adds at once, the recommended providers turn on by themselves, and the sheet closes 1.5 s after
+    /// the result shows.
+    var inSetup = false
     var changed: () -> Void
     @Environment(\.dismiss) private var dismiss
     @State private var url = ""
     @State private var step: String?
     @State private var result: Result<ScraperRepoInfo, DreamError>?
     @State private var providers = 0
+    @State private var providersOn = 0
 
     var body: some View {
         PageScaffold(title: "Add Repository") {
@@ -109,8 +113,12 @@ struct AddRepoView: View {
                     switch result {
                     case .success(let r):
                         PageResult(mark: .ok, headline: "Added \(r.name)")
-                        PageNote(text: providers > 0 ? "\(providers) providers are ready." : "Installed.")
-                        PagePrimaryButton(title: "Done") { dismiss() }
+                        if inSetup {
+                            PageNote(text: providersOn > 0 ? "\(providersOn) recommended providers are on." : "Installed.")
+                        } else {
+                            PageNote(text: providers > 0 ? "\(providers) providers are ready." : "Installed.")
+                            PagePrimaryButton(title: "Done") { dismiss() }
+                        }
                     case .failure(let e):
                         PageResult(mark: .warn, headline: "Couldn't Add It")
                         PageNote(text: e.message)
@@ -122,11 +130,29 @@ struct AddRepoView: View {
                 } else {
                     PageNote(text: "Paste the repository's address exactly as you got it. It usually starts with https:// and often has github in it, such as https://someone.github.io/repo.")
                     PageTextField(placeholder: "https://yourname.github.io/repo", text: $url, keyboard: .URL) { Task { await add() } }
-                    PageButtonPair(spacing: 10) {
-                        PageSecondaryButton(title: "Paste", systemImage: "doc.on.clipboard") {
-                            if let s = UIPasteboard.general.string { url = s.trimmingCharacters(in: .whitespacesAndNewlines) }
+                    if inSetup && url.trimmingCharacters(in: .whitespaces).isEmpty {
+                        // iOS's own Paste button (no paste prompt): pasting adds the repository at once.
+                        PasteButton(payloadType: String.self) { strings in
+                            guard let s = strings.first else { return }
+                            Task { @MainActor in
+                                url = s.trimmingCharacters(in: .whitespacesAndNewlines)
+                                await add()
+                            }
                         }
+                        .buttonBorderShape(.roundedRectangle(radius: Cinema.rButton))
+                        .controlSize(.large)
+                        .tint(Color(hex: 0x3A3A3C))
+                        .labelStyle(.titleAndIcon)
+                        .frame(maxWidth: .infinity)
+                    } else if inSetup {
                         PagePrimaryButton(title: "Add") { Task { await add() } }
+                    } else {
+                        PageButtonPair(spacing: 10) {
+                            PageSecondaryButton(title: "Paste", systemImage: "doc.on.clipboard") {
+                                if let s = UIPasteboard.general.string { url = s.trimmingCharacters(in: .whitespacesAndNewlines) }
+                            }
+                            PagePrimaryButton(title: "Add") { Task { await add() } }
+                        }
                     }
                 }
             }
@@ -142,11 +168,20 @@ struct AddRepoView: View {
             let r = try await PagesServices.scrapers.addRepository(u) { msg in
                 Task { @MainActor in step = msg }
             }
-            providers = await PagesServices.scrapers.status().providers.count
+            if inSetup { await PagesServices.scrapers.applyRecommended() }
+            let st = await PagesServices.scrapers.status()
+            providers = st.providers.count
+            providersOn = st.providers.filter(\.enabled).count
             result = .success(r)
             PageHaptics.success()
             NotificationCenter.default.post(name: .dreamScrapersChanged, object: nil)
             changed()
+            if inSetup {
+                step = nil
+                try? await Task.sleep(for: .seconds(1.5))
+                dismiss()
+                return
+            }
         } catch let e as DreamError {
             result = .failure(e)
             PageHaptics.warning()

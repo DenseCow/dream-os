@@ -23,10 +23,6 @@ public enum PlayFlow {
     /// The loading screen gives a resolve at most this long before it says so plainly (never a spinner forever).
     public static let resolveTimeoutMs: Int64 = 45_000
 
-    /// Where to start [r] (ms): the watch history's call, never a spot a page or card captured earlier
-    /// (STANDARDS §5). 0 = from the beginning.
-    public static func startMs(_ r: PlayRequest) -> Int64 { r.fromStart ? 0 : (WatchHistory.shared.historyStartMs(r) ?? 0) }
-
     /// The episode after [r] from TMDB season data (rolls over to the next season's first episode), or nil at the end
     /// of the series / when the next one hasn't aired.
     public static func nextEpisode(_ r: PlayRequest) async -> NextUp? {

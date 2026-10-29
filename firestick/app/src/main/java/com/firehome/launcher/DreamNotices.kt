@@ -85,6 +85,8 @@ object DreamNotices {
         fun showBanner(n: Notice)
         /** A live banner (see [live]); null when it can't show now. */
         fun showLive(title: String): Live? = null
+        /** Something that covered the banners' place closed (the update card): waiting banners may show now. */
+        fun screenFreed() {}
     }
 
     /** A banner for work under way, changed in place when it's done ([live]). Main thread. */
@@ -228,6 +230,9 @@ object DreamNotices {
     fun addListener(l: () -> Unit) { listeners.add(l) }
     fun removeListener(l: () -> Unit) { listeners.remove(l) }
     private fun changed() { for (l in listeners.toList()) try { l() } catch (e: Exception) { Log.w(TAG, "Notices: listener failed: $e") } }
+
+    /** See [Presenter.screenFreed]. */
+    fun screenFreed() { presenter?.get()?.screenFreed() }
 
     fun setPresenter(p: Presenter?) { presenter = p?.let { java.lang.ref.WeakReference(it) } }
 

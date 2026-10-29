@@ -23,7 +23,7 @@ struct MyListMark: View {
     @State private var scale: CGFloat = 1
     @State private var seenMotion: Int
 
-    static let green = Color(hex: 0x4ADE80)
+    static let green = Palette.green
     static let greenDeep = Color(hex: 0x15A34A)
 
     init(saved: Bool, motion: Int, size: CGFloat = 24) {

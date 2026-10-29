@@ -109,8 +109,11 @@ object Tmdb {
 
     fun hasKey(ctx: Context) = key(ctx).isNotBlank()
 
-    private fun url(ctx: Context, path: String, query: String = "") =
-        "$API$path?api_key=${key(ctx)}&language=en-US&region=US${single(query + kidsClause(ctx, path) + NewReleases.animeClause(path, query))}"
+    private fun url(ctx: Context, path: String, query: String = ""): String {
+        val apart = RowMix.animeApart(ctx)
+        val q = single(query + kidsClause(ctx, path) + if (apart) NewReleases.animeClause(path, query) else "")
+        return "$API$path?api_key=${key(ctx)}&language=en-US&region=US${if (apart) q else NewReleases.withAnime(q)}"
+    }
 
     /** A profile with a rating limit: /discover asks TMDB to apply it too ([KidsFilter.discoverClause]). */
     private fun kidsClause(ctx: Context, path: String) =
@@ -191,6 +194,17 @@ object Tmdb {
 
     fun trending(ctx: Context) = list(ctx, "/trending/all/week")
 
+    /**
+     * A trending list as Dream OS shows it outside the anime sections: only titles out today ([RowMix.released]),
+     * no anime when the profile keeps it apart ([RowMix.animeHidden]), nothing adult, and with the art the place
+     * needs ([art]: "backdrop" or "poster"). The Kids limit already applies in [list]. Blocking.
+     */
+    fun trendingShown(ctx: Context, path: String = "/trending/all/week", query: String = "", type: String? = null, art: String? = null): List<Title> =
+        list(ctx, path, query, type).filter { t ->
+            (art != "backdrop" || t.backdropPath != null) && (art != "poster" || t.posterPath != null) &&
+                !RowMix.animeHidden(ctx, t) && !t.adult && RowMix.released(t)
+        }
+
     fun search(ctx: Context, q: String) =
         list(ctx, "/search/multi", "&query=" + URLEncoder.encode(q, "UTF-8"))
 
@@ -259,10 +273,11 @@ object Tmdb {
         val credits = Net.getJson(url(ctx, "/person/${person.getInt("id")}/combined_credits"))
         val list = credits.optJSONArray(if (directs) "crew" else "cast") ?: return null
         val skipGenres = setOf(10767, 10763) // talk, news
+        val cameo = Regex("(?i)\\b(self|himself|herself|narrator|host)\\b")
         val titles = (0 until list.length()).mapNotNull { i ->
             val o = list.getJSONObject(i)
             if (directs && o.optString("job") != "Director") return@mapNotNull null
-            if (Regex("(?i)\\b(self|himself|herself|narrator|host)\\b").containsMatchIn(o.optString("character"))) return@mapNotNull null
+            if (cameo.containsMatchIn(o.optString("character"))) return@mapNotNull null
             parse(o, null)
         }.filter { t ->
             t.posterPath != null && (t.type == "movie" && movies || t.type == "tv" && shows) && t.genreIds.none { it in skipGenres } && t.votes >= 20
@@ -319,7 +334,7 @@ object Tmdb {
         val json = Net.getJson(url(ctx, "/${t.type}/${t.id}", "&append_to_response=videos,watch/providers,credits,recommendations,$ratingsPart"))
         val genres = json.optJSONArray("genres")?.let { a -> (0 until a.length()).map { a.getJSONObject(it).getString("name") } }.orEmpty()
         val runtime = when (t.type) {
-            "movie" -> json.optInt("runtime").takeIf { it > 0 }?.let { "${it / 60}h ${it % 60}m" } ?: ""
+            "movie" -> TitleInfo.runtimeWords(json.optInt("runtime")) ?: "" // "2 hr 10 min", as everywhere on the title page
             else -> json.optInt("number_of_seasons").takeIf { it > 0 }?.let { "$it Season" + if (it > 1) "s" else "" } ?: ""
         }
         val videos = json.optJSONObject("videos")?.optJSONArray("results")
@@ -391,7 +406,7 @@ object Tmdb {
         // Shows count as recent while they're still airing.
         val released = if (movie) json.optString("release_date") else json.optString("last_air_date").ifEmpty { json.optString("first_air_date") }
         // The same call carries what the hero's meta line needs, so it never waits for the full details.
-        val runtime = if (movie) json.optInt("runtime").takeIf { it > 0 }?.let { "${it / 60}h ${it % 60}m" }.orEmpty()
+        val runtime = if (movie) TitleInfo.runtimeWords(json.optInt("runtime")).orEmpty()
         else json.optInt("number_of_seasons").takeIf { it > 0 }?.let { "$it Season" + if (it > 1) "s" else "" }.orEmpty()
         val genres = json.optJSONArray("genres")?.let { a -> (0 until a.length()).mapNotNull { a.optJSONObject(it)?.optString("name")?.ifEmpty { null } } }.orEmpty()
         return Certification(rating, imdb, json.optDouble("vote_average", 0.0), json.optInt("vote_count", 0),
@@ -429,18 +444,28 @@ object Tmdb {
 
     fun inMyList(ctx: Context, t: Title) = myList(ctx).any { it.key == t.key }
 
+    private val myListLock = Any()
+
     fun toggleMyList(ctx: Context, t: Title) {
-        val list = myList(ctx).toMutableList()
-        if (list.removeAll { it.key == t.key }.not()) list.add(0, t)
-        val a = org.json.JSONArray()
-        for (x in list) a.put(JSONObject().apply {
-            put("id", x.id); put("media_type", x.type)
-            put(if (x.type == "movie") "title" else "name", x.name)
-            put("overview", x.overview); put("poster_path", x.posterPath ?: ""); put("backdrop_path", x.backdropPath ?: "")
-            put(if (x.type == "movie") "release_date" else "first_air_date", x.year); put("vote_average", x.rating)
-            put("vote_count", x.votes)
-        })
-        ctx.getSharedPreferences("tmdb", Context.MODE_PRIVATE).edit().putString("mylist" + Profiles.suffix(ctx), a.toString()).apply()
+        // Trakt's watchlist pull toggles from a background thread while the remote can toggle on the main one.
+        val list = synchronized(myListLock) {
+            val list = myList(ctx).toMutableList()
+            if (list.removeAll { it.key == t.key }.not()) list.add(0, t)
+            val a = org.json.JSONArray()
+            for (x in list) a.put(JSONObject().apply {
+                put("id", x.id); put("media_type", x.type)
+                put(if (x.type == "movie") "title" else "name", x.name)
+                put("overview", x.overview); put("poster_path", x.posterPath ?: ""); put("backdrop_path", x.backdropPath ?: "")
+                // The full date (pills and Taste read it; a bare year read back as no date), genres and language
+                // (Taste's affinities, the anime check) as the list result had them.
+                put(if (x.type == "movie") "release_date" else "first_air_date", x.date.ifEmpty { x.year }); put("vote_average", x.rating)
+                put("vote_count", x.votes)
+                if (x.genreIds.isNotEmpty()) put("genre_ids", org.json.JSONArray(x.genreIds))
+                if (x.lang.isNotEmpty()) put("original_language", x.lang)
+            })
+            ctx.getSharedPreferences("tmdb", Context.MODE_PRIVATE).edit().putString("mylist" + Profiles.suffix(ctx), a.toString()).apply()
+            list
+        }
         try { Trakt.onMyListChanged(ctx, t, list.any { it.key == t.key }) } catch (e: Exception) {} // the Trakt watchlist follows
     }
 }

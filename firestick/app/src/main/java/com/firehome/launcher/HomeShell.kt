@@ -1,6 +1,5 @@
 package com.firehome.launcher
 
-import android.graphics.Bitmap
 import android.graphics.drawable.Drawable
 import android.view.View
 import android.view.ViewGroup
@@ -18,7 +17,13 @@ interface HomeShell {
     val currentTab: Tab
     /** The Search page's field, for typing from the phone remote. */
     val searchInput: EditText?
-    fun show(requested: Tab, force: Boolean = false, focusContent: Boolean = false)
+    /** [instant]: no fade (a fade starts from a black page: the voice hand-off switches on screen, at once). */
+    fun show(requested: Tab, force: Boolean = false, focusContent: Boolean = false, instant: Boolean = false)
+    /**
+     * Gets [tab]'s art back (it lets go of it while hidden) without showing it; [ready] says when every
+     * picture of its first screen is in, so a switch to it draws whole from its first frame.
+     */
+    fun warmArt(tab: Tab): () -> Boolean
     fun homePressed()
     fun focusContent()
     fun focusBar()
@@ -38,7 +43,6 @@ interface HomeShell {
     /** What the shell asks of MainActivity. */
     interface Host {
         fun apps(): List<AppEntry>
-        fun logo(): Bitmap?
         fun launch(pkg: String)
         fun appMenu(app: AppEntry)
         fun titleMenu(t: Title)
@@ -52,8 +56,6 @@ interface HomeShell {
         fun playTrailerFor(t: Title)
         fun settings()
         fun profileMenu()
-        fun phoneRemote()
-        fun weather()
         fun airPods()
         /** Text for the AirPods control ("AirPods · 80%"), or null to hide it. */
         fun airPodsLabel(): String?

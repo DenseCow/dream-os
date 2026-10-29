@@ -30,6 +30,8 @@ public final class NativeResolver: @unchecked Sendable {
     /// The same for a look-ahead (nobody waiting): longer, for a better ranking, but never the whole 20 s scrape.
     static let aheadGraceMs: Int64 = 5_000
     static let aheadGraceGoodMs: Int64 = 2_000
+    /// How often a look-ahead's wait looks for a Play that joined it.
+    static let joinCheckMs: Int64 = 250
     /// Time kept for the debrid step before a Play's budget ends.
     static let debridReserveMs: Int64 = 2_500
     static let maxListed = 80
@@ -53,10 +55,12 @@ public final class NativeResolver: @unchecked Sendable {
         init(_ p: DebridPurpose, _ r: PlayRequest, deadline: Int64) { _purpose = p; request = r; _deadline = deadline }
         var purpose: DebridPurpose { get { lock.withLock { _purpose } } set { lock.withLock { _purpose = newValue } } }
         var ran: DebridPurpose? { get { lock.withLock { _ran } } set { lock.withLock { _ran = newValue } } }
-        /// When this lookup gives up (`Mono.now()`), read live: a Play that joins a look-ahead's 30 s lookup brings
-        /// its own budget with it, so the lookup ends when the Play's does, never after.
+        /// When this lookup gives up (`Mono.now()`), read live: a Play that joins a look-ahead's lookup brings its own
+        /// budget with it, so the lookup ends when the Play's does: never after, and never before (a look-ahead
+        /// started 25 s ago had less left than the Play's 8 s and ended it with nothing).
         var deadline: Int64 { lock.withLock { _deadline } }
-        func tighten(to d: Int64) { lock.withLock { if d < _deadline { _deadline = d } } }
+        func adopt(_ d: Int64) { lock.withLock { _deadline = d } }
+        func extend(to d: Int64) { lock.withLock { if d > _deadline { _deadline = d } } }
     }
 
     /// A scraped torrent with what ranking needs beyond `Candidate`. [text] is upper case.
@@ -290,10 +294,13 @@ public final class NativeResolver: @unchecked Sendable {
                     self.lock.withLock { if self.inFlight[k] === l { self.inFlight[k] = nil } }
                 }
             }
+            let raised = l.purpose <= purpose
             if l.purpose < purpose { l.purpose = purpose }
             // A Play joining a look-ahead's lookup: its scrape is a Play's now (a lane slot at once if still waiting),
-            // and the lookup ends with the Play's budget, not the look-ahead's 30 s.
-            if !started && purpose == .play { l.tighten(to: deadline); Services.shared.sources.promote(req) }
+            // and the lookup ends with the Play's budget, not the look-ahead's. Another joiner at the same or a higher
+            // purpose keeps at least its own budget.
+            if !started && purpose == .play { l.adopt(deadline); Services.shared.sources.promote(req) }
+            else if !started && raised { l.extend(to: deadline) }
             let w = await l.promise.wait(timeoutMs: max(deadline - Mono.now(), 1))
             if w.timedOut {
                 if let spare { return keepSpare(req, k, spare, purpose) }
@@ -479,8 +486,14 @@ public final class NativeResolver: @unchecked Sendable {
         return job
     }
 
+    /// [job]'s torrents as the ranking reads them. Junk (`ReleaseWords.junk`: recaps, reviews, betting-site rips) never
+    /// gets this far, so it can't be played, listed or counted as Available.
     private func parsed(_ job: Gather, _ season: Int?, _ episode: Int?) -> [Parsed] {
-        job.items.map { scraped($0, season, episode) }
+        parsed(job.items, season, episode)
+    }
+
+    private func parsed(_ items: [StreamCandidate], _ season: Int?, _ episode: Int?) -> [Parsed] {
+        items.compactMap { ReleaseWords.isJunk($0.torrentName) ? nil : scraped($0, season, episode) }
     }
 
     /// [job]'s torrents plus what the availability pills' quick check already found for [req] (the Fire Stick's
@@ -489,7 +502,7 @@ public final class NativeResolver: @unchecked Sendable {
         let a = parsed(job, season, episode)
         guard let q = Services.shared.sources.quickKnown(req), !q.isEmpty else { return a }
         var seen = Set(a.map(\.c.hash))
-        return a + q.compactMap { c in seen.insert(c.hash.lowercased()).inserted ? scraped(c, season, episode) : nil }
+        return a + parsed(q.filter { seen.insert($0.hash.lowercased()).inserted }, season, episode)
     }
 
     private func scraped(_ i: StreamCandidate, _ season: Int?, _ episode: Int?) -> Parsed {
@@ -504,7 +517,7 @@ public final class NativeResolver: @unchecked Sendable {
         default:
             quality = has(text, "2160P", "4K", "UHD") ? "4K" : has(text, "1080P") ? "1080p" : has(text, "720P") ? "720p" : "SD"
         }
-        cam = cam || has(text, "CAM", "HDCAM", "TS", "HDTS", "TELESYNC", "HDTC", "TELECINE", "SCR", "DVDSCR", "SCREENER")
+        cam = cam || ReleaseWords.isCam(i.torrentName)
         // A season pack's size is the whole season's: unknown per episode.
         let pack = i.pack == true
         let c = Candidate(hash: i.hash.lowercased(), torrentName: i.torrentName, fileName: i.fileName, fileIdx: i.fileIdx,
@@ -521,6 +534,22 @@ public final class NativeResolver: @unchecked Sendable {
         guard f.speedMbps(ep) != nil, req.title.id > 0,
               let d = try? await Services.shared.catalog.details(kind: req.title.kind, id: req.title.id) else { return 0 }
         return d.runtime * 60
+    }
+
+    /// The release names of [req]'s good copies (no CAM, playable on this phone) for the title page's language pills
+    /// (`AnimeDubs.record` -> `LanguagePills`): a dub only counts when Play could pick it.
+    private func recordNames(_ req: PlayRequest, _ all: [Parsed], _ want: String?) {
+        guard let want, !all.isEmpty else { return }
+        let ep = isEpisode(req)
+        AnimeDubs.record(AnimeDubs.key(req), copies: all.filter { allowed($0, loose, ep) }.map { ($0.c.torrentName, $0.c.hash) }, want: want)
+    }
+
+    /// How [req]'s copies rank (`AnimeDubs.rank`: dubs first for anything in another language); a title without genres
+    /// or a language (history, a deep link) is looked up.
+    private func dubRank(_ req: PlayRequest) async -> AnimeDubs.Rank {
+        if !req.title.genreIds.isEmpty, !req.title.lang.isEmpty { return AnimeDubs.rank(for: req.title) }
+        guard req.title.id > 0, let d = try? await Services.shared.catalog.details(kind: req.title.kind, id: req.title.id) else { return .none }
+        return AnimeDubs.rank(for: d.title)
     }
 
     /// Dream Player's preferred audio language (2-letter), else the device's.
@@ -556,7 +585,7 @@ public final class NativeResolver: @unchecked Sendable {
     private func scraperLookup(_ req: PlayRequest, _ k: String, imdb: String, _ l: Lookup,
                                _ acc: DebridAccounts.Accounts, _ t0: Int64) async -> StreamLink? {
         // Read live: a Play that joins a title page's look-ahead raises it to `.play`, and this lookup becomes the Play's
-        // (the debrid step runs for it; no second scrape), on the Play's budget (`Lookup.tighten`).
+        // (the debrid step runs for it; no second scrape), on the Play's budget (`Lookup.adopt`).
         var purpose: DebridPurpose { l.purpose }
         var deadline: Int64 { l.deadline }
         // Only a real Play sets the viewer's filters aside when nothing passes them (no speculative CAM unlocks).
@@ -568,6 +597,7 @@ public final class NativeResolver: @unchecked Sendable {
         let f = DreamFilters.current()
         let rt = await runtimeFor(req, f)
         let want = wantLang()
+        let dub = await dubRank(req)
         let resume = resuming(req)
         let best = bestTier(f)
         let skip = skipSet(k)
@@ -579,10 +609,13 @@ public final class NativeResolver: @unchecked Sendable {
             var kept: [Parsed]
             while true {
                 let v = job.version
-                kept = choose(merged(job, req, s, e), f, ep, skip.union(tried), rt, want, resume: resume)
+                kept = choose(merged(job, req, s, e), f, ep, skip.union(tried), rt, want, resume: resume, dub: dub)
                 let t = Mono.now()
                 if job.done || t >= deadline - Self.debridReserveMs { break }
                 var wake = deadline - Self.debridReserveMs
+                // A look-ahead checks every 250 ms whether a Play joined it, sources or not: the Play's tighter deadline
+                // and its relaxed filters then apply at once, never after the slowest scraper (fire-home 51158e8).
+                if purpose == .page { wake = min(wake, t + Self.joinCheckMs) }
                 if !kept.isEmpty {
                     if round > 0 { break } // later rounds: whatever new arrives goes at once
                     let since = t - job.startedAt - job.firstMs
@@ -593,7 +626,7 @@ public final class NativeResolver: @unchecked Sendable {
                         // ranking, waking every moment in case Play was pressed meanwhile (then the Play's grace applies).
                         let grace = good ? Self.aheadGraceGoodMs : Self.aheadGraceMs
                         if since >= grace { break }
-                        wake = min(wake, t + min(400, grace - since))
+                        wake = min(wake, t + min(Self.joinCheckMs, grace - since))
                     } else {
                         let grace = good ? Self.graceGoodMs : Self.graceMs
                         if since >= grace { break }
@@ -605,7 +638,7 @@ public final class NativeResolver: @unchecked Sendable {
             // Nothing passes the viewer's filters once the scrape is in (or the wait is over): a Play relaxes them.
             var level = 0
             if kept.isEmpty && relaxOk {
-                let r = chooseRelaxed(merged(job, req, s, e), f, ep, skip.union(tried), rt, want, relaxOk: true, resume: resume)
+                let r = chooseRelaxed(merged(job, req, s, e), f, ep, skip.union(tried), rt, want, relaxOk: true, resume: resume, dub: dub)
                 kept = r.0; level = r.1
             }
             if kept.isEmpty {
@@ -623,6 +656,7 @@ public final class NativeResolver: @unchecked Sendable {
                 continue
             }
             let topList = Array(kept.prefix(Self.top))
+            recordNames(req, merged(job, req, s, e), want)
             let p = purpose
             l.ran = p
             if servicesFor != p { services = nil }
@@ -635,6 +669,7 @@ public final class NativeResolver: @unchecked Sendable {
             }
             if let (found, others) = await race(k, svcs, topList.map(\.c), purpose: p, deadline: deadline) {
                 remember(k, found)
+                if let p = kept.first(where: { $0.c.hash == found.hash }), !p.cam { noteAvailable(req, k, p) }
                 lock.withLock { () -> Void in if f.cellCap != nil { _ = saverKeys.insert(k) } else { _ = saverKeys.remove(k) } }
                 addAlternates(k, others)
                 noteRelaxed(req, k, found, kept, level)
@@ -653,10 +688,17 @@ public final class NativeResolver: @unchecked Sendable {
             let names = svcs.map { $0.key.uppercased() }.joined(separator: "/")
             if round >= 3 { return none(req, k, l, "none of \(tried.count) cached at \(names)", .notReady) }
             if Mono.now() >= deadline { return none(req, k, l, "budget over; none of \(tried.count) cached at \(names)") }
-            if job.done && chooseRelaxed(merged(job, req, s, e), f, ep, skip.union(tried), rt, want, relaxOk: relaxOk, resume: resume).0.isEmpty {
+            if job.done && chooseRelaxed(merged(job, req, s, e), f, ep, skip.union(tried), rt, want, relaxOk: relaxOk, resume: resume, dub: dub).0.isEmpty {
                 return none(req, k, l, "none of \(tried.count) cached at \(names)", .notReady)
             }
         }
+    }
+
+    /// A link found for a real release: the title's availability pill says Available Now at once.
+    private func noteAvailable(_ req: PlayRequest, _ k: String, _ p: Parsed) {
+        let best = [p.c.quality, source(p.text)].compactMap { $0 }.joined(separator: " ")
+        let info: [String: Any] = ["key": k, "best": best, "title": req.title]
+        NotificationCenter.default.post(name: .dreamStreamFound, object: nil, userInfo: info)
     }
 
     private func remember(_ k: String, _ link: StreamLink) {
@@ -689,15 +731,19 @@ public final class NativeResolver: @unchecked Sendable {
         let bad = lock.withLock { Set(failed[key(req)]?.keys.map { $0 } ?? []) }
         let want = wantLang()
         let resume = resuming(req)
+        let dub = await dubRank(req)
+        let anime = dub != .none
+        recordNames(req, all, want)
         let ranked: [Parsed], level: Int
-        if isLoose { ranked = choose(all, loose, ep, [], rt, want, relax: Self.relaxQuality, resume: resume); level = 0 }
-        else { (ranked, level) = chooseRelaxed(all, f, ep, [], rt, want, relaxOk: true, resume: resume) }
+        if isLoose { ranked = choose(all, loose, ep, [], rt, want, relax: Self.relaxQuality, resume: resume, dub: dub); level = 0 }
+        else { (ranked, level) = chooseRelaxed(all, f, ep, [], rt, want, relaxOk: true, resume: resume, dub: dub) }
         let ordered = ranked.filter { !bad.contains($0.c.hash) } + ranked.filter { bad.contains($0.c.hash) }
         let rows = ordered.prefix(Self.maxListed).map { p -> StreamCandidate in
             var c = StreamCandidate(hash: p.c.hash, torrentName: p.c.torrentName, fileName: p.c.fileName, fileIdx: p.c.fileIdx,
                                     sizeBytes: p.c.sizeBytes, quality: p.c.quality, seeders: p.c.seeders, origin: p.provider ?? "",
                                     pack: p.pack)
-            c.tags = tags(p.text)
+            // The audio badge ("English Dub", "Dual Audio", "Subtitled") after the picture and sound ones.
+            c.tags = tags(p.text) + [want.flatMap { AnimeDubs.badge(p.c.torrentName, want: $0, anime: anime) }].compactMap { $0 }
             c.outsideFilters = (isLoose || level > 0) && (!allowed(p, f, ep, rt) || (f.hideSd && p.c.quality == "SD"))
             c.cam = camGrade(p)
             let name = p.c.fileName.map(DebridFiles.base) ?? p.c.torrentName
@@ -872,9 +918,23 @@ public final class NativeResolver: @unchecked Sendable {
         // timed out) is no answer: nil, no pill, asked again later. Never "Not Available Yet".
         let now = Mono.now()
         if let full = lock.withLock({ gathers[key(req)] }), now - full.at < Self.indexTTL, !full.job.cancelled {
-            await full.job.awaitDone(until: now + budgetMs)
-            if full.job.count > 0 { return summarize(parsed(full.job, s, e)) }
-            if !full.job.done { return nil }
+            // A running one (a title page's look-ahead starts it as the page opens) answers once a real copy has had a
+            // Play's grace for company, not when all 20 s of it end: the page's pill used to wait the whole 8 s budget.
+            let end = now + budgetMs
+            let job = full.job
+            while !job.done && Mono.now() < end {
+                let v = job.version
+                var wake = end
+                if job.count > 0 {
+                    let since = Mono.now() - job.startedAt - job.firstMs
+                    if since >= Self.graceMs, parsed(job, s, e).contains(where: { !$0.cam }) { break }
+                    if since < Self.graceMs { wake = min(end, Mono.now() + Self.graceMs - since) }
+                }
+                await job.await(v, until: wake)
+            }
+            plog.info("Avail: \(self.label(req), privacy: .public) from the running scrape in \(Mono.now() - now) ms (\(job.count) sources\(job.done ? "" : ", still running", privacy: .public))")
+            if job.count > 0 { return summarize(parsed(job, s, e), req) }
+            if !job.done { return nil }
         }
         var r = req
         r.imdbId = imdb
@@ -882,11 +942,14 @@ public final class NativeResolver: @unchecked Sendable {
             plog.info("Avail: no scraper answer for \(self.label(req), privacy: .public)")
             return nil
         }
-        return summarize(items.map { scraped($0, s, e) })
+        plog.info("Avail: \(self.label(req), privacy: .public) from the quick check in \(Mono.now() - now) ms (\(items.count) sources)")
+        return summarize(parsed(items, s, e), req)
     }
 
-    /// Counts and the best release of each grade (`SourceSurvey`) from a scrape's torrents.
-    private func summarize(_ all: [Parsed]) -> SourceSurvey {
+    /// Counts and the best release of each grade (`SourceSurvey`) from a scrape's torrents; what they say about a dub
+    /// is kept for the title page (`AnimeDubs`).
+    private func summarize(_ all: [Parsed], _ req: PlayRequest) -> SourceSurvey {
+        recordNames(req, all, wantLang())
         let cams = all.filter { camGrade($0) }, good = all.filter { !camGrade($0) }
         let fl = DreamFilters.current()
         func dv(_ p: Parsed) -> Bool { has(p.text, "DV", "DOVI", "DOLBY VISION") }
@@ -1053,10 +1116,8 @@ public final class NativeResolver: @unchecked Sendable {
     private func upscaled(_ t: String) -> Bool { has(t, "UPSCALE", "UPSCALED", "AI UPSCALED", "AI-UPSCALED", "AIUS") }
     private func disc(_ name: String) -> Bool { name.range(of: "\\.(iso|img|rar|zip|7z|exe)$", options: [.regularExpression, .caseInsensitive]) != nil }
 
-    /// Camera / screener grade by release name (whole tokens: a title word like "CAMERA" is not CAM).
-    func camGrade(_ p: Parsed) -> Bool {
-        p.cam || has(p.text, "HQCAM", "CAMRIP", "CAM-RIP", "HDCAM", "HDTS", "TELESYNC", "HDTC", "TC", "TELECINE", "DVDSCR", "SCREENER", "PDVD", "PREDVD", "HDTSRIP")
-    }
+    /// Camera / screener grade: the one list (`ReleaseWords.cam`) already read into `Parsed.cam`.
+    func camGrade(_ p: Parsed) -> Bool { p.cam }
 
     private func source(_ t: String) -> String? {
         if has(t, "REMUX") { return "Remux" }
@@ -1069,9 +1130,7 @@ public final class NativeResolver: @unchecked Sendable {
         return nil
     }
 
-    private func camTag(_ t: String) -> String {
-        ["HDCAM", "CAMRIP", "CAM", "HDTS", "TELESYNC", "TS", "HDTC", "TELECINE", "TC", "DVDSCR", "SCREENER", "SCR", "PDVD", "PREDVD"].first { has(t, $0) } ?? "CAM"
-    }
+    private func camTag(_ t: String) -> String { ReleaseWords.camLabel(t) }
 
     private func tags(_ t: String) -> [String] {
         var out: [String] = []
@@ -1095,6 +1154,9 @@ public final class NativeResolver: @unchecked Sendable {
         if let fn = c.fileName { if !DebridFiles.isVideo(fn) { return false } }
         else if disc(c.torrentName) || has(t, "ISO", "BDMV", "BD25", "BD50", "BD66", "BD100") { return false }
         if ep && c.sizeBytes > 40 * Self.gb { return false }
+        // Above what an iPhone decodes in time never plays, relaxed or not: VideoToolbox stops at 4K, and software
+        // 8K can't keep up (the name parse calls an 8K copy "SD", so the quality cap alone wouldn't stop it).
+        if has(t, "4320P", "8K") { return false }
         // Prefer HDR (HDRPreference): an HDR copy may go above Maximum Quality; every other copy obeys it.
         if relax < Self.relaxQuality && qi(c.quality) < f.cap && !(f.hdrAboveCap && hdr(t) && !(f.hideDv && dvOnly(t))) { return false }
         if relax < Self.relaxSize {
@@ -1114,9 +1176,9 @@ public final class NativeResolver: @unchecked Sendable {
     /// `choose` at the strictest level that leaves something: the filters as set, then without size limits, then
     /// without quality limits (CAM allowed, ranked after any real release), then without HEVC / AVC choices.
     private func chooseRelaxed(_ all: [Parsed], _ f: DreamFilters.Values, _ ep: Bool, _ skip: Set<String>, _ runtimeSec: Int,
-                               _ want: String?, relaxOk: Bool, resume: Bool = false) -> ([Parsed], Int) {
+                               _ want: String?, relaxOk: Bool, resume: Bool = false, dub: AnimeDubs.Rank = .none) -> ([Parsed], Int) {
         for level in 0...(relaxOk ? Self.relaxFormat : 0) {
-            let kept = choose(all, f, ep, skip, runtimeSec, want, relax: level, resume: resume)
+            let kept = choose(all, f, ep, skip, runtimeSec, want, relax: level, resume: resume, dub: dub)
             if !kept.isEmpty { return (kept, level) }
         }
         return ([], 0)
@@ -1166,23 +1228,32 @@ public final class NativeResolver: @unchecked Sendable {
     /// network-friendly size go last; then quality tier; within one, network-friendly size (movies up to 25 GB, episodes
     /// 6 GB), then the viewer's HEVC / HDR preference and clean (not dubbed, not upscaled) releases, then an MKV before an
     /// MP4, then seeders. [resume]: the MP4 penalty comes right after the quality tier (a resume seeks into the file, and
-    /// an MP4's index must be read first).
+    /// an MP4's index must be read first). [dub] (`AnimeDubs.rank`): anime with Prefer Dubs on puts copies that say they
+    /// carry a dub in [want] first within a quality tier (never above a better tier, a real release or the filters);
+    /// off, anime gets no language preference, so the clean-release rule keeps undubbed copies ahead.
     private func choose(_ all: [Parsed], _ f: DreamFilters.Values, _ ep: Bool, _ skip: Set<String>, _ runtimeSec: Int = 0,
-                        _ want: String? = nil, relax: Int = 0, resume: Bool = false) -> [Parsed] {
+                        _ want: String? = nil, relax: Int = 0, resume: Bool = false, dub: AnimeDubs.Rank = .none) -> [Parsed] {
         let pass = all.filter { !skip.contains($0.c.hash) && allowed($0, f, ep, runtimeSec, relax: relax) }
         // SD goes only when something better exists (with CAM copies let in: a real release, not a CAM).
         let camsIn = relax >= Self.relaxQuality
         let list = f.hideSd && pass.contains(where: { $0.c.quality != "SD" && !(camsIn && camGrade($0)) }) ? pass.filter { $0.c.quality != "SD" } : pass
         let heavy = ep ? 6 * Self.gb : 25 * Self.gb
-        let other = want != nil && want != "en"
+        let other = want != nil && want != "en" && dub != .plain
+        let dubFirst = dub == .dub && want != nil
+        // A copy carries the dub when its name says so or Dream Player heard the language in it before (LanguagePills.heard).
+        func dubMiss(_ p: Parsed) -> Bool {
+            dubFirst && AnimeDubs.audio(p.c.torrentName, want: want!) != .dub && !LanguagePills.heardIn(p.c.hash, want!)
+        }
         func b(_ x: Bool) -> Int { x ? 1 : 0 }
-        func langMiss(_ p: Parsed) -> Int { !other ? 0 : (p.lang == want || has(p.text, "MULTI", "DUAL")) ? 0 : 1 }
+        func langMiss(_ p: Parsed) -> Int {
+            !other ? 0 : (p.lang == want || has(p.text, "MULTI", "DUAL") || LanguagePills.heardIn(p.c.hash, want!)) ? 0 : 1
+        }
         // A film from a scraper never names its file: a collection (which film would play?) goes last.
         func sink(_ p: Parsed) -> Bool {
             p.c.sizeBytes > 2 * heavy || (!ep && has(p.text, "TRILOGY", "DUOLOGY", "QUADRILOGY", "PENTALOGY", "HEXALOGY", "COLLECTION", "SAGA", "BOXSET", "ANTHOLOGY", "COMPLETE"))
         }
         func penalty(_ p: Parsed) -> Int {
-            (p.dubbed && !other ? 2 : 0) + (upscaled(p.text) ? 2 : 0) + (f.preferHdr && !hdr(p.text) ? 1 : 0) + (f.preferHevc && !hevc(p.text) ? 1 : 0)
+            (p.dubbed && !other && !dubFirst ? 2 : 0) + (upscaled(p.text) ? 2 : 0) + (f.preferHdr && !hdr(p.text) ? 1 : 0) + (f.preferHevc && !hevc(p.text) ? 1 : 0)
                 + (aboveCap(p, f) && dvOnly(p.text) ? 1 : 0)
         }
         // Otherwise equal, an MKV before an MP4: an MP4's index (often at the end) costs its download before the first frame.
@@ -1200,7 +1271,7 @@ public final class NativeResolver: @unchecked Sendable {
         func sizeStep(_ p: Parsed) -> Int { p.c.sizeBytes > 0 ? Int(p.c.sizeBytes >> 28) : Int.max / 4 }
         let keyed = list.enumerated().map { (i, p) -> ([Int], Parsed) in
             ([b(sink(p)), b(camsIn && camGrade(p)), langMiss(p), b(over(p)), over(p) ? -qi(p.c.quality) : tier(p.c.quality, f),
-              b(resume && slow(p)), b(p.pack), b(p.c.sizeBytes > heavy), over(p) ? sizeStep(p) : 0, penalty(p), learned(p),
+              b(dubMiss(p)), b(resume && slow(p)), b(p.pack), b(p.c.sizeBytes > heavy), over(p) ? sizeStep(p) : 0, penalty(p), learned(p),
               b(slow(p)), saver ? sizeStep(p) : 0, -p.c.seeders, i], p)
         }
         return keyed.sorted { $0.0.lexicographicallyPrecedes($1.0) }.map(\.1)
@@ -1256,7 +1327,8 @@ enum SourceNames {
         let nameWords = Set(words(name))
         let have = title.isEmpty ? 1.0 : Double(title.filter { nameWords.contains($0) }.count) / Double(title.count)
         if req.title.kind == .tv, let rs = req.season, let re = req.episode {
-            if let g = groups("(?<![a-z0-9])s(\\d{1,2})[ ._-]*e(\\d{1,3})(?:[ ._-]*-?[ ._-]*e?(\\d{1,3}))?", name) ?? groups("(?<![0-9])(\\d{1,2})x(\\d{2,3})(?![0-9])", name),
+            // A range needs a "-" or "E" before its end ("E02-E05", "E02E03"): "S01E02.1080p" isn't E02 to E108.
+            if let g = groups("(?<![a-z0-9])s(\\d{1,2})[ ._-]*e(\\d{1,3})(?:[ ._-]*[-e][ ._-]*e?(\\d{1,3})(?![0-9]))?", name) ?? groups("(?<![0-9])(\\d{1,2})x(\\d{2,3})(?![0-9])", name),
                let s = g[1].flatMap({ Int($0) }), let e1 = g[2].flatMap({ Int($0) }) {
                 let e2 = (g.count > 3 ? g[3].flatMap { Int($0) } : nil).flatMap { $0 >= e1 ? $0 : nil } ?? e1
                 if s != rs || !(e1...e2).contains(re) { return .otherEpisode }
@@ -1278,18 +1350,17 @@ enum SourceNames {
             let base = n.contains(".") ? String(n[..<n.lastIndex(of: ".")!]) : n
             return norm(base).replacingOccurrences(of: " ", with: "")
         }
-        func same(_ a: StreamCandidate, _ b: StreamCandidate) -> Bool {
-            if a.hash == b.hash { return true }
-            let na = name(a)
-            return na.count >= 8 && na == name(b)
-        }
         func better(_ a: StreamCandidate, _ b: StreamCandidate) -> Bool {
             qrank(a.quality) != qrank(b.quality) ? qrank(a.quality) < qrank(b.quality) : a.sizeBytes > b.sizeBytes
         }
-        var out: [StreamCandidate] = []
+        // Names read once per row, not once per comparison (up to 80 rows, a regex each).
+        var out: [(c: StreamCandidate, name: String)] = []
         for s in list {
-            if let i = out.firstIndex(where: { same($0, s) }) { if better(s, out[i]) { out[i] = s } } else { out.append(s) }
+            let ns = name(s)
+            if let i = out.firstIndex(where: { $0.c.hash == s.hash || (ns.count >= 8 && $0.name == ns) }) {
+                if better(s, out[i].c) { out[i] = (s, ns) }
+            } else { out.append((s, ns)) }
         }
-        return out
+        return out.map(\.c)
     }
 }

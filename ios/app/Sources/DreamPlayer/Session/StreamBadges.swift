@@ -1,4 +1,5 @@
 import Foundation
+import DreamCore
 
 /// What's playing as short badges: "4K", "Dolby Vision", "Dolby Atmos", "WEB-DL" (fire-home StreamBadges.kt).
 public struct StreamBadges: Equatable {
@@ -48,14 +49,14 @@ public struct StreamBadges: Equatable {
         case "DTS", "DTS Express": out.append(Badge(text: with("DTS")))
         default: if let ch { out.append(Badge(text: ch)) }
         }
-        if has("REMUX") || has("BDREMUX") { out.append(Badge(text: "Remux")) }
+        // A CAM is a CAM whatever else the name claims ("HQ PreDVD WEB-DL 1080p"): the pick's own list.
+        if ReleaseWords.inTag(tag, ReleaseWords.cam) { out.append(Badge(text: "CAM", warn: true)) }
+        else if has("REMUX") || has("BDREMUX") { out.append(Badge(text: "Remux")) }
         else if has("BLURAY") || tag.contains(" BLU RAY ") || has("BDRIP") || has("BRRIP") || has("BD25") || has("BD50") { out.append(Badge(text: "BluRay")) }
         else if has("WEBRIP") || tag.contains(" WEB RIP ") { out.append(Badge(text: "WEBRip")) }
         else if tag.contains(" WEB DL ") || has("WEBDL") || has("WEB") { out.append(Badge(text: "WEB-DL")) }
         else if has("HDTV") { out.append(Badge(text: "HDTV")) }
-        else if ["CAM", "HDCAM", "CAMRIP", "TS", "HDTS", "TELESYNC", "TC", "HDTC", "TELECINE", "SCR", "SCREENER", "DVDSCR"].contains(where: has) {
-            out.append(Badge(text: "CAM", warn: true))
-        } else if has("DVDRIP") || has("DVD") { out.append(Badge(text: "DVD")) }
+        else if has("DVDRIP") || has("DVD") { out.append(Badge(text: "DVD")) }
         return StreamBadges(badges: out, size: Labels.size(sizeBytes))
     }
 

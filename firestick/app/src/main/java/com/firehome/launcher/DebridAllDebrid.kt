@@ -124,7 +124,7 @@ internal class AllDebridService(private val token: String, private val purpose: 
         val arr = r.data?.optJSONArray("magnets")
         if (arr == null) {
             // An error answer added nothing; a lost answer may have (the janitor settles those claims from its listing).
-            if (r.answered) DebridLedger.release(scope, mine.filter { DebridLedger.owned(scope)[it]?.id == null })
+            if (r.answered) DebridLedger.owned(scope).let { own -> DebridLedger.release(scope, mine.filter { own[it]?.id == null }) }
             return null
         }
         val mags = HashMap<String, Mag>()
@@ -138,7 +138,8 @@ internal class AllDebridService(private val token: String, private val purpose: 
             seen[h] = ready
             if (h in mine) { DebridLedger.setId(scope, h, id); added[h] = id }
         }
-        DebridLedger.release(scope, mine.filter { it !in mags && DebridLedger.owned(scope)[it]?.id == null })
+        val own = DebridLedger.owned(scope)
+        DebridLedger.release(scope, mine.filter { it !in mags && own[it]?.id == null })
         DebridLedger.seen(key, seen)
         return mags
     }

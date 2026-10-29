@@ -34,13 +34,15 @@ public struct HorizontalRow<Item: Identifiable, Card: View>: View {
     }
 
     public var body: some View {
+        // The near-end mark counts the cards shown: measured against `items`, repeats pushed it past the last card.
+        let shown = items.uniqued()
         VStack(alignment: .leading, spacing: Cinema.rowTitleGap) {
             if let title { RowHeader(title) }
             ScrollView(.horizontal) {
                 LazyHStack(alignment: .top, spacing: spacing) {
-                    ForEach(Array(items.uniqued().enumerated()), id: \.element.id) { i, item in
+                    ForEach(Array(shown.enumerated()), id: \.element.id) { i, item in
                         card(i, item)
-                            .onAppear { if i >= items.count - 4 { onNearEnd?() } }
+                            .onAppear { if i >= shown.count - 4 { onNearEnd?() } }
                     }
                 }
                 .scrollTargetLayout()
@@ -172,15 +174,16 @@ public struct PosterGrid: View {
 
     public var body: some View {
         let cols = layout.columns(target, min: 3)
+        let shown = titles.uniqued(by: \.key)
         LazyVGrid(columns: Array(repeating: GridItem(.fixed(cols.width), spacing: Cinema.cardGap, alignment: .top), count: cols.count),
                   alignment: .leading, spacing: 18) {
-            ForEach(Array(titles.uniqued(by: \.key).enumerated()), id: \.element.key) { i, t in
+            ForEach(Array(shown.enumerated()), id: \.element.key) { i, t in
                 Button { open(t) } label: {
                     PosterCard(t, width: cols.width, sub: showSub ? TitleMeta.subline(t) : nil, progress: progress(t))
                 }
                 .buttonStyle(CardButtonStyle(onPress: { CardLookAhead.title?(t) }))
                 .cardMenu(menu(t))
-                .onAppear { if i >= titles.count - 6 { onNearEnd?() } }
+                .onAppear { if i >= shown.count - 6 { onNearEnd?() } }
             }
         }
         .padding(.horizontal, Cinema.gutter)

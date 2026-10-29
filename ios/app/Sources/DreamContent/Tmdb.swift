@@ -24,8 +24,9 @@ enum Tmdb {
 
     /// The full URL: [query] parts each start with "&"; repeats are folded by `single`.
     static func url(_ path: String, _ query: String = "", kids: String = "") -> URL? {
-        let q = single(query + (path.hasPrefix("/discover/") ? kids : "") + NewReleases.animeClause(path, query))
-        return URL(string: "\(api)\(path)?api_key=\(Keys.tmdb)&language=en-US&region=US\(q)")
+        let apart = RowMix.animeApart
+        let q = single(query + (path.hasPrefix("/discover/") ? kids : "") + (apart ? NewReleases.animeClause(path, query) : ""))
+        return URL(string: "\(api)\(path)?api_key=\(Keys.tmdb)&language=en-US&region=US\(apart ? q : NewReleases.withAnime(q))")
     }
 
     /// [query] with each parameter once (Tmdb.single): genres and keywords left out add up, genres asked for AND together,

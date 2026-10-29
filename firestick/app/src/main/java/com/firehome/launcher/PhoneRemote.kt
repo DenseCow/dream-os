@@ -199,6 +199,12 @@ class PhoneRemote(private val ctx: Context, private val callbacks: Callbacks) {
         }
     }
 
+    /** The Activity that owns this remote is gone: stop, and stop being [current] (it holds that Activity). */
+    fun release() {
+        stop()
+        if (current === this) current = null
+    }
+
     private fun handle(sock: Socket) {
         try {
             sock.use { s ->

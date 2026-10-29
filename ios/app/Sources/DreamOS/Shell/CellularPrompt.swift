@@ -158,19 +158,13 @@ enum CellularPrompt {
         return await withCheckedContinuation { (c: CheckedContinuation<StreamLink?, Never>) in
             Task.detached {
                 let l = try? await Services.shared.playback.resolve(r)
-                if once.claim() { c.resume(returning: l) }
+                once.run { c.resume(returning: l) }
             }
             Task.detached {
                 try? await Task.sleep(for: .milliseconds(ms))
-                if once.claim() { c.resume(returning: nil) }
+                once.run { c.resume(returning: nil) }
             }
         }
-    }
-
-    private final class Once: @unchecked Sendable {
-        private let lock = NSLock()
-        private var done = false
-        func claim() -> Bool { lock.withLock { if done { return false }; done = true; return true } }
     }
 
     private static func wifiBack() {

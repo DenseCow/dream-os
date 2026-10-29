@@ -110,8 +110,10 @@ internal object ScraperEngine {
      * Dream Player is playing ([PlaybackTrim]): Python gives back idle memory (providers' caches, idle lane
      * threads, garbage); its modules stay loaded, so the next Play starts as fast. Skipped while a scrape
      * runs or before Python is up. Blocking (waits for Python's lock): a background thread only.
+     * Dream Core's kept scrapes are trimmed too ([NativeResolver.trimForPlayback]).
      */
     fun trimNow() {
+        NativeResolver.trimForPlayback()
         val r = runner ?: return
         try {
             val n = r.callAttr("trim").toInt()
@@ -221,14 +223,16 @@ internal object ScraperEngine {
         }
 
         internal fun complete(error: String? = null) {
-            synchronized(lock) {
+            // The line is built under the lock: a provider's last results can still be landing ([add]).
+            val line = synchronized(lock) {
                 done = true
                 version++
                 lock.notifyAll()
+                val ms = SystemClock.elapsedRealtime() - startedAt
+                "Scrapers: ${byHash.size + hosters.size} results from ${providersWithResults.size} providers in $ms ms ($label${if (light) ", quick check" else ""}" +
+                    "${if (slow.isNotEmpty()) "; no answer: " + slow.take(8).joinToString(", ") else ""}${if (error != null) "; $error" else ""})"
             }
-            val ms = SystemClock.elapsedRealtime() - startedAt
-            Log.w(TAG, "Scrapers: ${count} results from ${providersWithResults.size} providers in $ms ms ($label${if (light) ", quick check" else ""}" +
-                "${if (slow.isNotEmpty()) "; no answer: " + slow.take(8).joinToString(", ") else ""}${if (error != null) "; $error" else ""})")
+            Log.w(TAG, line)
         }
     }
 
@@ -253,9 +257,12 @@ internal object ScraperEngine {
         override fun done(provider: String, count: Int, ms: Int, error: String?) = job.finished(provider, count, ms, error)
     }
 
-    /** Jobs run here (each blocks on Python while its providers run); a few at once at most. */
-    private val pool = ThreadPoolExecutor(3, 3, 30, TimeUnit.SECONDS, LinkedBlockingQueue()) { r ->
-        Thread(r, "scrapers-job").apply { isDaemon = true }
+    /** Jobs run here (each blocks on Python while its providers run); a Play's own pool never queues behind background ones. */
+    private val pool = jobPool(3, "scrapers-job")
+    private val playPool = jobPool(2, "scrapers-play")
+
+    private fun jobPool(n: Int, name: String) = ThreadPoolExecutor(n, n, 30, TimeUnit.SECONDS, LinkedBlockingQueue()) { r ->
+        Thread(r, name).apply { isDaemon = true }
     }.apply { allowCoreThreadTimeOut(true) }
 
     /**
@@ -268,7 +275,7 @@ internal object ScraperEngine {
         val job = Job(label, light, refs.size)
         job.pyId = ids.incrementAndGet()
         if (refs.isEmpty()) { job.complete("no providers enabled"); return job }
-        pool.execute {
+        (if (play) playPool else pool).execute {
             if (!play) Process.setThreadPriority(Process.THREAD_PRIORITY_BACKGROUND)
             try {
                 val r = ensure(app)

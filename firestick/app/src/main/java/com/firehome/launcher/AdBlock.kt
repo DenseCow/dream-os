@@ -19,7 +19,7 @@ import kotlin.random.Random
 
 /**
  * Ad blocking through Android 9's Private DNS (DNS-over-TLS). Writes Settings.Global
- * private_dns_mode / private_dns_specifier (needs WRITE_SECURE_SETTINGS, granted by deploy.sh)
+ * private_dns_mode / private_dns_specifier (needs WRITE_SECURE_SETTINGS, granted by Unlock Features or deploy.sh)
  * and remembers what was set before so Off puts it back exactly.
  */
 object AdBlock {
@@ -49,6 +49,9 @@ object AdBlock {
     private const val PREFS = "adblock"
     private const val UNSET = "\u0000unset" // the key had no value before we touched it
     private val main = Handler(Looper.getMainLooper())
+
+    /** A switch or check is running (AdBlockPanel's busy flag, shared by every card that opens meanwhile). */
+    @Volatile var running = false
 
     /** Real ad hosts that resolve on a normal network and are on every ad list. */
     private val AD_HOSTS = listOf(
@@ -159,12 +162,14 @@ object AdBlock {
             }
             // Which ad hosts resolve now, so a failure later means "blocked" and not "never existed".
             val baseline = AD_HOSTS.filter { resolve(it)?.none { a -> isNullAddress(a) } == true }
+            // A failed switch from one provider to another goes back to the one that was on, not all the way Off.
+            val before = status(app)
             step("Switching system DNS…")
             if (!enable(app, host)) {
-                finish(Result("error", "Dream OS isn't allowed to change system DNS. Run tools/deploy.sh again to grant it."))
+                finish(Result("error", "Dream OS isn't allowed to change system DNS. Turn it on in Settings › Unlock Features."))
                 return@run
             }
-            finish(verify(app, host, baseline, ::step))
+            finish(verify(app, host, baseline, ::step) { if (before.on) restore(app, before) else disable(app) })
         }
     }
 
@@ -173,13 +178,26 @@ object AdBlock {
         val app = ctx.applicationContext
         val host = status(app).host ?: return
         Net.run {
-            val r = verify(app, host, AD_HOSTS) { s -> main.post { progress(s) } }
+            val r = verify(app, host, AD_HOSTS, step = { s -> main.post { progress(s) } })
             saveResult(app, r)
             main.post { done(r) }
         }
     }
 
-    private fun verify(ctx: Context, host: String, adHosts: List<String>, step: (String) -> Unit): Result {
+    /** Puts back a provider that was on before a switch ([enable] keeps the original values for Off). */
+    private fun restore(ctx: Context, s: Status) {
+        try {
+            Settings.Global.putString(ctx.contentResolver, SPEC, s.host)
+            Settings.Global.putString(ctx.contentResolver, MODE, s.mode)
+            Log.w(TAG, "Private DNS back to the previous provider")
+        } catch (e: Exception) {
+            Log.w(TAG, "restore failed", e)
+            disable(ctx)
+        }
+    }
+
+    private fun verify(ctx: Context, host: String, adHosts: List<String>, step: (String) -> Unit,
+                       revert: () -> Unit = { disable(ctx) }): Result {
         step("Checking that websites still load…")
         // The system needs a moment to pick up the change and validate the TLS server.
         val start = SystemClock.elapsedRealtime()
@@ -198,7 +216,7 @@ object AdBlock {
         }
         Log.w(TAG, "verify $host accepted=$accepted dnsOk=$dnsOk")
         if (!dnsOk) {
-            disable(ctx)
+            revert()
             return Result("error", "Websites stopped loading with $host (your network may block secure DNS on port 853). Switched back to your previous DNS.")
         }
         step("Checking that ads are blocked…")
@@ -207,7 +225,7 @@ object AdBlock {
             if (adsBlocked(adHosts)) return Result("ok", "Ads are blocked.")
         }
         return Result("warn",
-            if (accepted) "Private DNS is on, but ad domains still resolve. Cached answers can take a few minutes to clear — check again shortly."
+            if (accepted) "Private DNS is on, but ad domains still resolve. Cached answers can take a few minutes to clear. Check again shortly."
             else "Ad domains still resolve. Fire OS may be ignoring Private DNS on this device.")
     }
 

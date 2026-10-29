@@ -146,9 +146,10 @@ open class CinemaRowsPage(shell: CinemaShell) : CPage(shell) {
 
     /**
      * A row that fills from a background [load]; left out if nothing comes back. A [lazy] row fetches only
-     * once focus is a few rows away. [make] builds the cards (and may retitle the row).
+     * once focus is a few rows away. [make] builds the cards (and may retitle the row); [onEmpty] runs when it's left out.
      */
-    protected fun <T> row(title: String?, kind: RowKind, lazy: Boolean = true, load: () -> List<T>?, make: (CinemaRow, List<T>) -> List<Pair<View, CinemaCard>>): CinemaRow {
+    protected fun <T> row(title: String?, kind: RowKind, lazy: Boolean = true, load: () -> List<T>?, onEmpty: (() -> Unit)? = null,
+                          make: (CinemaRow, List<T>) -> List<Pair<View, CinemaCard>>): CinemaRow {
         val r = newRow(title, kind)
         add(r)
         // Landscape and big rows ask for their titles' key art (KeyArt) on the row thread, briefly, before their cards are made.
@@ -165,10 +166,10 @@ open class CinemaRowsPage(shell: CinemaShell) : CPage(shell) {
                     // A row off screen that loads mid-glide makes its cards once the page has landed: building them
                     // during the glide was the first-scroll hitch on rows the warm-up hadn't reached yet.
                     if (belowScreen(r) && moving()) {
-                        whenStill(r, SystemClock.uptimeMillis()) { if (r.parent != null) landRow(r, title, kind, list, job, loadArt, make) }
+                        whenStill(r, SystemClock.uptimeMillis()) { if (r.parent != null) landRow(r, title, kind, list, job, loadArt, onEmpty, make) }
                         return@load
                     }
-                    landRow(r, title, kind, list, job, loadArt, make)
+                    landRow(r, title, kind, list, job, loadArt, onEmpty, make)
                 }
                 queued[r] = task to again
             }
@@ -198,12 +199,12 @@ open class CinemaRowsPage(shell: CinemaShell) : CPage(shell) {
 
     /** A loaded row's cards: made, filled in, deepened, and the window updated. */
     private fun <T> landRow(r: CinemaRow, title: String?, kind: RowKind, list: List<T>?, job: Net.Task?, load: () -> List<T>?,
-                            make: (CinemaRow, List<T>) -> List<Pair<View, CinemaCard>>) {
+                            onEmpty: (() -> Unit)?, make: (CinemaRow, List<T>) -> List<Pair<View, CinemaCard>>) {
         if (released) return
         val t0 = SystemClock.uptimeMillis()
         // Pills of the row's new titles are queued as the cards are made: one batch, logged by row name.
         val pairs = if (list.isNullOrEmpty()) emptyList() else Availability.batch(title ?: kind.name.lowercase()) { make(r, list) }
-        if (pairs.isEmpty()) { setShown(r, false); return }
+        if (pairs.isEmpty()) { setShown(r, false); onEmpty?.invoke(); return }
         val timing = job?.let { RowTiming(title ?: kind.name.lowercase(), it.queuedAt, it.startedAt, SystemClock.uptimeMillis()) }
         if (timing != null) r.onArtReady = { arts -> timing.art(arts, col.indexOfChild(r), focusSec, blankSince.remove(r)) }
         r.fill(pairs, animate = onScreen(r))
@@ -740,6 +741,13 @@ class CinemaHome(shell: CinemaShell) : CinemaRowsPage(shell) {
     private var myListRow: CinemaRow? = null
     private var myListShown: String? = null
     private var seedKey: String? = null
+    // Declared before init: build() fills them, and its first rows load on other threads at once.
+    /** The keys of the Continue Watching cards as shown (which title focus rests on when the row is rebuilt). */
+    private var continueKeys: List<String> = emptyList()
+    /** Top 10 and Trending Now as first claimed ([top10], [trending]). */
+    @Volatile private var top10Now: List<Title>? = null
+    @Volatile private var trendingNow: List<Title>? = null
+    private val charts = Any()
 
     init { build() }
 
@@ -757,11 +765,17 @@ class CinemaHome(shell: CinemaShell) : CinemaRowsPage(shell) {
         }
         continueRow = newRow("Continue Watching", RowKind.CONTINUE).also { it.visibility = View.GONE; add(it) }
         var fallback = false
+        // Popular Today: today's chart, only what's out and no anime outside its sections (the row's name is personal).
+        // Two pages, like Top 10: Top 10 and Trending Now claim most of the first.
+        fun popularToday() = claims.take("Top Picks for You", (Tmdb.list(ctx, "/trending/all/day") + Tmdb.list(ctx, "/trending/all/day", "&page=2"))
+            .filter { it.backdropPath != null && RowMix.released(it) && !RowMix.animeHidden(ctx, it) }, 12)
         row("Top Picks for You", RowKind.BIG, lazy = false, load = {
             trending()
-            claims.take("Top Picks for You", HomePicks.topPicks(ctx)).takeIf { it.size >= HomePicks.MIN_PICKS }
-                ?: run { fallback = true; claims.take("Top Picks for You", Tmdb.list(ctx, "/trending/all/day").filter { it.backdropPath != null }, 12) }
-        }) { r, list ->
+            // The first page decides which list the row is; its later pages stay on that list.
+            if (RowPaging.page > 1) (if (fallback) popularToday() else claims.take("Top Picks for You", HomePicks.topPicks(ctx)))
+            else claims.take("Top Picks for You", HomePicks.topPicks(ctx)).takeIf { it.size >= HomePicks.MIN_PICKS }
+                ?: run { fallback = true; popularToday() }
+        }, onEmpty = { host.homeReady() }) { r, list ->
             if (fallback) r.header?.text = "Popular Today"
             host.homeReady()
             titleCards(list.take(12)) { kit.big(it, bigKicker(it)) }
@@ -795,7 +809,7 @@ class CinemaHome(shell: CinemaShell) : CinemaRowsPage(shell) {
             // The week's best-rated trending title the rows above don't show. Trending Now also draws on page 2, so
             // one page could run dry (the card vanished): pages 2-4, the first page with a pick wins.
             (2..4).asSequence().map { pg ->
-                Tmdb.list(ctx, "/trending/all/week", "&page=$pg").filter { it.key !in taken && it.votes >= 300 && it.backdropPath != null && !RowMix.isAnime(it) && RowMix.released(it) }
+                Tmdb.trendingShown(ctx, query = "&page=$pg", art = "backdrop").filter { it.key !in taken && it.votes >= 300 }
                     .sortedByDescending { it.rating }.take(1)
             }.firstOrNull { it.isNotEmpty() }.orEmpty()
         })
@@ -844,7 +858,7 @@ class CinemaHome(shell: CinemaShell) : CinemaRowsPage(shell) {
                 1 -> comingSoon()
                 2 -> spotlight("Coming Soon", load = {
                     Tmdb.list(ctx, "/discover/movie", Discover.query(DiscoverFilters(type = "movie", sort = Discover.SORT_SOON)), "movie")
-                        .filter { it.date.isNotEmpty() }.drop(16).take(8)
+                        .filter { it.date.isNotEmpty() && !RowMix.animeHidden(ctx, it) }.drop(16).take(8) // anime stays in its sections
                 }, pick = { l -> l.maxByOrNull { it.votes } })
                 3 -> seeds.getOrNull(1)?.let { becauseRow(it) }
             }
@@ -858,10 +872,29 @@ class CinemaHome(shell: CinemaShell) : CinemaRowsPage(shell) {
         }
     }
 
-    private fun top10() = RowMix.top10(ctx, claims)
+    /**
+     * Top 10 and Trending Now as first claimed. Every row's loader asks for them first so their titles stay theirs;
+     * once claimed, the answer is kept (each ask was two chart lists tidied and ranked again, and a deep row's later
+     * page fetched other pages of the charts just to claim nothing).
+     */
+    private fun top10(): List<Title> {
+        top10Now?.let { return it }
+        if (RowPaging.page > 1) return RowMix.top10(ctx, claims)
+        return synchronized(charts) { top10Now ?: RowMix.top10(ctx, claims).also { top10Now = it } }
+    }
 
-    /** Trending Now (claims right after Top 10): only what's out, the chart lists films months ahead. */
-    private fun trending(): List<Title> { top10(); return claims.take("Trending Now", (Tmdb.trending(ctx) + Tmdb.list(ctx, "/trending/all/week", "&page=2")).filter { RowMix.released(it) }) }
+    /** Trending Now (claims right after Top 10). Its own later pages are fetched as usual. */
+    private fun trending(): List<Title> {
+        trendingNow?.let { if (RowPaging.page == 1 || RowPaging.foreign("Trending Now")) return it }
+        if (RowPaging.page > 1) return trendingList()
+        return synchronized(charts) { trendingNow ?: trendingList().also { trendingNow = it } }
+    }
+
+    /** Only what's out: the chart lists films months ahead. */
+    private fun trendingList(): List<Title> {
+        top10()
+        return claims.take("Trending Now", (Tmdb.trending(ctx) + Tmdb.list(ctx, "/trending/all/week", "&page=2")).filter { RowMix.released(it) })
+    }
 
     /** Coming Soon: the most anticipated movies and series of the next months, soonest first, their date under each. */
     private fun comingSoon() {
@@ -929,8 +962,6 @@ class CinemaHome(shell: CinemaShell) : CinemaRowsPage(shell) {
         window()
     }
 
-    /** The keys of the Continue Watching cards as shown (which title focus rests on when the row is rebuilt). */
-    private var continueKeys: List<String> = emptyList()
     private val continueLater = Runnable { if (!released) refreshContinue() }
 
     /** A title was removed from Continue Watching: rebuild now, focus on the card that took its place. */
@@ -1033,6 +1064,9 @@ class CinemaCategory(shell: CinemaShell, private val kind: String) : CinemaRowsP
     private var claims = RowClaims(ctx)
     private var seedKey: String? = null
     private val label = if (movie) "Movies" else "TV Shows"
+    /** All's Continue Watching for this type (gone while there's none), and the history version it shows. Declared before init, which fills them. */
+    private var continueRow: CinemaRow? = null
+    private var continueShown = -1L
 
     init {
         if (!Tmdb.hasKey(ctx)) {
@@ -1071,22 +1105,38 @@ class CinemaCategory(shell: CinemaShell, private val kind: String) : CinemaRowsP
     }
 
     /**
+     * Continue Watching as the history is now: built with the page, rebuilt when the page shows again after the
+     * history changed (it used to keep the progress and episodes it was built with until the page was rebuilt).
+     */
+    private fun refreshContinue() {
+        val r = continueRow?.takeIf { it.parent != null } ?: return
+        if (WatchHistory.version == continueShown || r.hasFocus()) return
+        continueShown = WatchHistory.version
+        val mine = WatchHistory.entries(ctx).filter { it.isShow == !movie }.take(15)
+        if (mine.isEmpty()) { setShown(r, false); return }
+        val apps = host.apps()
+        r.fill(mine.map { e -> kit.continueCard(e, apps).also { (_, c) -> c.setOnClickListener { host.resume(e) }; c.setOnLongClickListener { host.continueMenu(e, e.toTitle(), c); true } } }, animate = false)
+        setShown(r, true)
+    }
+
+    override fun onShow() {
+        super.onShow()
+        refreshContinue()
+    }
+
+    /**
      * "All": Continue Watching for this type, Trending This Week, up to three Because You Watched rows
      * spread between Top 10, New Releases, Coming Soon and Critically Acclaimed, Hidden Gems, Popular on each
      * installed service, every genre ([MOVIE_ROWS] / [TV_ROWS] names), anime and the decades. Each title shows once.
      */
     private fun featured() {
         val h = hero
-        Net.background({ Tmdb.list(ctx, "/trending/$kind/week", type = kind).filter { it.backdropPath != null && !RowMix.isAnime(it) }.take(6) }) { list ->
+        Net.background({ Tmdb.list(ctx, "/trending/$kind/week", type = kind).filter { it.backdropPath != null && RowMix.released(it) && !RowMix.animeHidden(ctx, it) }.take(6) }) { list ->
             if (!list.isNullOrEmpty() && !released && chips?.current == 0) h?.setTitles(list) { "Trending in $label" }
         }
-        val mine = WatchHistory.entries(ctx).filter { it.isShow == !movie }.take(15)
-        if (mine.isNotEmpty()) {
-            val r = newRow("Continue Watching", RowKind.CONTINUE)
-            add(r)
-            val apps = host.apps()
-            r.fill(mine.map { e -> kit.continueCard(e, apps).also { (_, c) -> c.setOnClickListener { host.resume(e) }; c.setOnLongClickListener { host.continueMenu(e, e.toTitle(), c); true } } }, animate = false)
-        }
+        continueRow = newRow("Continue Watching", RowKind.CONTINUE).also { add(it) }
+        continueShown = -1L
+        refreshContinue()
         val seeds = BecauseYouWatched.pick(ctx, shows = !movie)
         seedKey = seeds.key
         // Never recommend what's watched, finished, saved or in progress, nor what the trending rows show.
@@ -1107,7 +1157,7 @@ class CinemaCategory(shell: CinemaShell, private val kind: String) : CinemaRowsP
             }) { _, list -> titleCards(list) { kit.landscape(it) } }
         }
 
-        titles("Trending This Week", RowKind.BIG, lazy = false) { Tmdb.list(ctx, "/trending/$kind/week", type = kind) }
+        titles("Trending This Week", RowKind.BIG, lazy = false) { Tmdb.list(ctx, "/trending/$kind/week", type = kind).filter { RowMix.released(it) } }
         becauseRow()
         row("Top 10 Today", RowKind.RANKED, load = {
             RowMix.top10(ctx, claims, kind).takeIf { it.size >= MIN_ROW }
@@ -1177,7 +1227,7 @@ class CinemaCategory(shell: CinemaShell, private val kind: String) : CinemaRowsP
         val (name, id) = g
         val h = hero
         val popular = filters { genre = id; sort = Discover.SORT_POPULAR }
-        Net.background({ discover(popular).filter { it.backdropPath != null && (id == Discover.ANIME || !RowMix.isAnime(it)) }.take(6) }) { list ->
+        Net.background({ discover(popular).filter { it.backdropPath != null && RowMix.released(it) && (id == Discover.ANIME || !RowMix.animeHidden(ctx, it)) }.take(6) }) { list ->
             if (!list.isNullOrEmpty() && !released && chips?.current != 0) h?.setTitles(list) { name }
         }
         titles("Popular in $name", RowKind.BIG, lazy = false) { discover(popular) }
@@ -1299,7 +1349,7 @@ class CinemaService(shell: CinemaShell, private val spec: ServiceSpec) : CinemaR
             }.toTypedArray()))
 
         private fun heroTitles(ctx: android.content.Context, spec: ServiceSpec) = mixed(ctx, spec) { rating = 7 }
-            .filter { it.backdropPath != null && (spec.name == "Crunchyroll" || !RowMix.isAnime(it)) }.take(6)
+            .filter { it.backdropPath != null && RowMix.released(it) && (spec.name == "Crunchyroll" || !RowMix.animeHidden(ctx, it)) }.take(6)
 
         private fun popular(ctx: android.content.Context, spec: ServiceSpec) = RowPaging.all({ mixed(ctx, spec) }, { mixed(ctx, spec, "&page=2") }).flatten()
 
@@ -1440,7 +1490,7 @@ class CinemaSystem(shell: CinemaShell) : CPage(shell) {
             orientation = LinearLayout.VERTICAL
             setPadding(kit.gutter, 92.dp, kit.gutter, 12.dp)
             addView(kit.label("System", 30f, kit.text, kit.bold))
-            addView(kit.label("Storage, memory and network on this Fire TV", 14.5f, kit.dim, kit.medium).apply { setPadding(0, 8.dp, 0, 0) })
+            addView(kit.label("Storage, memory and network on this Fire Stick", 14.5f, kit.dim, kit.medium).apply { setPadding(0, 8.dp, 0, 0) })
         })
         addView(host.systemView())
     }

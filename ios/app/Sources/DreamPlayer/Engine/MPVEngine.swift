@@ -42,6 +42,20 @@ final class MPVEngine: PlayerEngine {
     private var lastHTTPStatus: Int?
     private var retries = 0
     private var source: EngineSource?
+    // One failure per source (fire-home 51158e8): a load reports at most one error, and nothing from a file it replaced.
+    /// Bumped by every load; an event batch stops at a load made while it ran (the rest is the old file's).
+    private var loadSerial = 0
+    private var failedThisLoad = false
+    /// mpv's playlist entry of the newest started file, and the last entry a load replaced (its end-file is stale).
+    private var startedEntry: Int64 = 0
+    private var replacedEntry: Int64 = -1
+    /// The load's file hasn't started in mpv yet: decoder lines are still the old file's.
+    private var awaitingStart = false
+    /// Playback began but no video frame was decoded yet: the first frame waits for one, sound alone isn't a start.
+    private var awaitingPicture = false
+    private var loadStartPos: Double = 0
+    /// Sound this long with no picture counts as a failed source (a video track nothing here can start).
+    static let noPictureSeconds: Double = 12
     private var subtitleStyle = SubtitleStyle()
     private var fill = false
 
@@ -128,6 +142,12 @@ final class MPVEngine: PlayerEngine {
 
     private func startFile(_ src: EngineSource, start: Double, autoplay: Bool) {
         firstFrameSent = false
+        loadSerial &+= 1
+        failedThisLoad = false
+        replacedEntry = startedEntry
+        awaitingStart = true
+        awaitingPicture = false
+        loadStartPos = start
         loading = true
         loadStartedAt = Date()
         lastHTTPStatus = nil
@@ -355,6 +375,9 @@ final class MPVEngine: PlayerEngine {
         updateThumbGate()
         // Picture in Picture keeps drawing (on the CPU) while the app is away.
         if pipMode { return }
+        // Sent away while the sound already played and the picture hadn't come: a sound-only start (as when video is
+        // off at the start), never "the picture didn't start" 12 s later.
+        if !on, awaitingPicture, !failedThisLoad { awaitingPicture = false; firstFrame() }
         // MPVKit: drawing into a hidden layer leaves a black picture after returning (and the GPU is off limits in
         // the background); switch video off meanwhile. Sound keeps playing.
         if on { fitDrawable("back in front") }
@@ -515,6 +538,8 @@ final class MPVEngine: PlayerEngine {
         core.command(["stop"])
         source = nil
         loading = false
+        awaitingPicture = false
+        replacedEntry = startedEntry
         state = EngineState(speed: state.speed)
         trackList = []
         resetWatchState()
@@ -540,34 +565,50 @@ final class MPVEngine: PlayerEngine {
 
     private func handle(_ events: [MPVEvent]) {
         var changed = false
+        let serial = loadSerial
         for e in events {
+            // A load made while this batch ran (the session switching sources on an error): the rest is the old file's.
+            if loadSerial != serial { break }
             switch e {
             case .property(let name, let value):
                 changed = apply(name, value) || changed
+            case .startFile(let entry):
+                startedEntry = max(startedEntry, entry)
+                if entry > replacedEntry { awaitingStart = false }
             case .fileLoaded:
                 loading = false
                 Log.player.info("mpv: file loaded \(String(format: "%.2f", Date().timeIntervalSince(self.loadStartedAt)), privacy: .public) s after load (\(self.trackList.count) tracks)")
                 fire(.tracks)
             case .playbackRestart:
-                if !firstFrameSent && state.hasSource {
-                    firstFrameSent = true
-                    retries = 0
-                    firstFrameAt = CACurrentMediaTime()
-                    Log.player.info("mpv: playback started \(String(format: "%.2f", Date().timeIntervalSince(self.loadStartedAt)), privacy: .public) s after load")
-                    fire(.firstFrame)
-                    fire(.format)
-                    startTick()
+                if !firstFrameSent && !awaitingPicture && state.hasSource {
+                    if videoSelected && videoParams.isEmpty {
+                        // Sound can start before (or without) a decoded picture: the first frame waits for one.
+                        awaitingPicture = true
+                        Log.player.info("mpv: playback started \(String(format: "%.2f", Date().timeIntervalSince(self.loadStartedAt)), privacy: .public) s after load, waiting for a picture")
+                    } else {
+                        firstFrame()
+                    }
                 } else if let p = pendingSeek {
                     pendingSeek = nil
                     Log.player.info("Seek: to \(Labels.time(p.target), privacy: .public) \(p.inside ? "inside the buffer" : "outside the buffer", privacy: .public), picture after \(String(format: "%.2f", CACurrentMediaTime() - p.at), privacy: .public) s")
                 }
             case .propertyReply(let tag, let value):
                 if tag == MPVCore.tagCacheState { readCacheState(value) }
-            case .endFile(let reason, let error):
-                endFile(reason: reason, error: error)
+            case .endFile(let reason, let error, let entry):
+                if entry > 0 && entry <= replacedEntry {
+                    if reason == Int32(MPV_END_FILE_REASON_ERROR.rawValue) { Log.player.info("mpv: end-file error of a replaced file ignored") }
+                } else {
+                    endFile(reason: reason, error: error)
+                }
             case .log(let level, let prefix, let text):
                 if let r = text.range(of: #"HTTP error (\d{3})"#, options: .regularExpression) {
                     lastHTTPStatus = Int(text[r].suffix(3))
+                }
+                if !awaitingStart, !firstFrameSent, state.hasSource, Self.decoderFailed(text) {
+                    // Every decoder mpv has refused this track: this file won't play here, the next source might.
+                    let sound = prefix == "ad" || text.contains("audio chain")
+                    Log.player.error("mpv: no decoder for this source's \(sound ? "audio" : "video", privacy: .public)")
+                    failLoad(sound ? "This source's sound can't be played on this iPhone." : "This source's video can't be played on this iPhone.")
                 }
                 // Never the stream URL itself: hosts and messages only.
                 Log.player.info("mpv[\(prefix, privacy: .public)] \(level, privacy: .public): \(Self.redact(text), privacy: .public)")
@@ -607,6 +648,13 @@ final class MPVEngine: PlayerEngine {
         case "time-pos":
             if let t = v.double {
                 state.position = t
+                if awaitingPicture {
+                    if state.isPlaying, t - loadStartPos >= Self.noPictureSeconds {
+                        Log.player.error("mpv: sound for \(Int(t - self.loadStartPos), privacy: .public) s and no picture")
+                        failLoad("The picture didn't start.")
+                    }
+                    return false
+                }
                 let now = CACurrentMediaTime()
                 if state.isPlaying && now - lastProgress >= 0.45 { lastProgress = now; fire(.progress(t)) }
             }
@@ -634,6 +682,10 @@ final class MPVEngine: PlayerEngine {
             if pipMode { updateFeedSize() }
             noteHDRStream()
             fire(.format)
+            if awaitingPicture, !videoParams.isEmpty, !failedThisLoad {
+                awaitingPicture = false
+                firstFrame()
+            }
             return false
         case "osd-dimensions":
             // The size mpv draws at (its vo's width / height in pixels). MPVKit's MoltenVK context only reads the
@@ -721,10 +773,47 @@ final class MPVEngine: PlayerEngine {
             default: msg = "The video couldn't be decoded."
             }
         }
+        failLoad(msg)
+    }
+
+    /// This load failed: reported once (a file failing for two reasons uses one of the session's quiet retries, not two).
+    private func failLoad(_ msg: String) {
+        guard !failedThisLoad else {
+            Log.player.info("mpv: a second failure for the same source not reported (\(msg, privacy: .public))")
+            return
+        }
+        failedThisLoad = true
+        awaitingPicture = false
         loading = false
         state.error = msg
         _ = refreshPlaying()
         fire(.error(msg))
+    }
+
+    private func firstFrame() {
+        firstFrameSent = true
+        retries = 0
+        firstFrameAt = CACurrentMediaTime()
+        Log.player.info("mpv: playback started \(String(format: "%.2f", Date().timeIntervalSince(self.loadStartedAt)), privacy: .public) s after load")
+        fire(.firstFrame)
+        fire(.format)
+        startTick()
+    }
+
+    /// The file has a video track that is switched on (a sound-only file, or video turned off for background
+    /// listening, starts without waiting for a picture).
+    private var videoSelected: Bool {
+        trackList.contains { t in
+            guard case .map(let m) = t else { return false }
+            return m["type"]?.string == "video" && m["selected"]?.bool == true
+        }
+    }
+
+    /// mpv's final word that no decoder takes a track (every one it has was tried; a hardware decoder that falls back
+    /// to software never says this).
+    static func decoderFailed(_ text: String) -> Bool {
+        text.contains("Failed to initialize a decoder for codec") || text.contains("Could not initialize video chain")
+            || text.contains("Could not initialize audio chain")
     }
 
     private func fire(_ e: EngineEvent) { onEvent?(e) }
@@ -986,7 +1075,7 @@ final class MPVEngine: PlayerEngine {
 
 
     /// Log lines may quote the stream URL: cut every http(s) URL down to its host.
-    static func redact(_ s: String) -> String {
+    nonisolated static func redact(_ s: String) -> String {
         guard s.contains("http") else { return s }
         var out = s
         while let r = out.range(of: #"https?://[^\s'"]+"#, options: .regularExpression) {
@@ -1091,7 +1180,9 @@ enum MPVEvent: Sendable {
     case property(String, MPVValue)
     case fileLoaded
     case playbackRestart
-    case endFile(reason: Int32, error: Int32)
+    /// [entry]: mpv's playlist entry id (0 when this mpv doesn't say).
+    case endFile(reason: Int32, error: Int32, entry: Int64)
+    case startFile(entry: Int64)
     case log(String, String, String)
     /// An asynchronous command finished (only tagged ones and failures are reported).
     case commandReply(tag: UInt64, error: Int32)
@@ -1103,8 +1194,12 @@ enum MPVEvent: Sendable {
 /// Owns the mpv handle. Commands go straight to mpv (its API is thread-safe); events are read on a serial
 /// queue and handed to `sink` in batches.
 final class MPVCore: @unchecked Sendable {
+    /// Main thread's copy (the render API, shutdown); `queueHandle` and `sink` are only touched on `queue` once
+    /// running, so `drain` never reads what `shutdown` is clearing.
     private var handle: OpaquePointer?
+    private var queueHandle: OpaquePointer?
     private let queue = DispatchQueue(label: "dreamos.mpv", qos: .userInitiated)
+    /// Set before `start`.
     var sink: (@Sendable ([MPVEvent]) -> Void)?
 
     /// `hdr`: the screen shows HDR, so HDR streams get an HDR picture (mpv tells the output what the stream is,
@@ -1156,6 +1251,8 @@ final class MPVCore: @unchecked Sendable {
             ("vo-configured", MPV_FORMAT_FLAG), ("osd-dimensions", MPV_FORMAT_NODE),
         ]
         for (name, fmt) in props { mpv_observe_property(h, 0, name, fmt) }
+        let box = HandleBox(h)
+        queue.async { self.queueHandle = box.h }
         mpv_set_wakeup_callback(h, { ctx in
             guard let ctx else { return }
             Unmanaged<MPVCore>.fromOpaque(ctx).takeUnretainedValue().wake()
@@ -1198,7 +1295,7 @@ final class MPVCore: @unchecked Sendable {
     private func wake() { queue.async { [weak self] in self?.drain() } }
 
     private func drain() {
-        guard let h = handle else { return }
+        guard let h = queueHandle else { return }
         var batch: [MPVEvent] = []
         while true {
             guard let ev = mpv_wait_event(h, 0)?.pointee, ev.event_id != MPV_EVENT_NONE else { break }
@@ -1223,7 +1320,11 @@ final class MPVCore: @unchecked Sendable {
             case MPV_EVENT_PLAYBACK_RESTART: batch.append(.playbackRestart)
             case MPV_EVENT_END_FILE:
                 if let e = ev.data?.assumingMemoryBound(to: mpv_event_end_file.self).pointee {
-                    batch.append(.endFile(reason: Int32(e.reason.rawValue), error: e.error))
+                    batch.append(.endFile(reason: Int32(e.reason.rawValue), error: e.error, entry: e.playlist_entry_id))
+                }
+            case MPV_EVENT_START_FILE:
+                if let s = ev.data?.assumingMemoryBound(to: mpv_event_start_file.self).pointee {
+                    batch.append(.startFile(entry: s.playlist_entry_id))
                 }
             case MPV_EVENT_LOG_MESSAGE:
                 if let m = ev.data?.assumingMemoryBound(to: mpv_event_log_message.self).pointee {
@@ -1249,9 +1350,10 @@ final class MPVCore: @unchecked Sendable {
         // The wakeup callback holds an unretained pointer to this object: detach it before anything else.
         mpv_set_wakeup_callback(h, nil, nil)
         handle = nil
-        sink = nil
         let box = HandleBox(h)
-        queue.async {
+        queue.async { [self] in
+            queueHandle = nil
+            sink = nil
             before?()
             mpv_terminate_destroy(box.h)
         }

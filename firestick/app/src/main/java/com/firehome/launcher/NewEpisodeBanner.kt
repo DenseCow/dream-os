@@ -84,7 +84,7 @@ object NewEpisodeSpot {
             if (news.isNotEmpty()) notice(app, news)
             NewEpisodes.announced(app, s.announce)
         }
-        prune(app, s, done, first)
+        prune(app, s)
         val nextAt = s.nextAt
         if (nextAt > 0) main.post { soonest(nextAt) }
         val pick = list.firstOrNull()
@@ -146,8 +146,13 @@ object NewEpisodeSpot {
         Log.w(TAG, "NewEp: ${label(i)} $why")
     }
 
-    /** Keeps the per-profile marks to episodes still in the window (they leave it after a week anyway). */
-    private fun prune(app: Context, s: NewEpisodes.Snapshot, done: Set<String>, first: JSONObject) = synchronized(lock) {
+    /**
+     * Keeps the per-profile marks to episodes still in the window (they leave it after a week anyway). Read again
+     * under the lock: a Dismiss or a first showing written since [onSnapshot] read them must not be lost.
+     */
+    private fun prune(app: Context, s: NewEpisodes.Snapshot) = synchronized(lock) {
+        val done = stringSet(app, "done")
+        val first = firstShown(app)
         val keep = s.recent.mapTo(HashSet()) { it.key }.apply { fake?.let { add(it.key) } }
         val d = done.filterTo(HashSet()) { it in keep }
         if (d.size != done.size) putSet(app, "done", d)

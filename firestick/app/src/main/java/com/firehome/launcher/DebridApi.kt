@@ -74,6 +74,8 @@ internal object DebridAccounts {
 
     @Volatile private var cached: Accounts? = null
     @Volatile private var cachedAt = 0L
+    /** Bumped by [invalidate]: a read that started before it never lands in the cache. */
+    @Volatile private var generation = 0
 
     /**
      * Dream OS's own accounts ([DreamAccounts]; the provider's saved ones until the one-time copy has
@@ -82,12 +84,13 @@ internal object DebridAccounts {
     fun get(ctx: Context): Accounts? {
         val now = SystemClock.elapsedRealtime()
         cached?.let { if (now - cachedAt < 60_000) return it }
+        val gen = generation
         val raw = DreamAccounts.values(ctx.applicationContext) ?: return cached
-        return Accounts(raw).also { cached = it; cachedAt = now }
+        return Accounts(raw).also { a -> synchronized(this) { if (gen == generation) { cached = a; cachedAt = now } } }
     }
 
     /** Forget the cached read (an account was just linked or unlinked). */
-    fun invalidate() { cachedAt = 0; cached = null }
+    fun invalidate() = synchronized(this) { generation++; cachedAt = 0; cached = null }
 }
 
 /** JSON over HTTPS for the index and the debrid services: short timeouts, kept-alive connections. */
@@ -112,28 +115,25 @@ internal object DebridHttp {
         // A Premiumize account linked with its API key goes as the apikey parameter, not as a Bearer token.
         val apiKey = bearer?.takeIf { it.startsWith(API_KEY_PREFIX) }?.removePrefix(API_KEY_PREFIX)
         val target = if (apiKey != null) url + (if ('?' in url) "&" else "?") + "apikey=" + enc(apiKey) else url
+        // No disconnect() afterwards: it would close the kept-alive socket the next call reuses.
         val c = (URL(target).openConnection() as HttpURLConnection)
-        try {
-            c.requestMethod = method
-            c.connectTimeout = timeoutMs
-            c.readTimeout = timeoutMs
-            c.useCaches = false
-            c.setRequestProperty("User-Agent", UA)
-            c.setRequestProperty("Accept", "application/json")
-            if (bearer != null && apiKey == null) c.setRequestProperty("Authorization", "Bearer $bearer")
-            for ((k, v) in headers) c.setRequestProperty(k, v)
-            if (body != null) {
-                c.doOutput = true
-                if (contentType != null) c.setRequestProperty("Content-Type", contentType)
-                c.setFixedLengthStreamingMode(body.size)
-                c.outputStream.use { it.write(body) }
-            }
-            val code = c.responseCode
-            val s = (if (code in 200..299) c.inputStream else c.errorStream)?.bufferedReader()?.use { it.readText() }.orEmpty()
-            return Reply(code, s)
-        } finally {
-            // No disconnect(): it would close the kept-alive socket the next call reuses.
+        c.requestMethod = method
+        c.connectTimeout = timeoutMs
+        c.readTimeout = timeoutMs
+        c.useCaches = false
+        c.setRequestProperty("User-Agent", UA)
+        c.setRequestProperty("Accept", "application/json")
+        if (bearer != null && apiKey == null) c.setRequestProperty("Authorization", "Bearer $bearer")
+        for ((k, v) in headers) c.setRequestProperty(k, v)
+        if (body != null) {
+            c.doOutput = true
+            if (contentType != null) c.setRequestProperty("Content-Type", contentType)
+            c.setFixedLengthStreamingMode(body.size)
+            c.outputStream.use { it.write(body) }
         }
+        val code = c.responseCode
+        val s = (if (code in 200..299) c.inputStream else c.errorStream)?.bufferedReader()?.use { it.readText() }.orEmpty()
+        return Reply(code, s)
     }
 
     fun get(url: String, bearer: String? = null, timeoutMs: Int = 6_000) = request(url, bearer = bearer, timeoutMs = timeoutMs)
@@ -153,11 +153,11 @@ internal object DebridFiles {
     fun isVideo(name: String) = VIDEO.containsMatchIn(name)
     fun base(path: String) = path.substringAfterLast('/').substringAfterLast('\\')
 
-    /** S02E01 / 2x01 / s2e1 style match for [season]/[episode] in [name]. */
-    fun isEpisode(name: String, season: Int, episode: Int): Boolean {
-        val n = base(name)
-        return Regex("(?i)s0*$season[ ._-]*e0*$episode(?![0-9])").containsMatchIn(n) ||
-            Regex("(?i)(?<![0-9])$season[x]0*$episode(?![0-9])").containsMatchIn(n)
+    /** S02E01 / 2x01 / s2e1 style match for [season]/[episode] in a file name: built once per pick, not per file. */
+    private fun episodeMatcher(season: Int, episode: Int): (String) -> Boolean {
+        val sxe = Regex("(?i)s0*$season[ ._-]*e0*$episode(?![0-9])")
+        val nxn = Regex("(?i)(?<![0-9])$season[x]0*$episode(?![0-9])")
+        return { name -> base(name).let { sxe.containsMatchIn(it) || nxn.containsMatchIn(it) } }
     }
 
     /**
@@ -170,7 +170,7 @@ internal object DebridFiles {
         if (want != null) files.indexOfFirst { base(it.first).equals(want, true) }.let { if (it >= 0) return it }
         val videos = files.withIndex().filter { isVideo(it.value.first) && !JUNK.containsMatchIn(base(it.value.first)) }
         val s = c.season; val e = c.episode
-        val pool = if (s != null && e != null) videos.filter { isEpisode(it.value.first, s, e) } else videos
+        val pool = if (s != null && e != null) episodeMatcher(s, e).let { m -> videos.filter { m(it.value.first) } } else videos
         return pool.maxByOrNull { it.value.second }?.index ?: -1
     }
 }
@@ -207,11 +207,13 @@ enum class DebridPurpose(val maxUploads: Int) {
 internal object DebridLedger {
     interface Store { fun get(key: String): String?; fun put(key: String, value: String) }
 
+    /** Installing the real store drops what was read before it (empty records from the in-memory stand-in). */
     @Volatile var store: Store = object : Store {
         private val m = java.util.concurrent.ConcurrentHashMap<String, String>()
         override fun get(key: String) = m[key]
         override fun put(key: String, value: String) { m[key] = value }
     }
+        set(value) = synchronized(this) { field = value; mem.clear() }
 
     /** Info hashes of links handed out recently (maybe playing right now): cleanup never removes these. */
     @Volatile var inUse: () -> Set<String> = { emptySet() }

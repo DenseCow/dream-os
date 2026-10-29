@@ -113,7 +113,7 @@ internal object BackupTransfer {
     /** This TV's name as Fire TV shows it ("Living Room Fire TV"), else its model. */
     fun deviceName(ctx: Context): String = try {
         android.provider.Settings.Global.getString(ctx.contentResolver, "device_name")?.trim()?.takeIf { it.isNotEmpty() }
-    } catch (e: Exception) { null } ?: "Fire TV (${Build.MODEL})"
+    } catch (e: Exception) { null } ?: "Fire Stick (${Build.MODEL})"
 
     /** What a backup of this TV carries, in plain words ("2 Profiles · Real-Debrid · 1 Scraper Repository · Trakt"). */
     fun summary(ctx: Context): String {
@@ -140,7 +140,8 @@ internal object BackupTransfer {
     class Sender(ctx: Context, private val onState: (State) -> Unit) {
         private val app = ctx.applicationContext
         private val main = Handler(Looper.getMainLooper())
-        private val file = File(app.cacheDir, "dreamos-backup.bin")
+        // Its own file: a stopped session's export thread still finishes (and deletes) its file while a new one starts.
+        private val file = File(app.cacheDir, "dreamos-backup-${SystemClock.elapsedRealtimeNanos()}.bin")
         @Volatile private var stopped = false
         @Volatile private var server: ServerSocket? = null
         private var code = ""
@@ -230,6 +231,7 @@ internal object BackupTransfer {
                 doFinal(JSONObject().put("key", exportKey).put("summary", summary).put("from", deviceName(app)).toString().toByteArray())
             }
             val total = file.length()
+            if (total <= 0L) { reply(out, 503, "Not ready"); return } // the export is gone (the session stopped)
             Log.w(TAG, "Backup: code accepted, sending ${total / 1024} KB to ${sock.inetAddress.hostAddress}")
             sock.soTimeout = 60_000
             val h = "HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nContent-Length: $total\r\n" +
@@ -421,7 +423,8 @@ internal object BackupTransfer {
                 init(Cipher.DECRYPT_MODE, SecretKeySpec(wrapKey, "AES"), GCMParameterSpec(128, wrapped, 0, 12))
                 doFinal(wrapped, 12, wrapped.size - 12)
             }, Charsets.UTF_8))
-            val total = head.headers["content-length"]?.toLongOrNull() ?: return Result.Failed("Your other TV didn't send the backup. Try again.")
+            val total = head.headers["content-length"]?.toLongOrNull()?.takeIf { it > 0 }
+                ?: return Result.Failed("Your other TV didn't send the backup. Try again.")
             // Room for the download and for unpacking it.
             if (app.cacheDir.usableSpace < total * 3 + 50L * 1024 * 1024) return Result.Failed("There isn't enough free space on this TV. Free up space by removing an app, then try again.")
             var got = 0L
@@ -545,8 +548,8 @@ internal class BackupPages(
 
     fun sendOverview(): SetupScreen {
         val s = SetupScreen(ui, null, null)
-        s.add(parts.note("Moving to a new Fire TV Stick? Dream OS sends everything to it over your Wi-Fi: profiles, accounts, scrapers, lists and settings."), 0)
-        s.view("k:steps", 20) { parts.section("On Your New Fire TV Stick", null) }
+        s.add(parts.note("Moving to a new Fire Stick? Dream OS sends everything to it over your Wi-Fi: profiles, accounts, scrapers, lists and settings."), 0)
+        s.view("k:steps", 20) { parts.section("On Your New Fire Stick", null) }
         s.view("s1", 10) { stepRow(1, "Install Dream OS and open it") }
         s.view("s2", 8) { stepRow(2, "Choose Restore From Backup") }
         s.view("s3", 8) { stepRow(3, "Pick this TV, then enter the code below") }
@@ -632,7 +635,7 @@ internal class BackupPages(
     fun restoreOverview(): SetupScreen {
         val s = SetupScreen(ui, null, null)
         val rows = ScreenRows(s)
-        s.add(parts.note("On your old Fire TV Stick, open Settings, then Back Up Dream OS. Keep both TVs on the same Wi-Fi."), 0)
+        s.add(parts.note("On your old Fire Stick, open Settings, then Back Up Dream OS. Keep both TVs on the same Wi-Fi."), 0)
         s.view("k:tvs", 20) { parts.section("Your Other TVs", null) }
         var list: List<BackupTransfer.Found> = emptyList()
         // The TVs found, in their own box so they stay above Type Its Address; rows are made once and reused.
@@ -674,7 +677,7 @@ internal class BackupPages(
     private fun codeEntry(from: BackupTransfer.Found): SetupScreen = setupEntry(ctx, ui, parts, "Enter the Code", null, "6-Character Code", "",
         emptyList(), "Type the code shown on ${from.name}.", null) { typed ->
         val c = BackupTransfer.normalize(typed)
-        if (c.length != BackupTransfer.CODE_LEN) panel.replace(problem("That Code Is Too Short", "The code has 6 letters and numbers. Check your old TV and try again.") { panel.replace(codeEntry(from)) })
+        if (c.length != BackupTransfer.CODE_LEN) panel.replace(problem("That Code Isn't Right", "The code has 6 letters and numbers. Check your old TV and try again.") { panel.replace(codeEntry(from)) })
         else panel.replace(transfer(from, c))
     }
 
@@ -798,8 +801,8 @@ object BackupPage {
         left.addView(k.label(if (restore) "Restore From Backup" else "Back Up Dream OS", 32f, SetupBrand.TEXT, k.semibold, Ui.TRACK_TITLE, lines = 2),
             LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT).apply { topMargin = dp(8) })
         left.addView(parts.note(if (restore)
-            "Bring everything over from your old Fire TV Stick: profiles, accounts, scrapers, lists and settings. Dream OS restarts when it's done."
-            else "Move Dream OS to a new Fire TV Stick. Everything travels over your own Wi-Fi, locked with a one-time code, and never leaves your home.", 16f)
+            "Bring everything over from your old Fire Stick: profiles, accounts, scrapers, lists and settings. Dream OS restarts when it's done."
+            else "Move Dream OS to a new Fire Stick. Everything travels over your own Wi-Fi, locked with a one-time code, and never leaves your home.", 16f)
             .apply { setPadding(0, 0, 0, 0) }, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { topMargin = dp(12) })
         row.addView(left, LinearLayout.LayoutParams(0, WRAP_CONTENT, 0.36f))
         row.addView(panel, LinearLayout.LayoutParams(0, MATCH_PARENT, 0.64f).apply { marginStart = dp(56) })

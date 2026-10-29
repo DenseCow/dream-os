@@ -40,9 +40,23 @@ class AdBlockPanel(
     private val statusTitle = text("", 18f, Color.WHITE, bold = true)
     private val statusDetail = text("", 13f, dim)
     private val rows = LinearLayout(ctx).apply { orientation = LinearLayout.VERTICAL }
-    private var busy = false
+    /** Kept in [AdBlock] so a card reopened while a check still runs can't start a second one. */
+    private var busy: Boolean
+        get() = AdBlock.running
+        set(v) { AdBlock.running = v }
     private var closed = false
     private var firstBuild = true
+
+    /** Opened while an earlier card's check still runs: its result shows here once it lands. */
+    private val main = android.os.Handler(android.os.Looper.getMainLooper())
+    private val watchEarlierCheck: Runnable = object : Runnable {
+        override fun run() {
+            if (closed) return
+            if (busy) { main.postDelayed(this, 500); return }
+            showStatus()
+            buildRows(null)
+        }
+    }
 
     init {
         view = LinearLayout(ctx).apply {
@@ -79,13 +93,14 @@ class AdBlockPanel(
             }, LinearLayout.LayoutParams(WIDTH.dp, WRAP_CONTENT).apply { bottomMargin = 14.dp })
             addView(rows, LinearLayout.LayoutParams(WIDTH.dp, WRAP_CONTENT))
             addView(text("Blocks ads and trackers in many apps and websites. It does not block YouTube or Prime Video " +
-                "in-stream ads — those come from the same servers as the video.", 12.5f, dim).apply {
+                "in-stream ads. Those come from the same servers as the video.", 12.5f, dim).apply {
                 setLineSpacing(0f, 1.15f)
                 setPadding(6.dp, 14.dp, 6.dp, 0)
             }, LinearLayout.LayoutParams(WIDTH.dp, WRAP_CONTENT))
         }
-        showStatus()
+        showStatus(if (busy) "The last change is still being checked." else null)
         buildRows(null)
+        if (busy) main.postDelayed(watchEarlierCheck, 500)
     }
 
     /** The row to focus when the card opens: the current choice. */
@@ -112,7 +127,7 @@ class AdBlockPanel(
         val s = AdBlock.status(ctx)
         val last = AdBlock.lastResult(ctx)
         val (color, title, detail) = when {
-            !AdBlock.supported() -> Triple(dim, "Not available", "Private DNS needs Fire OS 7 (Android 9) or newer.")
+            !AdBlock.supported() -> Triple(dim, "Not Available", "Private DNS needs Fire OS 7 (Android 9) or newer.")
             progress != null -> Triple(accent, "Working…", progress)
             last?.kind == "ok" && s.on -> Triple(OK, last.message, "${s.label} · ${s.host}")
             last?.kind == "warn" && s.on -> Triple(WARN, "On · ${s.label}, not confirmed", last.message)
@@ -126,7 +141,7 @@ class AdBlockPanel(
             statusTitle.animate().alpha(1f).setDuration(220).setInterpolator(Ui.EASE).start()
         }
         statusTitle.text = title
-        statusTitle.setTextColor(if (color == dim) Color.WHITE else color)
+        statusTitle.setTextColor(when (color) { dim -> Color.WHITE; OK -> OK_TEXT; WARN -> WARN_TEXT; ERR -> ERR_TEXT; else -> color })
         statusDetail.text = detail
     }
 
@@ -285,8 +300,12 @@ class AdBlockPanel(
 
     companion object {
         private const val WIDTH = 540 // content width; the host's modal wraps the card around it
-        private val OK = Color.parseColor("#4ADE80")
-        private val WARN = Color.parseColor("#FBBF24")
-        private val ERR = Color.parseColor("#F87171")
+        // STANDARDS §2 status colors.
+        private val OK = Ui.GREEN
+        private val WARN = Ui.AMBER
+        private val ERR = Ui.RED
+        private val OK_TEXT = Ui.GREEN_TEXT
+        private val WARN_TEXT = Ui.AMBER_TEXT
+        private val ERR_TEXT = Ui.RED_TEXT
     }
 }

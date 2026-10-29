@@ -32,7 +32,7 @@ final class Gather: @unchecked Sendable {
     /// [urgent]: a real Play is waiting (the scrape never queues behind look-aheads; see SourceService.stream).
     init(_ request: PlayRequest, urgent: Bool = false) {
         let stream = Services.shared.sources.stream(request, urgent: urgent)
-        task = Task.detached(priority: .userInitiated) { [weak self] in
+        let t = Task.detached(priority: .userInitiated) { [weak self] in
             let timer = Task.detached { [weak self] in
                 await sleepMs(Gather.timeoutMs)
                 self?.finish()
@@ -44,6 +44,9 @@ final class Gather: @unchecked Sendable {
             timer.cancel()
             self?.finish()
         }
+        // Under the lock: the task above can reach `finish` (which reads `task`) before init returns.
+        let cancelNow = lock.withLock { task = t; return _done }
+        if cancelNow { t.cancel() }
     }
 
     private func add(_ batch: [StreamCandidate]) {
@@ -64,7 +67,7 @@ final class Gather: @unchecked Sendable {
 
     private func finish() {
         let changed = lock.withLock { () -> Bool in if _done { return false }; _done = true; _version += 1; return true }
-        if changed { signal.fire(); task?.cancel() }
+        if changed { signal.fire(); lock.withLock { task }?.cancel() }
     }
 
     func cancel() {

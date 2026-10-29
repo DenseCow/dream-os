@@ -57,10 +57,8 @@ object CinemaStyle {
     const val POSTER_W = 150
     const val POSTER_H = 225
     const val BRAND_W = 176
-    const val BRAND_H = 100
     /** The standard row card (16:9): four across the page between the gutters, the fifth peeking in. */
     const val LAND_W = 200
-    const val LAND_H = 113
     /** Top 10 posters (beside their rank numerals). */
     const val RANK_W = 90
     const val RANK_H = 135
@@ -98,26 +96,15 @@ object CinemaStyle {
     const val BACKDROP_FADE_MS = 320L
     const val HERO_ADVANCE_MS = 8_000L // carousel auto-advance while the hero has focus and the remote rests
     const val BAR_FADE_MS = 200L
-    /** Page switch: a short crossfade up into place. */
-    const val PAGE_MS = 260L
 
     // ---- colors from the theme ----
     fun bg(ctx: Context) = Theme.get(ctx, Theme.BG_BOTTOM)
     fun bgTop(ctx: Context) = Theme.get(ctx, Theme.BG_TOP)
     fun text(ctx: Context) = Theme.get(ctx, Theme.TEXT)
     fun textDim(ctx: Context) = Theme.get(ctx, Theme.TEXT_DIM)
-    fun select(ctx: Context) = Theme.get(ctx, Theme.SELECT)
-    fun ring(ctx: Context) = Theme.get(ctx, Theme.ACCENT)
     fun tile(ctx: Context) = Theme.get(ctx, Theme.TILE)
     fun primary(ctx: Context) = Theme.get(ctx, Theme.BTN_PRIMARY)
     fun secondary(ctx: Context) = Theme.get(ctx, Theme.BTN_SECONDARY)
-
-    /** The focus ring drawn over a focused card (Apple TV: thin, bright, follows the card's corners). */
-    fun ringDrawable(ctx: Context, radiusDp: Int = R_CARD) = GradientDrawable().apply {
-        cornerRadius = Ui.dpf(ctx, radiusDp.toFloat())
-        setStroke(Ui.dp(ctx, 3), ring(ctx))
-        setColor(Color.TRANSPARENT)
-    }
 
     /**
      * Card lift on focus: scale (+ elevation unless [z] is false) only, no layout; [big] for Hulu-size
@@ -237,10 +224,11 @@ object CinemaStyle {
             val v = cb as? View
             if (v != null && v.isAttachedToWindow && v.isShown) { g.tint(c); any = true }
         }
-        // The hero's slow drift moves on this clock too: while a hero shows, the rate stays full (Home's motion).
+        // The hero's slow drift moves on this clock too: while it drifts, the rate stays full (Home's motion). A
+        // drift ends after DRIFT_MS; the clock then drops to its idle rate instead of re-tinting Home 20 times a second.
         var smooth = false
         if (followers.isNotEmpty()) for ((v, apply) in followers.entries.toList()) {
-            if (v.isAttachedToWindow && v.isShown) { apply(v, c); any = true; if (v is CinemaHero) smooth = true }
+            if (v.isAttachedToWindow && v.isShown) { apply(v, c); any = true; if (v is CinemaHero && v.driftMoving) smooth = true }
         }
         if (any) {
             ticking = true
@@ -306,10 +294,6 @@ class CinemaGlow(ctx: Context, radiusDp: Int, haloDp: Int) : Drawable() {
     private var anim: ValueAnimator? = null
     /** Halo strength at full glow (chips and buttons may go a touch softer). */
     var haloAlpha = CinemaStyle.GLOW_HALO_ALPHA
-    /** False: only the halo (for views that draw their own edge, or none). */
-    var drawEdge = true
-    /** Called with each new hue as it blends (a focused button's fill or label following the glow). */
-    var onHue: ((Int) -> Unit)? = null
 
     val hue: Int get() = color
     val shown: Boolean get() = level > 0f
@@ -326,12 +310,17 @@ class CinemaGlow(ctx: Context, radiusDp: Int, haloDp: Int) : Drawable() {
     fun hide() = animate(color, color, 0f)
 
     /** Set at once, no motion (a view that is focused as it's built). */
-    fun snap(to: Int, on: Boolean) { anim?.cancel(); color = to; level = if (on) 1f else 0f; onHue?.invoke(to); invalidateSelf() }
+    fun snap(to: Int, on: Boolean) { anim?.cancel(); color = to; level = if (on) 1f else 0f; invalidateSelf() }
 
     private fun animate(from: Int, to: Int, toLevel: Float) {
         anim?.cancel()
         val fromLevel = level
-        if (fromLevel == toLevel && from == to) { color = to; invalidateSelf(); return }
+        if (fromLevel == toLevel && from == to) {
+            color = to
+            if (toLevel == 0f) CinemaStyle.setLive(this, false) // hidden before it showed: off the clock too
+            invalidateSelf()
+            return
+        }
         anim = ValueAnimator.ofFloat(0f, 1f).apply {
             duration = CinemaStyle.GLOW_MS
             interpolator = Ui.SETTLE
@@ -340,7 +329,6 @@ class CinemaGlow(ctx: Context, radiusDp: Int, haloDp: Int) : Drawable() {
                 // The color is the shared clock's (CinemaStyle.tick); only a real blend is drawn here.
                 if (from != to) color = EVAL.evaluate(f, from, to) as Int
                 level = fromLevel + (toLevel - fromLevel) * f
-                if (from != to) onHue?.invoke(color)
                 invalidateSelf()
                 if (f >= 1f && toLevel == 0f) CinemaStyle.setLive(this@CinemaGlow, false)
             }
@@ -366,13 +354,11 @@ class CinemaGlow(ctx: Context, radiusDp: Int, haloDp: Int) : Drawable() {
         slice(canvas, c, m - c, c + 1, m, l + c, bb - c, rr - c, bb)
         slice(canvas, 0, c, c, c + 1, l, t + c, l + c, bb - c)
         slice(canvas, m - c, c, m, c + 1, rr - c, t + c, rr, bb - c)
-        if (drawEdge) {
-            val half = edge.strokeWidth / 2f
-            edge.color = color
-            edge.alpha = (255 * level).toInt().coerceIn(0, 255)
-            ring.set(b.left - half, b.top - half, b.right + half, b.bottom + half)
-            canvas.drawRoundRect(ring, r + half, r + half, edge)
-        }
+        val half = edge.strokeWidth / 2f
+        edge.color = color
+        edge.alpha = (255 * level).toInt().coerceIn(0, 255)
+        ring.set(b.left - half, b.top - half, b.right + half, b.bottom + half)
+        canvas.drawRoundRect(ring, r + half, r + half, edge)
     }
 
     private fun slice(canvas: Canvas, sl: Int, st: Int, sr: Int, sb: Int, dl: Int, dt: Int, dr: Int, db: Int) {

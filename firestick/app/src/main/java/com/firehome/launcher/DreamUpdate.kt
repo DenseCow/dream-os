@@ -385,15 +385,14 @@ object DreamUpdate {
     // ---- notices ----
 
     /**
-     * "A New Version of Dream OS Is Available" / "Version 4.1": kept in the notifications list (Install Now,
-     * View Changes, Later) until Dream OS is updated or the user removes it; its banner waits for Home (never over
-     * playback). One per version; a newer version's notice replaces an older one.
+     * "There's a New Version Available" / "Dream OS 4.3": kept in the notifications list (Install Now, View Changes,
+     * Later) until Dream OS is updated or the user removes it. Its banner and sound play once (owner), waiting for Home
+     * and for the update card (never over playback). One per version; a newer version's notice replaces an older one.
      */
     private fun postNotice(ctx: Context, r: Release) {
         for (n in DreamNotices.all(ctx)) if (n.key.startsWith(NOTICE_PREFIX) && n.key != NOTICE_PREFIX + r.version) DreamNotices.dismiss(ctx, n.key)
-        DreamNotices.post(ctx, NOTICE_PREFIX + r.version, DreamNotices.TYPE_UPDATE, "A New Version of Dream OS Is Available",
-            "Version ${r.version}", DreamNotices.Severity.INFO, DreamNotices.Action("Install Now", TARGET),
-            banner = false) // on Home it shows as the actionable card instead (UpdatePage.prompt), not a passing banner
+        DreamNotices.post(ctx, NOTICE_PREFIX + r.version, DreamNotices.TYPE_UPDATE, "There's a New Version Available",
+            "Dream OS ${r.version}", DreamNotices.Severity.INFO, DreamNotices.Action("Install Now", TARGET))
     }
 
     // ---- download and verify ----
@@ -663,8 +662,10 @@ object DreamUpdate {
         val live = DreamNotices.live("Checking for Updates…")
         val started = SystemClock.elapsedRealtime()
         Net.run {
-            val r = checkNow(app) {}
-            val failed = r == null && lastError(app) != null
+            // Whatever goes wrong, the live banner below still resolves (it would otherwise stay on "Checking").
+            var threw = false
+            val r = try { checkNow(app) {} } catch (e: Exception) { Log.w(TAG, "Update: launch check: $e"); threw = true; null }
+            val failed = threw || r == null && lastError(app) != null
             Log.w(TAG, "Update: launch check → " + when { failed -> "couldn't check"; r == null -> "up to date (${currentVersion()})"; else -> "${r.version} available" })
             // The loader shows for a moment at least, so the result never flashes past.
             val wait = (1_400L - (SystemClock.elapsedRealtime() - started)).coerceAtLeast(0L)
@@ -732,8 +733,8 @@ object DreamUpdate {
         DreamNotices.dismissPrefix(ctx, NOTICE_PREFIX)
         latest(ctx)?.takeIf { !newer(it.version, currentVersion()) && !newer(currentVersion(), it.version) }?.let { setMine(ctx, it.version, it.notes) }
         Log.w(TAG, "Update: now on v${currentVersion()}")
-        DreamNotices.post(ctx, "updated:${currentVersion()}", DreamNotices.TYPE_UPDATE, "Dream OS ${currentVersion()} Is Installed",
-            "See What's New in Settings  ›  Updates", DreamNotices.Severity.INFO, null, store = false)
+        DreamNotices.post(ctx, "updated:${currentVersion()}", DreamNotices.TYPE_UPDATE, "You're Up To Date!",
+            "Dream OS ${currentVersion()} is installed. See what's new in Settings  ›  Updates.", DreamNotices.Severity.INFO, null, store = false)
     }
 
     // ---- developer ----

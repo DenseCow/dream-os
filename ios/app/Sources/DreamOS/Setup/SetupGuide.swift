@@ -10,21 +10,6 @@ import DreamPlayback
 
 // MARK: Parts
 
-/// A short fact under a setup step's title: "Required", "Free", "About 5 Minutes".
-struct SetupTag: View {
-    var text: String
-    var strong = false
-    var body: some View {
-        Text(text)
-            .font(.system(size: 12.5, weight: .semibold))
-            .foregroundStyle(strong ? Palette.text : Palette.textSecondary)
-            .fixedSize(horizontal: false, vertical: true)
-            .padding(.horizontal, 11).padding(.vertical, 5)
-            .background(Capsule().fill(Color.white.opacity(strong ? 0.14 : 0.06)))
-            .overlay(Capsule().strokeBorder(Color.white.opacity(strong ? 0.30 : 0.14), lineWidth: 1))
-    }
-}
-
 /// An outside web page a guide step opens in Safari.
 struct GuideLink: Hashable {
     var title: String
@@ -344,6 +329,12 @@ enum SetupGuide {
                   see: "Paste your key, then tap Save Key. Dream checks it and shows Key Added. Tap Done, then Continue."),
     ]
 
+    /// The same steps for setup, where the last one is Enter My Key and Dream moves on by itself.
+    static var tmdbSetupSteps: [GuideStep] {
+        Array(tmdbSteps.dropLast()) + [GuideStep("Come back to Dream, tap Enter My Key, then Paste.",
+                                                 see: "Dream checks your key, shows Key Added and moves on by itself.")]
+    }
+
     static let tmdbTrouble: [TroubleTip] = [
         TroubleTip(problem: "That Key Didn't Work",
                    fix: "Make sure you copied API Key, the short one, not the long API Read Access Token. Copy it again with nothing before or after it, then paste it."),
@@ -368,6 +359,10 @@ enum SetupGuide {
                   see: "Paste your key, then tap Save Key. Dream checks it and shows Key Added."),
     ]
 
+    static var omdbSetupSteps: [GuideStep] {
+        Array(omdbSteps.dropLast()) + [GuideStep("Come back to Dream and tap Paste.", see: "Dream checks your key and shows Key Added.")]
+    }
+
     static let omdbTrouble: [TroubleTip] = [
         TroubleTip(problem: "That Key Didn't Work",
                    fix: "Tap the activation link in OMDb's email first, then save the key again. Copy only the key, with nothing before or after it."),
@@ -390,7 +385,7 @@ enum SetupGuide {
                               GuideLink("AllDebrid", "https://alldebrid.com/offer/"), GuideLink("Real-Debrid", "https://real-debrid.com/premium")]),
             GuideStep("Tap Sign Up, make an account with your email and a password, then buy a plan.",
                       see: "Dream plays only with an active paid plan. The plans page lists each length and its price."),
-            GuideStep("Come back to Dream and tap your service in the list below.",
+            GuideStep("Come back to Dream and tap your service in the list.",
                       see: [codeNames.isEmpty ? nil : "\(list(codeNames)) \(codeNames.count == 1 ? "shows" : "show") a short code.",
                             keyNames.isEmpty ? nil : "\(list(keyNames)) \(keyNames.count == 1 ? "asks" : "ask") for your key instead."]
                         .compactMap { $0 }.joined(separator: " ")),
@@ -403,7 +398,7 @@ enum SetupGuide {
             steps.append(GuideStep("For a key: tap Open Your \(keyNames[0]) Account and sign in.",
                                    see: "Find API Key on your account page, press and hold it and tap Copy. Come back, paste it and tap Connect."))
         }
-        steps.append(GuideStep("When your service says Connected, tap Continue.",
+        steps.append(GuideStep("Dream says Connected and moves on by itself.",
                                see: "You can connect more than one. Dream asks them in the order you choose in Settings."))
         return steps
     }
@@ -444,12 +439,10 @@ enum SetupGuide {
     static let scraperSteps: [GuideStep] = [
         GuideStep("Copy your repository's address.",
                   see: "If it's a link, press and hold it, then tap Copy Link. If it's text, press and hold it, drag to select all of it, then tap Copy."),
-        GuideStep("Tap Add Scraper Repository below, then Paste, then Add.",
-                  see: "Dream shows its progress: Checking Address, Downloading, Installing. Then it shows Added, and how many providers are ready."),
-        GuideStep("Tap Use Recommended Settings.",
-                  see: "Each provider searches one website. This turns on the fastest, most reliable ones and turns off the rest, so most titles start in about a second. You can still switch any provider on or off."),
-        GuideStep("Tap Continue.",
-                  see: "The next step checks that your debrid service and scrapers work together."),
+        GuideStep("Come back to Dream, tap Add Repository, then Paste.",
+                  see: "Dream shows its progress: Checking Address, Downloading, Installing. Then it shows Added."),
+        GuideStep("Dream turns on the recommended providers and moves on by itself.",
+                  see: "Each provider searches one website. The recommended ones are the fastest and most reliable, so most titles start in about a second. Manage Scrapers switches any provider on or off."),
     ]
 
     static let scraperTrouble: [TroubleTip] = [
@@ -489,33 +482,25 @@ enum SetupGuide {
 
     // MARK: The check
 
-    static let checkSteps: [GuideStep] = [
-        GuideStep("Tap Check Now at the bottom.",
-                  see: "Dream searches for a popular movie with your scrapers and asks your debrid service which copies are ready to play. It usually takes under 30 seconds."),
-        GuideStep("When it says Ready to Watch, Dream tests your connection.",
-                  see: "If it's too slow for the best picture, tap the button it shows to use a quality that plays smoothly."),
-        GuideStep("Tap Continue."),
-    ]
-
     /// Help under a check that didn't pass, matched to the message the scrapers gave.
     static func checkHelp(_ message: String) -> [String] {
         let m = message.lowercased()
         if m.contains("add a source") || m.contains("add a debrid account and a scraper") {
-            return ["Tap Back at the top left to return to Set Up Scrapers, then add your repository."]
+            return ["Tap Back at the top left to return to Add Your Scrapers, then add your repository."]
         }
         if m.contains("turn on at least one provider") {
-            return ["Tap Back at the top left to return to Set Up Scrapers, then tap Use Recommended Settings."]
+            return ["Tap Back at the top left to return to Add Your Scrapers, tap Manage Scrapers, then Use Recommended Settings."]
         }
         if m.contains("link a streaming account") {
             return ["Your scrapers work, but no debrid service is ready to play.",
-                    "Tap Back twice to return to Connect Your Accounts, and check that your service says Connected and has an active paid plan."]
+                    "Tap Back twice to return to Connect a Debrid Service, and check that your service says Connected and has an active paid plan."]
         }
         if m.contains("no sources came back") {
             return ["Check that Wi-Fi or cellular data is on, then tap Try Again.",
-                    "If it still finds nothing, go back to Set Up Scrapers and tap Use Recommended Settings, or add another repository."]
+                    "If it still finds nothing, go back to Add Your Scrapers, tap Manage Scrapers and choose Use Recommended Settings, or add another repository."]
         }
         if m.contains("taking too long") {
-            return ["Tap Try Again. If it keeps happening, go back to Set Up Scrapers and tap Use Recommended Settings."]
+            return ["Tap Try Again. If it keeps happening, go back to Add Your Scrapers, tap Manage Scrapers and choose Use Recommended Settings."]
         }
         if m.contains("restart") {
             return ["Close Dream completely: swipe up from the bottom of the screen, then swipe Dream away. Open it again and tap Try Again."]

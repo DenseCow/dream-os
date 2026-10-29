@@ -110,7 +110,8 @@ object Seasons {
         val movie = r.movie?.let { SeasonCalendar.fill(it, hub, today) }
         val tv = r.tv?.let { SeasonCalendar.fill(it, hub, today) }
         val raw = when (r.kind) {
-            SeasonRow.Kind.PICKS -> if (RowPaging.page > 1) emptyList() else picked(ctx, r.ids)
+            // Hand-picked titles come from details calls, not Tmdb.list: the profile's rating limit is applied here.
+            SeasonRow.Kind.PICKS -> if (RowPaging.page > 1) emptyList() else KidsFilter.titles(ctx, picked(ctx, r.ids))
             SeasonRow.Kind.POPULAR -> RowMix.interleave(RowPaging.all(*listOfNotNull(movie?.let { "movie" to it }, tv?.let { "tv" to it }).map { (type, q) ->
                 { popular(ctx, type, q) }
             }.toTypedArray()))

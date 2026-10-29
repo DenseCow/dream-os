@@ -17,10 +17,8 @@ import android.os.SystemClock
 import android.provider.Settings
 import android.util.Log
 import android.view.KeyEvent
-import java.text.SimpleDateFormat
 import java.util.Calendar
 import java.util.Date
-import java.util.Locale
 
 /**
  * Moves the paired AirPods between the TV and the iPhone, keeps listening statistics, and owns the
@@ -292,6 +290,8 @@ object AirPodsLink {
 
     /** Waits for the A2DP state change that ends an operation: [check] maps a state to the outcome, or null to keep waiting. */
     private fun await(timeoutMs: Long, done: (Result) -> Unit, timeout: Result, check: (Int) -> Result?) {
+        // Two requests can both pass their supersede() while their proxies connect: the older one still hears back.
+        supersede()
         val w = Waiter(done, check)
         waiter = w
         val t = Runnable { if (waiter === w) { clearWaiter(); done(timeout) } }

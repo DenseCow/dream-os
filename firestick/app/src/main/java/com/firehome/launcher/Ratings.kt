@@ -79,7 +79,6 @@ object Ratings {
         val genres: List<String> = emptyList(),
     ) {
         /** The meta-line half of the TMDB details, for pages that never fetched the full ones. */
-        fun asDetails(t: Title) = Details(t, genres, runtime, null, emptyList())
 
         /** The Tomatometer to show: OMDb's, else the website's. */
         val tomatometer: Int? get() = rt ?: rtWeb
@@ -273,7 +272,14 @@ object Ratings {
 
     private fun budget(ctx: Context) = ctx.getSharedPreferences("ratings_budget", Context.MODE_PRIVATE)
 
-    private fun today() = java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.US).format(java.util.Date())
+    /** The budget's day, made at most once a minute (prefetch asks it for every card built). */
+    private fun today(): String {
+        val now = System.currentTimeMillis()
+        if (now - todayAt > 60_000L) { todayStr = java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.US).format(java.util.Date(now)); todayAt = now }
+        return todayStr
+    }
+    @Volatile private var todayStr = ""
+    @Volatile private var todayAt = 0L
 
     private fun usedToday(ctx: Context): Int {
         val p = budget(ctx)
@@ -310,14 +316,12 @@ object Ratings {
     private const val OMDB_GAP_MS = 1000L
     private const val TMDB_GAP_MS = 300L
     private const val MAX_QUEUE = 400
+    private const val PAUSED_RETRY_MS = 5_000L
 
     private class Job(val t: Title, val card: WeakReference<View>?, val seq: Long)
 
     private val main = Handler(Looper.getMainLooper())
     private val jobs = LinkedHashMap<String, Job>()
-    /** Hero titles, newest first: they skip the line (and the key-press rest). */
-    private val front = ArrayList<Title>()
-    private val frontCalls = HashMap<String, MutableList<(Rating?) -> Unit>>()
     private var appCtx: Context? = null
     private var busy = false
     private var scheduled = false
@@ -339,18 +343,6 @@ object Ratings {
         kick(0L)
     }
 
-    /** The hero is showing [t] without cached scores: look it up next, then call [done] (main thread). */
-    fun bump(ctx: Context, t: Title, done: (Rating?) -> Unit) {
-        appCtx = ctx.applicationContext
-        jobs.remove(t.key)
-        front.removeAll { it.key == t.key }
-        front.add(0, t)
-        // Only the latest few heroes matter; older ones go back to the queue's order.
-        while (front.size > 3) frontCalls.remove(front.removeAt(front.size - 1).key)
-        frontCalls.getOrPut(t.key) { ArrayList() } += done
-        kick(0L)
-    }
-
     private fun kick(delay: Long) {
         if (busy || scheduled) return
         scheduled = true
@@ -362,33 +354,24 @@ object Ratings {
     private fun drain() {
         val ctx = appCtx ?: return
         if (busy) return
-        if (!omdbEnabled(ctx)) { jobs.clear(); front.clear(); flushFront(null); return }
-        if (paused()) { kick(1000L); return }
-        val hero = front.removeFirstOrNull()
-        val t = hero ?: run {
-            val idle = SystemClock.uptimeMillis() - lastKeyAt
-            if (idle < KEY_IDLE_MS) { kick(KEY_IDLE_MS - idle); return }
-            if (prefetchStoppedDay == today()) { jobs.clear(); return }
-            pickNearest()
-        } ?: return
+        if (!omdbEnabled(ctx)) { jobs.clear(); return }
+        // Resting (the player, a trailer, the screensaver): look again every few seconds, not every second.
+        if (paused()) { kick(PAUSED_RETRY_MS); return }
+        val idle = SystemClock.uptimeMillis() - lastKeyAt
+        if (idle < KEY_IDLE_MS) { kick(KEY_IDLE_MS - idle); return }
+        if (prefetchStoppedDay == today()) { jobs.clear(); return }
+        val t = pickNearest() ?: return
         busy = true
         lastAskedOmdb = false
         Net.background({ fetch(ctx, t, Omdb.PREFETCH) }) { r ->
             busy = false
             val asked = lastAskedOmdb
             nextAt = SystemClock.uptimeMillis() + if (asked) OMDB_GAP_MS else TMDB_GAP_MS
-            frontCalls.remove(t.key)?.forEach { it(r) }
             if (asked && ++prefetched % 50 == 0) Net.run {
                 Log.w(TAG, "prefetch: $prefetched looked up this session, ${prefs(ctx).all.size} cached, ${usedToday(ctx)} of $DAY_BUDGET used today")
             }
-            if (front.isNotEmpty() || jobs.isNotEmpty()) kick(0L)
+            if (jobs.isNotEmpty()) kick(0L)
         }
-    }
-
-    private fun flushFront(r: Rating?) {
-        val calls = frontCalls.values.flatten()
-        frontCalls.clear()
-        for (c in calls) c(r)
     }
 
     private fun dropDetached() {
@@ -475,12 +458,15 @@ object Ratings {
      */
     fun audienceFor(r: Rating?, t: Title): Pair<String, String>? {
         r?.imdb?.let { return "IMDb" to it }
-        val s = t.rating.toFloat().takeIf { it > 0 && t.votes >= AUDIENCE_VOTES } ?: return null
+        // The fetched rating carries TMDB's score and votes; a Title rebuilt elsewhere (PlayFlow.titleFrom) may not.
+        val fromRating = r != null && r.votes > 0
+        val votes = if (fromRating) r!!.votes else t.votes
+        val s = (if (fromRating) r!!.score else t.rating).toFloat().takeIf { it > 0 && votes >= AUDIENCE_VOTES } ?: return null
         return "TMDB" to String.format(java.util.Locale.US, "%.1f", s)
     }
     private const val AUDIENCE_VOTES = 150
 
-    /** [audienceFor] drawn for a meta line of [sp]: the source as a small filled tag, then the number (as [RatingsRow]). */
+    /** [audienceFor] drawn for a meta line of [sp]: the source as a small filled tag, then the number. */
     fun audienceBadge(ctx: Context, a: Pair<String, String>, sp: Float, text: Int, bold: Typeface, semibold: Typeface): View =
         LinearLayout(ctx).apply {
             orientation = LinearLayout.HORIZONTAL
@@ -502,205 +488,10 @@ object Ratings {
 
     /** The quality colour for a 0-100 score (green 75+, amber 60+, red below), eased a touch toward [text]. */
     fun scoreColor(text: Int, score: Int): Int = Ui.mix(when {
-        score >= 75 -> Color.parseColor("#4ADE80")
-        score >= 60 -> Color.parseColor("#FBBF24")
-        else -> Color.parseColor("#F87171")
+        score >= 75 -> Ui.GREEN_TEXT
+        score >= 60 -> Ui.AMBER_TEXT
+        else -> Ui.RED_TEXT
     }, text, 0.08f)
-}
-
-/**
- * A ratings badge row. A meta line uses two: a [lead] row before the text holding TMDB's score
- * ring (when no OMDb key is set; it shows at once from the list data), and a tail row after it with
- * the outlined age-rating pill, then the tomato and its score and the IMDb tag and rating (or TMDB's
- * ring when those aren't known). Only one score style is ever visible. A [hero] row shows what's
- * cached at once and, when the scores aren't cached yet, moves its title to the front of the prefetch
- * queue and swaps them in when they land. Fades in only what's new; takes no width while empty.
- */
-class RatingsRow(
-    private val kit: PremiumKit,
-    private val textSp: Float = 14f,
-    private val tagSp: Float = 11.5f,
-    private val tagPadV: Int = 3,
-    private val lead: Boolean = false,
-    private val hero: Boolean = false,
-) : LinearLayout(kit.ctx) {
-    /** Space before the first badge (a tail row sits after the meta text). */
-    var leadingGapDp = 16
-        set(v) {
-            field = v
-            (getChildAt(0)?.layoutParams as? LayoutParams)?.let { it.marginStart = v.dp; getChildAt(0).layoutParams = it }
-        }
-    /** Space after the last badge (a lead row sits before the meta text). */
-    var trailingGapDp = 0
-    private var bound: String? = null
-    private var boundAt = 0L
-    private var pending: Runnable? = null
-    private var sigs = emptyList<String>()
-    private val Int.dp get() = (this * resources.displayMetrics.density).toInt()
-
-    init {
-        orientation = HORIZONTAL
-        gravity = Gravity.CENTER_VERTICAL
-    }
-
-    /** Shows [t]'s ratings (null clears). Cached ones appear at once; others load after [delayMs] and fade in. */
-    fun bind(t: Title?, delayMs: Long = 0L) {
-        if (t?.key == bound) return
-        bound = t?.key
-        boundAt = android.os.SystemClock.uptimeMillis()
-        pending?.let { removeCallbacks(it) }
-        pending = null
-        removeAllViews()
-        sigs = emptyList()
-        if (t == null) return
-        val cached = Ratings.peek(context, t)
-        // Heroes show the TMDB ring at once when nothing better is cached; details wait for their lookup.
-        show(t, cached, loaded = cached != null || hero, fade = false)
-        when {
-            // The ring only needs a fetch when the list didn't carry a vote count.
-            lead -> if (cached == null && t.votes == 0) later(delayMs) { fetch(t, Ratings.Omdb.NONE) }
-            hero -> when {
-                Ratings.omdbEnabled(context) && (cached == null || Ratings.wantsOmdb(context, cached)) -> later(delayMs) {
-                    Ratings.bump(context, t) { r ->
-                        if (bound != t.key) return@bump
-                        show(t, r, loaded = true, fade = true)
-                        showWeb(t, r)
-                    }
-                }
-                cached == null -> later(delayMs) { fetch(t, Ratings.Omdb.NONE) }
-                else -> showWeb(t, cached)
-            }
-            else -> when {
-                cached == null || Ratings.wantsOmdb(context, cached) -> later(delayMs) { fetch(t, Ratings.Omdb.DETAILS) }
-                Ratings.wantsRtWeb(context, t, cached) -> later(delayMs) { rtWeb(t) }
-            }
-        }
-    }
-
-    private fun later(ms: Long, work: () -> Unit) {
-        pending?.let { removeCallbacks(it) }
-        val r = Runnable { pending = null; work() }
-        pending = r
-        if (ms > 0) postDelayed(r, ms) else r.run()
-    }
-
-    private fun fetch(t: Title, mode: Ratings.Omdb) {
-        Ratings.load(context, t, mode) { r ->
-            if (bound != t.key) return@load
-            show(t, r, loaded = true, fade = true)
-            // Details page, OMDb has no Tomatometer: try rottentomatoes.com (the tomato fades in if found).
-            if (mode == Ratings.Omdb.DETAILS && Ratings.wantsRtWeb(context, t, r)) rtWeb(t)
-        }
-    }
-
-    /**
-     * Hero, shows only: OMDb rarely has a Tomatometer for series, so once the title has been on screen
-     * [WEB_AFTER_MS] the website is asked (never from the bulk prefetch; shares RtWeb's daily cap).
-     */
-    private fun showWeb(t: Title, r: Ratings.Rating?) {
-        if (t.type != "tv" || !Ratings.wantsRtWeb(context, t, r)) return
-        later(maxOf(0L, boundAt + WEB_AFTER_MS - android.os.SystemClock.uptimeMillis())) {
-            if (bound == t.key && isShown) rtWeb(t)
-        }
-    }
-
-    private companion object {
-        const val WEB_AFTER_MS = 1500L
-    }
-
-    private fun rtWeb(t: Title) {
-        Ratings.loadRtWeb(context, t) { r -> if (bound == t.key && r != null) show(t, r, loaded = true, fade = true) }
-    }
-
-    private fun show(t: Title, r: Ratings.Rating?, loaded: Boolean, fade: Boolean) {
-        val items = ArrayList<Pair<String, () -> android.view.View>>()
-        // TMDB's score: the fetched one when there is one, else the list's.
-        val score = if (r != null && r.votes > 0) r.score else t.rating
-        val votes = if (r != null && r.votes > 0) r.votes else t.votes
-        val pct = Math.round(score * 10).toInt()
-        val ring = votes >= Ratings.MIN_VOTES && pct > 0
-        val omdb = Ratings.omdbEnabled(context)
-        if (lead) {
-            if (!omdb && ring) items += "s$pct" to { scoreRing(pct) }
-        } else {
-            r?.cert?.ifEmpty { null }?.let { c -> items += "c$c" to { tag(c, filled = false) } }
-            if (omdb) {
-                r?.tomatometer?.let { v -> items += "r$v" to { tomato(v) } }
-                r?.imdb?.let { v -> items += "i$v" to { imdb(v) } }
-                if (loaded && r?.tomatometer == null && r?.imdb == null && ring) items += "s$pct" to { scoreRing(pct) }
-            }
-        }
-        val was = sigs
-        sigs = items.map { it.first }
-        if (sigs == was) return
-        removeAllViews()
-        for ((i, item) in items.withIndex()) {
-            val v = item.second()
-            addView(v, LayoutParams(WRAP_CONTENT, WRAP_CONTENT).apply {
-                marginStart = (if (i == 0) leadingGapDp else 16).dp
-                if (i == items.size - 1) marginEnd = trailingGapDp.dp
-            })
-            if (fade && item.first !in was) {
-                v.alpha = 0f
-                v.animate().alpha(1f).setStartDelay(i * 40L).setDuration(260).setInterpolator(Ui.EASE).start()
-            }
-        }
-    }
-
-    /** A fully rounded tag: outlined for the age rating, quietly filled for "IMDb". */
-    private fun tag(s: String, filled: Boolean) = kit.label(s, tagSp, Ui.alpha(kit.text, if (filled) 0.95f else 0.88f),
-        if (filled) kit.bold else kit.semibold, 0.04f).apply {
-        setPadding(8.dp, tagPadV.dp, 8.dp, tagPadV.dp)
-        background = if (filled) Ui.rounded(context, Ui.alpha(kit.text, 0.16f), Ui.R_PILL)
-        else Ui.rounded(context, Color.TRANSPARENT, Ui.R_PILL, 1f, Ui.alpha(kit.text, 0.5f))
-    }
-
-    private fun glyphPx(scale: Float) =
-        android.util.TypedValue.applyDimension(android.util.TypedValue.COMPLEX_UNIT_SP, textSp * scale, resources.displayMetrics).toInt()
-
-    private fun tomato(score: Int) = kit.label("$score%", textSp, Ratings.scoreColor(kit, score), kit.semibold).apply {
-        val s = glyphPx(1.25f)
-        setCompoundDrawables(TomatoGlyph().apply { setBounds(0, 0, s, s) }, null, null, null)
-        compoundDrawablePadding = 8.dp
-    }
-
-    private fun imdb(score: String) = LinearLayout(context).apply {
-        orientation = HORIZONTAL
-        gravity = Gravity.CENTER_VERTICAL
-        addView(tag("IMDb", filled = true))
-        addView(kit.label(score, textSp, Ui.alpha(kit.text, 0.92f), kit.semibold),
-            LayoutParams(WRAP_CONTENT, WRAP_CONTENT).apply { marginStart = 8.dp })
-    }
-
-    /** TMDB-style: a progress ring in the quality colour, the percentage right after it. */
-    private fun scoreRing(pct: Int) = kit.label("$pct%", textSp, Ratings.scoreColor(kit, pct), kit.semibold).apply {
-        val s = glyphPx(1.2f)
-        setCompoundDrawables(ScoreRing(Ratings.scoreColor(kit, pct), Ui.alpha(kit.text, 0.18f), pct / 100f,
-            maxOf(2f, 2.2f * resources.displayMetrics.density)).apply { setBounds(0, 0, s, s) }, null, null, null)
-        compoundDrawablePadding = 8.dp
-    }
-}
-
-/** A circular progress ring drawn in code: a faint full track and a round-capped arc for [fraction] from the top. */
-class ScoreRing(color: Int, track: Int, private val fraction: Float, private val stroke: Float) : Drawable() {
-    private val arc = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        this.color = color; style = Paint.Style.STROKE; strokeCap = Paint.Cap.ROUND; strokeWidth = stroke
-    }
-    private val base = Paint(Paint.ANTI_ALIAS_FLAG).apply { this.color = track; style = Paint.Style.STROKE; strokeWidth = stroke }
-    private val oval = RectF()
-
-    override fun draw(canvas: Canvas) {
-        val b = bounds
-        val half = stroke / 2f
-        oval.set(b.left + half, b.top + half, b.right - half, b.bottom - half)
-        canvas.drawOval(oval, base)
-        canvas.drawArc(oval, -90f, 360f * fraction.coerceIn(0f, 1f), false, arc)
-    }
-
-    override fun setAlpha(alpha: Int) { arc.alpha = alpha; base.alpha = alpha; invalidateSelf() }
-    override fun setColorFilter(cf: ColorFilter?) { arc.colorFilter = cf; base.colorFilter = cf; invalidateSelf() }
-    @Deprecated("Deprecated in Java")
-    override fun getOpacity() = PixelFormat.TRANSLUCENT
 }
 
 /** A simple tomato drawn in code: a round red body with a soft highlight, a five-leaf calyx and a stem. */

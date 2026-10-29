@@ -7,7 +7,6 @@ import android.content.res.ColorStateList
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.ColorFilter
-import android.graphics.LinearGradient
 import android.graphics.Matrix
 import android.graphics.Paint
 import android.graphics.SweepGradient
@@ -15,7 +14,6 @@ import android.graphics.Path
 import android.graphics.PixelFormat
 import android.graphics.Rect
 import android.graphics.RectF
-import android.graphics.Shader
 import android.graphics.drawable.Drawable
 import android.view.View
 import android.view.animation.LinearInterpolator
@@ -225,9 +223,8 @@ class PlayerSpinner(ctx: Context, kit: PremiumKit) : View(ctx) {
  */
 class PlayerIcon(private val shape: Int) : Drawable() {
     companion object {
-        const val PLAY = 0; const val PAUSE = 1; const val EPISODES = 2; const val SUBTITLES = 3; const val SPEED = 4
-        const val INFO = 5; const val RESTART = 6; const val NEXT = 7; const val CHECK = 8; const val BACK10 = 9
-        const val FWD10 = 10; const val SKIP = 11; const val AUDIO = 12; const val SOURCE = 13; const val CAST = 14
+        const val PLAY = 0; const val PAUSE = 1; const val EPISODES = 2; const val SUBTITLES = 3
+        const val INFO = 5; const val RESTART = 6; const val NEXT = 7; const val CHECK = 8; const val SKIP = 11; const val SOURCE = 13
         private const val STROKE = 1.8f
 
         private fun solid(shape: Int) = shape == PLAY || shape == PAUSE || shape == NEXT || shape == SKIP
@@ -250,38 +247,23 @@ class PlayerIcon(private val shape: Int) : Drawable() {
                     line(6.8f, 10.6f, 10.8f, 10.6f); line(13.2f, 10.6f, 17.2f, 10.6f)
                     line(6.8f, 14.2f, 9.2f, 14.2f); line(11.6f, 14.2f, 17.2f, 14.2f)
                 }
-                AUDIO -> {
-                    moveTo(4f, 9.5f); lineTo(7.5f, 9.5f); lineTo(12f, 5.5f); lineTo(12f, 18.5f); lineTo(7.5f, 14.5f); lineTo(4f, 14.5f); close()
-                    arc(12.5f, 12f, 4f, -50f, 100f); arc(12.5f, 12f, 7.5f, -50f, 100f)
-                }
-                SPEED -> {
-                    arc(12f, 13.5f, 8.5f, 140f, 260f)
-                    addCircle(12f, 13.5f, 1.6f, Path.Direction.CW)
-                    line(13.2f, 12.3f, 16.2f, 9.3f)
-                }
                 INFO -> {
                     addCircle(12f, 12f, 9f, Path.Direction.CW)
                     line(12f, 11f, 12f, 16.5f)
                     addCircle(12f, 7.7f, 0.15f, Path.Direction.CW)
                 }
-                RESTART, BACK10, FWD10 -> {
+                RESTART -> {
                     // Circular arrow: shaft runs clockwise from the top, the head points back (left).
                     arc(12f, 12.6f, 7.4f, 270f, 290f)
                     moveTo(14.4f, 2.9f); lineTo(11.4f, 5.2f); lineTo(14.4f, 7.5f)
                 }
                 CHECK -> { moveTo(5f, 12.6f); lineTo(9.8f, 17.2f); lineTo(19f, 7.4f) }
-                CAST -> {
-                    // A person: the head, and the shoulders as an open arc (X-Ray's cast).
-                    addCircle(12f, 8.6f, 3.6f, Path.Direction.CW)
-                    arc(12f, 21.2f, 7.6f, 200f, 140f)
-                }
                 SOURCE -> {
                     // Swap arrows: one stream out, another in.
                     line(4.5f, 8.5f, 18.5f, 8.5f); moveTo(15f, 5f); lineTo(18.5f, 8.5f); lineTo(15f, 12f)
                     line(19.5f, 15.5f, 5.5f, 15.5f); moveTo(9f, 12f); lineTo(5.5f, 15.5f); lineTo(9f, 19f)
                 }
             }
-            if (shape == FWD10) transform(Matrix().apply { setScale(-1f, 1f, 12f, 12f) })
         }
     }
 

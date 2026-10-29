@@ -134,6 +134,7 @@ object AboutPage {
             Ui.unclip(row) // focused rows lift past their rows: only the screen edge clips
             (a.window.decorView as FrameLayout).addView(root, MATCH_PARENT, MATCH_PARENT)
             page = root
+            Ui.onDetach(root) { if (page === root) page = null } // Activity recreated with it open: it can open again
             DreamUpdate.addListener(listener)
             root.alpha = 0f
             root.animate().alpha(1f).setDuration(Ui.OVERLAY_IN).setInterpolator(Ui.EASE).start()
@@ -198,7 +199,6 @@ object AboutPage {
             if (page !== root) return
             page = null
             DreamUpdate.removeListener(listener)
-            panel.top?.let { it.alive = false; it.onHide() }
             panel.release()
             root.animate().alpha(0f).setDuration(Ui.OVERLAY_OUT).setInterpolator(Ui.EXIT).withEndAction { (root.parent as? ViewGroup)?.removeView(root) }.start()
             if (back != null && back.isAttachedToWindow) back.requestFocus()
@@ -231,17 +231,17 @@ object AboutPage {
             val checking = checkingHere || DreamUpdate.checking()
             val cur = BuildConfig.VERSION_NAME
             when {
-                checking -> main.row("status", "Checking for Updates…", "You Have Version $cur", mark = SetupUi.Mark.BUSY, static = true)
-                s.newer -> main.row("status", "Version ${s.latest} Available", "You Have Version $cur", mark = SetupUi.Mark.WARN, static = true)
+                checking -> main.row("status", "Checking for Updates…", "You have version $cur", mark = SetupUi.Mark.BUSY, static = true)
+                s.newer -> main.row("status", "Version ${s.latest} Available", "You have version $cur", mark = SetupUi.Mark.WARN, static = true)
                 s.failed && s.checkedAt > 0 -> main.row("status", "Couldn't Check for Updates",
                     "Check your internet connection, then try again.", mark = SetupUi.Mark.WARN, static = true)
-                s.checkedAt > 0 -> main.row("status", "Dream OS Is Up to Date", "You Have Version $cur", mark = SetupUi.Mark.OK, static = true)
-                else -> main.row("status", "Not Checked Yet", "You Have Version $cur", mark = SetupUi.Mark.OFF, static = true)
+                s.checkedAt > 0 -> main.row("status", "Dream OS Is Up to Date", "You have version $cur", mark = SetupUi.Mark.OK, static = true)
+                else -> main.row("status", "Not Checked Yet", "You have version $cur", mark = SetupUi.Mark.OFF, static = true)
             }
             // Install only where this build has the updater (update.repo set); the owner's own build just shows the line.
             val av = if (DreamUpdate.enabled(a)) DreamUpdate.available(a) else null
             if (av != null && !checking) {
-                main.row("install", "Install Version ${av.version}", "Fire TV Asks You to Confirm",
+                main.row("install", "Install Version ${av.version}", "Your Fire Stick asks you to confirm",
                     DreamUpdate.sizeText(av.sizeBytes).ifEmpty { null }, chevron = true) {
                     UpdatePage.open(a, UpdatePage.INSTALL) { if (main.alive) paint() }
                 }

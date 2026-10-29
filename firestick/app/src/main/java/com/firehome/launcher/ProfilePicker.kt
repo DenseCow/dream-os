@@ -557,8 +557,7 @@ class ProfilePicker(
         }
     }
 
-    private fun label(t: String) = text(t.uppercase(), Ui.T_MICRO, MUTED, bold = true).apply {
-        letterSpacing = Ui.TRACK_CAPS
+    private fun label(t: String) = text(t, Ui.T_MICRO, MUTED, bold = true).apply {
         setPadding(0, Ui.S4.dp, 0, Ui.S2.dp)
     }
 

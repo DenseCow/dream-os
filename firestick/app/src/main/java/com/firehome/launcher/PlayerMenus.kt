@@ -59,6 +59,18 @@ object PlayerPrefs {
     fun setAudioLang(ctx: Context, lang: String?) { if (lang != null) prefs(ctx).edit().putString(k(ctx, "audioLang"), lang).apply() }
     fun setSubLang(ctx: Context, lang: String?) { if (lang != null) prefs(ctx).edit().putString(k(ctx, "subLang"), lang).apply() }
 
+    /** Titles (a movie, or a whole show) whose subtitles the viewer chose in the player: automatic subtitles leave them alone. */
+    private fun titleOf(r: PlaybackRequest) = (if (r.type == "episode") "tv:" else "movie:") + r.tmdbId
+    fun subsChosen(ctx: Context, r: PlaybackRequest): Boolean =
+        r.tmdbId > 0 && prefs(ctx).getStringSet(k(ctx, "subsChosen"), null)?.contains(titleOf(r)) == true
+    fun noteSubsChosen(ctx: Context, r: PlaybackRequest) {
+        if (r.tmdbId <= 0 || r.trailer) return
+        val now = prefs(ctx).getStringSet(k(ctx, "subsChosen"), null).orEmpty()
+        if (titleOf(r) in now) return
+        // At most 200: a title dropped from the set only gets automatic subtitles again.
+        prefs(ctx).edit().putStringSet(k(ctx, "subsChosen"), (now.take(199) + titleOf(r)).toSet()).apply()
+    }
+
     // ---- Volume Boost (ExoEngine's LoudnessEnhancer), per profile ----
 
     /** Off, then about +3, +6 and +10 dB: the top step stays modest so loud scenes don't clip badly. */
@@ -158,8 +170,8 @@ object PlayerPrefs {
 class PlayerInfo(val title: String, val overview: String, val meta: String, val source: String?)
 
 object PlayerMeta {
-    private val pretty = SimpleDateFormat("MMM d, yyyy", Locale.US)
-    private val ymd = SimpleDateFormat("yyyy-MM-dd", Locale.US)
+    /** TMDB's own score shows once this many people voted (as [Ratings.audienceFor]). */
+    private const val SCORE_VOTES = 150
 
     /** Blocking: TMDB (through the existing bounded caches) and the source name. */
     fun load(ctx: Context, req: PlaybackRequest): PlayerInfo {
@@ -172,9 +184,10 @@ object PlayerMeta {
                 if (ep != null) {
                     ep.optString("name").takeIf { it.isNotBlank() && it != "null" }?.let { title = it }
                     overview = ep.optString("overview").takeIf { it != "null" }.orEmpty()
-                    try { ymd.parse(ep.optString("air_date"))?.let { meta += pretty.format(it) } } catch (e: Exception) {}
+                    airDate(ep.optString("air_date"))?.let { meta += it }
                     ep.optInt("runtime").takeIf { it > 0 }?.let { meta += runtime(it) }
-                    ep.optDouble("vote_average", 0.0).takeIf { it >= 1.0 }?.let { meta += "★ " + String.format(Locale.US, "%.1f", it) }
+                    ep.optDouble("vote_average", 0.0).takeIf { it >= 1.0 && ep.optInt("vote_count") >= SCORE_VOTES }
+                        ?.let { meta += "TMDB " + String.format(Locale.US, "%.1f", it) }
                 }
                 if (overview.isBlank()) {
                     try { overview = Tmdb.details(ctx, Title(req.tmdbId, "tv", req.title, "", null, null, "", 0.0)).overview } catch (e: Exception) {}
@@ -198,7 +211,10 @@ object PlayerMeta {
         else -> "$min min"
     }
 
-    fun airDate(raw: String): String? = try { ymd.parse(raw)?.let { pretty.format(it) } } catch (e: Exception) { null }
+    /** "2024-03-01" as "Mar 1, 2024". Any thread: SimpleDateFormat isn't thread-safe, so one per call. */
+    fun airDate(raw: String): String? = try {
+        SimpleDateFormat("yyyy-MM-dd", Locale.US).parse(raw)?.let { SimpleDateFormat("MMM d, yyyy", Locale.US).format(it) }
+    } catch (e: Exception) { null }
 
     private fun sourceName(ctx: Context, id: String?): String? {
         if (id.isNullOrBlank()) return null
@@ -208,7 +224,7 @@ object PlayerMeta {
 }
 
 /**
- * The player's frosted side sheets: Audio & Subtitles, Speed, Info, Episodes. One sheet at a time,
+ * The player's frosted side sheets: Audio & Subtitles, Info, Episodes. One sheet at a time,
  * floating at the right with fully rounded corners over a soft scrim (no snapshot: the video is a
  * SurfaceView). Rows use the Dream focus glow; every animation ends.
  */
@@ -222,8 +238,6 @@ class PlayerMenus(
         fun toast(text: String)
         /** The sheet closed by itself or by Back; [opener] names the action that opened it. */
         fun sheetClosed(opener: String)
-        fun speed(): Float
-        fun setSpeed(s: Float)
         /** Cast & Characters (X-Ray), opened from inside Info. */
         fun openCast() {}
         fun canOpenCast(): Boolean = false
@@ -335,6 +349,7 @@ class PlayerMenus(
         panel = null
         kind = ""
         gen++
+        main.removeCallbacks(seasonSwitch)
         clearImages()
         scrim.animate().alpha(0f).setDuration(Ui.SHEET_OUT).setInterpolator(Ui.EXIT).start()
         p.animate().alpha(0f).translationX(30.dp.toFloat()).setDuration(Ui.SHEET_OUT).setInterpolator(Ui.EXIT).withEndAction {
@@ -350,6 +365,7 @@ class PlayerMenus(
         panel = null
         kind = ""
         gen++
+        main.removeCallbacks(seasonSwitch)
         clearImages()
         p.animate().cancel()
         layer.removeView(p)
@@ -706,40 +722,6 @@ class PlayerMenus(
         return row
     }
 
-    // ---- Speed ----
-
-    fun openSpeed() {
-        val (_, col) = frame(340, null, "Playback")
-        kind = "speed"
-        val list = LinearLayout(ctx)
-        scroller(col, list)
-        val cur = cb.speed()
-        var first: View? = null
-        list.addView(heading("Speed", 4))
-        for (s in SPEEDS) {
-            val label = if (s == 1f) "Normal" else speedLabel(s)
-            val r = optionRow("s:$s", label, null, kotlin.math.abs(s - cur) < 0.01f) {
-                cb.setSpeed(s)
-                cb.toast("Speed  ·  " + if (s == 1f) "Normal" else speedLabel(s))
-                close()
-            }
-            list.addView(r)
-            if (kotlin.math.abs(s - cur) < 0.01f) first = r
-        }
-        // Intros: the skip agent's per-profile setting (SkipController reads it).
-        list.addView(heading("Intros"))
-        var auto = SkipMarkers.autoSkipIntros(ctx)
-        lateinit var toggle: View
-        toggle = optionRow("autoskip", "Skip Intros Automatically", "Skips intros and recaps when they're known", auto) {
-            auto = !auto
-            SkipMarkers.setAutoSkipIntros(ctx, auto)
-            ((toggle as ViewGroup).getChildAt(0)).visibility = if (auto) View.VISIBLE else View.INVISIBLE
-            cb.toast(if (auto) "Intros will be skipped automatically" else "Skip Intro button only")
-        }
-        list.addView(toggle)
-        focusLater(first ?: list.getChildAt(1))
-    }
-
     // ---- Info ----
 
     fun openInfo() {
@@ -793,8 +775,6 @@ class PlayerMenus(
         }
         fact("Audio", e.tracks("audio").firstOrNull { it.selected }?.label ?: "Default")
         fact("Subtitles", e.tracks("text").firstOrNull { it.selected }?.label ?: "Off")
-        val speed = cb.speed()
-        if (speed != 1f) fact("Speed", speedLabel(speed))
         fun fill(info: PlayerInfo?) {
             metaView.text = info?.meta.orEmpty()
             metaView.visibility = if (info?.meta.isNullOrBlank()) View.GONE else View.VISIBLE
@@ -1038,7 +1018,6 @@ class PlayerMenus(
     }
 
     companion object {
-        val SPEEDS = floatArrayOf(0.5f, 0.75f, 1f, 1.25f, 1.5f, 1.75f, 2f)
         private const val MAX_EPS = 60
         private const val STILL_W = 150
         private const val PLAYING_TAG = "ep:playing"
@@ -1049,10 +1028,5 @@ class PlayerMenus(
         private const val CHIP_LIFT_V = 14
         private const val SHEET_PAD_H = 22
         private const val SHEET_PAD_BOTTOM = 18
-
-        fun speedLabel(s: Float): String {
-            val t = if (s * 100 % 10 == 0f) String.format(Locale.US, "%.1f", s) else String.format(Locale.US, "%.2f", s)
-            return t.trimEnd('0').trimEnd('.').let { if (!it.contains('.') && s < 10) "$it.0" else it } + "×"
-        }
     }
 }

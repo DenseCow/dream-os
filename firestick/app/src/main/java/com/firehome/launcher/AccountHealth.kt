@@ -4,9 +4,6 @@ import android.content.Context
 import android.graphics.Color
 import android.util.Log
 import org.json.JSONObject
-import java.text.SimpleDateFormat
-import java.util.Locale
-import java.util.TimeZone
 
 /**
  * The health of each linked debrid account, for Settings › Streaming Accounts: one cheap, read-only
@@ -26,7 +23,12 @@ internal object AccountHealth {
     /** Results older than this are re-checked when the page opens. */
     const val STALE_MS = 30 * 60_000L
 
-    enum class Health { OK, LIMIT, INVALID, OFFLINE }
+    /** BLOCKED: AllDebrid's AUTH_BLOCKED, a sign-in from a new location waiting for the owner's approval. */
+    enum class Health { OK, LIMIT, INVALID, OFFLINE, BLOCKED }
+
+    /** What to do about [Health.BLOCKED], in the same words on the setup's check, Accounts and Settings. */
+    fun blockedLine(name: String) = "$name blocked this new location. Approve it from the email $name sent you " +
+        "(or the security page of your $name account), then choose Check Again."
 
     /** [premium]: true/false when the service said, null when unknown; [until]: plan end (wall ms), 0 when unknown or none. */
     class Info(val service: String, val health: Health, val at: Long, val premium: Boolean?, val until: Long, val user: String?) {
@@ -38,8 +40,9 @@ internal object AccountHealth {
         }
     }
 
-    val AMBER = Color.parseColor("#FBBF24")
-    val RED = Color.parseColor("#F87171")
+    /** The status colors' light text tints (STANDARDS §2: amber #FFD60A, red #FF453A). */
+    val AMBER = Color.parseColor("#FFE266")
+    val RED = Color.parseColor("#FF8178")
 
     val NAMES = mapOf("ad" to "AllDebrid", "pm" to "Premiumize", "tb" to "TorBox", "rd" to "Real-Debrid")
     fun name(service: String) = NAMES[service] ?: service.uppercase()
@@ -93,6 +96,7 @@ internal object AccountHealth {
                             val h = if (limitedUntil(app, "ad") > 0) Health.LIMIT else Health.OK
                             Info(service, h, now, prem, until, u.optString("username").ifEmpty { null })
                         }
+                        j.optJSONObject("error")?.optString("code") == "AUTH_BLOCKED" -> Info(service, Health.BLOCKED, now, null, 0, null)
                         j.optJSONObject("error")?.optString("code").orEmpty().let { it.startsWith("AUTH_") || it.startsWith("ACCOUNT_") } ->
                             Info(service, Health.INVALID, now, null, 0, null)
                         else -> Info(service, Health.OFFLINE, now, null, 0, null)
@@ -133,8 +137,9 @@ internal object AccountHealth {
         } ?: return null
         // Keep the last known plan when this answer didn't carry one (e.g. no answer at all).
         val prev = last(app, service)
-        val kept = if (info.health == Health.OFFLINE && prev != null) Info(service, info.health, now, prev.premium, prev.until, prev.user) else info
+        val kept = if ((info.health == Health.OFFLINE || info.health == Health.BLOCKED) && prev != null) Info(service, info.health, now, prev.premium, prev.until, prev.user) else info
         prefs(app).edit().putString(service, kept.json().toString()).apply()
+        if (kept.health != Health.OFFLINE) DebridExpiry.markBlocked(app, service, kept.health == Health.BLOCKED)
         Log.w(TAG, "Streaming accounts: ${service.uppercase()} ${kept.health}" +
             (if (kept.until > 0) ", plan ${((kept.until - now) / DAY)} days left" else "") + (if (kept.premium == false) ", no premium" else ""))
         return kept
@@ -152,24 +157,15 @@ internal object AccountHealth {
         val r = DebridHttp.get(url, token, 6_000)
         read(r)?.let { return it }
         if (r.code != 401) return Info("rd", if (r.code == 403) Health.INVALID else Health.OFFLINE, now, null, 0, null)
-        val refresh = acc.realDebridRefresh
-        if (refresh.isBlank() || acc.realDebridClientId.isBlank() || acc.realDebridSecret.isBlank()) return Info("rd", Health.INVALID, now, null, 0, null)
-        val t = DebridHttp.postForm("https://api.real-debrid.com/oauth/v2/token", listOf(
-            "client_id" to acc.realDebridClientId, "client_secret" to acc.realDebridSecret,
-            "code" to refresh, "grant_type" to "http://oauth.net/grant_type/device/1.0"), timeoutMs = 6_000)
-        val access = if (t.ok) t.json().optString("access_token") else ""
-        if (access.isEmpty()) return Info("rd", if (t.code in 400..499) Health.INVALID else Health.OFFLINE, now, null, 0, null)
-        DreamAccounts.refreshedRealDebrid(access, t.json().optString("refresh_token").ifEmpty { null })
+        val t = RealDebridToken.renew(acc, timeoutMs = 6_000)
+        val access = t.access ?: return Info("rd",
+            if (t.code == RealDebridToken.NO_CREDENTIALS || t.code in 400..499) Health.INVALID else Health.OFFLINE, now, null, 0, null)
         Log.w(TAG, "Streaming accounts: Real-Debrid sign-in renewed")
         return read(DebridHttp.get(url, access, 6_000)) ?: Info("rd", Health.OFFLINE, now, null, 0, null)
     }
 
-    private fun iso(s: String?): Long {
-        if (s.isNullOrBlank() || s == "null") return 0
-        return try {
-            SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss", Locale.US).apply { timeZone = TimeZone.getTimeZone("UTC") }.parse(s.take(19))?.time ?: 0
-        } catch (e: Exception) { 0 }
-    }
+    /** The services' ISO 8601 dates, offsets included ([ExpiryRules.iso]); 0 when missing. */
+    private fun iso(s: String?): Long = ExpiryRules.iso(s.orEmpty())
 
     // ---- words ----
 
@@ -213,9 +209,10 @@ internal object AccountHealth {
         Health.LIMIT -> "Magnet Limit Reached"
         Health.INVALID -> "Sign-In Invalid"
         Health.OFFLINE -> "No Answer Right Now"
+        Health.BLOCKED -> "Approve New Location"
     }
 
-    fun healthTone(h: Health): Int? = when (h) { Health.OK -> null; Health.LIMIT, Health.OFFLINE -> AMBER; Health.INVALID -> RED }
+    fun healthTone(h: Health): Int? = when (h) { Health.OK -> null; Health.LIMIT, Health.OFFLINE -> AMBER; Health.INVALID, Health.BLOCKED -> RED }
 
     fun ago(at: Long): String {
         val m = ((System.currentTimeMillis() - at) / 60_000).coerceAtLeast(0)
@@ -238,6 +235,7 @@ internal object AccountHealth {
         val prem = plan(ctx, service)
         return when {
             i?.health == Health.INVALID -> "Sign-In Invalid" to RED
+            i?.health == Health.BLOCKED || DebridExpiry.blocked(ctx, service) -> "Approve New Location" to RED
             prem?.second == RED -> prem
             limited -> "Magnet Limit Reached" to AMBER
             prem != null -> prem

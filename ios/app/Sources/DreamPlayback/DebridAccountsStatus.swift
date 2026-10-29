@@ -75,7 +75,7 @@ public enum DebridExpiry {
     }
 
     private static func fingerprint(_ acc: DebridAccounts.Accounts) -> String {
-        services.map { acc.token($0).map { DebridLedger.scope($0, $0) } ?? "-" }.joined(separator: ",")
+        services.map { s in acc.ledgerId(s).map { DebridLedger.scope(s, $0) } ?? "-" }.joined(separator: ",")
     }
 
     /// Cheap; call when the app comes to the front. Starts a round when the last one is six hours old, or the linked
@@ -113,7 +113,14 @@ public enum DebridExpiry {
         let acc = DebridAccounts.get()
         var asked = 0, answered = 0
         for svc in services {
-            guard let token = acc.token(svc) else { DreamStore.shared.set(nil as Status?, "expiry." + svc); continue }
+            guard let token = acc.token(svc) else {
+                // Disconnected: its plan goes, and so do its expiry notices.
+                if DreamStore.shared.get(Status.self, "expiry." + svc) != nil {
+                    DreamStore.shared.set(nil as Status?, "expiry." + svc)
+                    onDismissPrefix?("expiry:\(svc):")
+                }
+                continue
+            }
             asked += 1
             guard let st = await fetch(svc, token, acc) else { continue }
             answered += 1
@@ -278,7 +285,9 @@ public enum ExpiryRules {
 /// The health of each linked account, for Settings › Streaming Accounts (AccountHealth.kt). The last result is kept,
 /// so the page shows it at once and only re-asks when it's old (`stale`) or on Test Connection (`check`).
 public enum AccountHealth {
-    public enum Health: String, Codable, Sendable { case ok = "OK", limit = "LIMIT", invalid = "INVALID", offline = "OFFLINE" }
+    /// `blocked`: AllDebrid holds the account on a network it hasn't seen until the owner approves it from AllDebrid's
+    /// email (AUTH_BLOCKED). Signing in again doesn't help, so it isn't `invalid` (fire-home docs/bugs, 2026-10-29).
+    public enum Health: String, Codable, Sendable { case ok = "OK", limit = "LIMIT", invalid = "INVALID", offline = "OFFLINE", blocked = "BLOCKED" }
     /// The tone a value shows in: nil = the normal color, else the status color.
     public enum Tone: Sendable { case amber, red }
 
@@ -325,6 +334,8 @@ public enum AccountHealth {
                     let h: Health = limitedUntil("ad") > 0 ? .limit : .ok
                     info = Info(service: service, health: h, at: now, premium: u["isPremium"].bool(true), until: u["premiumUntil"].int64 * 1000,
                                 user: u["username"].string.isEmpty ? nil : u["username"].string)
+                } else if code == "AUTH_BLOCKED" {
+                    info = Info(service: service, health: .blocked, at: now, premium: nil, until: 0, user: nil)
                 } else if code.hasPrefix("AUTH_") || code.hasPrefix("ACCOUNT_") {
                     info = Info(service: service, health: .invalid, at: now, premium: nil, until: 0, user: nil)
                 } else { info = Info(service: service, health: .offline, at: now, premium: nil, until: 0, user: nil) }
@@ -416,10 +427,13 @@ public enum AccountHealth {
     }
 
     public static func healthText(_ h: Health) -> String {
-        switch h { case .ok: "Connection OK"; case .limit: "Magnet Limit Reached"; case .invalid: "Sign-In Invalid"; case .offline: "No Answer Right Now" }
+        switch h {
+        case .ok: "Connection OK"; case .limit: "Magnet Limit Reached"; case .invalid: "Sign-In Invalid"
+        case .offline: "No Answer Right Now"; case .blocked: "Approve This Network"
+        }
     }
     public static func healthTone(_ h: Health) -> Tone? {
-        switch h { case .ok: nil; case .limit, .offline: .amber; case .invalid: .red }
+        switch h { case .ok: nil; case .limit, .offline, .blocked: .amber; case .invalid: .red }
     }
 
     public static func ago(_ at: Int64) -> String {
@@ -436,6 +450,7 @@ public enum AccountHealth {
         let i = last(service)
         let prem = plan(service)
         if i?.health == .invalid { return ("Sign-In Invalid", .red) }
+        if i?.health == .blocked { return ("Approve This Network", .amber) }
         if let prem, prem.1 == .red { return prem }
         if limitedUntil(service) > 0 { return ("Magnet Limit Reached", .amber) }
         return prem ?? ("Linked", nil)

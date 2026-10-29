@@ -2,7 +2,6 @@ package com.firehome.launcher
 
 import android.content.Context
 import android.content.res.ColorStateList
-import android.graphics.Bitmap
 import android.graphics.Color
 import android.graphics.drawable.GradientDrawable
 import android.graphics.drawable.StateListDrawable
@@ -28,6 +27,8 @@ import android.widget.TextView
 internal class SetupUi(val ctx: Context, val k: PremiumKit) {
     val Int.dp get() = Ui.dp(ctx, this)
     val main = Handler(Looper.getMainLooper())
+    /** The setup wizard's stage: a sub-page has the whole column, so text entry puts its phone help beside the keyboard. */
+    var roomy = false
     /** Dream Cinema: the brand (pearl face, dark ink, neutral marks); Premium keeps its highlight. */
     /** Ink on a focused row's face, and its quieter shade. */
     private val ink = PearlFocus.INK
@@ -40,7 +41,7 @@ internal class SetupUi(val ctx: Context, val k: PremiumKit) {
     }
 
     /** NONE leaves no gap; OFF is a hollow ring (not on yet, keeps a list aligned); PICK is the chosen item's neutral check. */
-    enum class Mark { NONE, OK, WARN, BUSY, NUMBER, OFF, PICK }
+    enum class Mark { NONE, OK, WARN, BUSY, OFF, PICK }
 
     /**
      * One row: a status mark (check, attention dot, number), title and caption, a value on the
@@ -61,7 +62,7 @@ internal class SetupUi(val ctx: Context, val k: PremiumKit) {
                 addState(IntArray(0), Ui.rounded(ctx, Ui.alpha(k.text, 0.05f), Ui.R_MD))
                 setEnterFadeDuration(Ui.FOCUS_IN.toInt())
                 setExitFadeDuration(Ui.FOCUS_OUT.toInt())
-            } else Ui.rounded(ctx, Ui.alpha(k.text, 0.035f), Ui.R_MD)
+            } else null // a plain fact reads as text, so only what can be chosen looks like a control
             isFocusable = interactive
             isClickable = interactive
             id = View.generateViewId()
@@ -74,15 +75,14 @@ internal class SetupUi(val ctx: Context, val k: PremiumKit) {
         setMark(markView, mark)
         // Passes the row's focus down to the title and caption (ink on the focused fill).
         val texts = LinearLayout(ctx).apply { orientation = LinearLayout.VERTICAL; isDuplicateParentStateEnabled = true }
-        // Names stay on one line and never break mid-word; captions never hyphenate either.
-        val t = k.label(title, 16f, k.text, k.medium, lines = 1).apply {
+        // Setup text is never cut: titles and captions wrap at word breaks (no hyphenation) instead of ending in "…".
+        val t = k.label(title, 16f, k.text, k.medium, lines = 0).apply {
             setTextColor(states(ink, Ui.alpha(k.text, 0.94f)))
             isDuplicateParentStateEnabled = true
-            ellipsize = android.text.TextUtils.TruncateAt.END
             hyphenationFrequency = android.text.Layout.HYPHENATION_FREQUENCY_NONE
         }
         texts.addView(t)
-        val cap = k.label(caption ?: "", 12.5f, k.dim, k.font, lines = 3).apply {
+        val cap = k.label(caption ?: "", 12.5f, k.dim, k.font, lines = 0).apply {
             setTextColor(states(inkDim, k.dim))
             isDuplicateParentStateEnabled = true
             setPadding(0, 3.dp, 0, 0)
@@ -92,7 +92,7 @@ internal class SetupUi(val ctx: Context, val k: PremiumKit) {
         }
         texts.addView(cap)
         v.addView(texts, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
-        val valueView = k.label(value ?: "", Ui.T_LABEL, k.dim, k.semibold).apply {
+        val valueView = k.label(value ?: "", Ui.T_LABEL, k.dim, k.semibold, lines = 0).apply {
             setTextColor(states(inkDim, Ui.alpha(k.text, 0.85f)))
             isDuplicateParentStateEnabled = true
             maxWidth = 190.dp
@@ -113,9 +113,7 @@ internal class SetupUi(val ctx: Context, val k: PremiumKit) {
         return Row(v, t, cap, valueView, markView).also { it.markState = mark }
     }
 
-    fun setMark(m: TextView, mark: Mark, number: Int = 0) {
-        val focused = intArrayOf(android.R.attr.state_focused)
-        fun st(on: Int, rest: Int) = ColorStateList(arrayOf(focused, IntArray(0)), intArrayOf(on, rest))
+    fun setMark(m: TextView, mark: Mark) {
         when (mark) {
             Mark.NONE -> { m.text = ""; m.background = null; m.visibility = View.GONE }
             // Drawn status marks (the setup rows' StatusGlyph), never a text "✓" / "!" / "•".
@@ -126,34 +124,26 @@ internal class SetupUi(val ctx: Context, val k: PremiumKit) {
                     Mark.PICK -> BrandRow.Mark.PICK; else -> BrandRow.Mark.BUSY
                 })
             }
-            Mark.NUMBER -> {
-                m.visibility = View.VISIBLE; m.text = "$number"; m.textSize = 12f
-                m.setTextColor(st(ink, Color.WHITE))
-                m.background = quietDisc()
-            }
         }
     }
 
     private fun oval(c: Int) = GradientDrawable().apply { shape = GradientDrawable.OVAL; setColor(c) }
 
-    /** Cinema's neutral mark disc: soft gray at rest; on the focused pearl face, a faint ink disc (the mark turns ink). */
-    private fun quietDisc() = StateListDrawable().apply {
-        addState(intArrayOf(android.R.attr.state_focused), oval(Ui.alpha(PearlFocus.INK, 0.10f)))
-        addState(IntArray(0), oval(Ui.alpha(Color.WHITE, 0.14f)))
-    }
-
     fun update(r: Row, caption: String? = null, value: String? = null, mark: Mark? = null) {
         // Only what changed, so an update never relayouts or flashes a row that stays the same.
         if (caption != null && r.caption.text.toString() != caption) { r.caption.text = caption; r.caption.visibility = if (caption.isEmpty()) View.GONE else View.VISIBLE }
         if (value != null && r.value.text.toString() != value) { r.value.text = value; r.value.visibility = if (value.isEmpty()) View.GONE else View.VISIBLE }
-        if (mark != null && mark != r.markState && mark != Mark.NUMBER) { setMark(r.mark, mark); r.markState = mark }
+        if (mark != null && mark != r.markState) { setMark(r.mark, mark); r.markState = mark }
     }
 
     // ---- text ----
 
     fun kicker(t: String) = k.kicker(t).apply { setPadding(6.dp, 0, 0, 0) }
 
-    fun heading(t: String) = k.label(t, Ui.T_SECTION, k.text, k.semibold, lines = 2)
+    // In setup's stage a sub-page's heading is its page title (the step's own title steps aside): title-sized there.
+    fun heading(t: String) = k.label(t, if (roomy) 26f else Ui.T_SECTION, k.text, k.semibold, lines = 0).apply {
+        hyphenationFrequency = android.text.Layout.HYPHENATION_FREQUENCY_NONE
+    }
 
     fun note(t: String) = k.label(t, Ui.T_CAPTION, Ui.alpha(k.dim, 0.95f), k.font, lines = 0).apply {
         setLineSpacing(3.dp.toFloat(), 1f)
@@ -161,19 +151,7 @@ internal class SetupUi(val ctx: Context, val k: PremiumKit) {
     }
 
     /** Numbered plain steps (Fire TV settings paths). */
-    fun steps(lines: List<String>) = LinearLayout(ctx).apply {
-        orientation = LinearLayout.VERTICAL
-        for ((i, l) in lines.withIndex()) {
-            addView(LinearLayout(ctx).apply {
-                orientation = LinearLayout.HORIZONTAL
-                addView(k.label("${i + 1}", 11f, Color.WHITE, k.bold).apply {
-                    gravity = Gravity.CENTER
-                    background = oval(Ui.alpha(Color.WHITE, 0.14f)) // a quiet gray step disc
-                }, LinearLayout.LayoutParams(20.dp, 20.dp).apply { marginEnd = 12.dp; topMargin = 1.dp })
-                addView(k.label(l, Ui.T_CAPTION, k.text, k.font, lines = 0).apply { setLineSpacing(3.dp.toFloat(), 1f) },
-                    LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
-            }, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { if (i > 0) topMargin = 10.dp })
-        }
+    fun steps(lines: List<String>) = numberedSteps(ctx, k, lines, badgeDp = 24, size = Ui.T_CAPTION, gapDp = 10).apply {
         setPadding(10.dp, 4.dp, 6.dp, 4.dp)
     }
 
@@ -217,21 +195,9 @@ internal class SetupUi(val ctx: Context, val k: PremiumKit) {
 
     /** A crisp QR code for [text] (white quiet zone, black modules), or null if it doesn't fit. */
     fun qr(text: String, sizeDp: Int): ImageView? {
-        val bmp = try {
-            val q = io.nayuki.qrcodegen.QrCode.encodeText(text, io.nayuki.qrcodegen.QrCode.Ecc.MEDIUM)
-            val border = 2
-            val n = q.size + border * 2
-            Bitmap.createBitmap(n, n, Bitmap.Config.RGB_565).apply {
-                val px = IntArray(n * n)
-                for (y in 0 until n) for (x in 0 until n) {
-                    val on = x >= border && y >= border && x < n - border && y < n - border && q.getModule(x - border, y - border)
-                    px[y * n + x] = if (on) Color.BLACK else Color.WHITE
-                }
-                setPixels(px, 0, n, 0, 0, n, n)
-            }
-        } catch (e: Exception) { return null }
+        val d = try { Qr.drawable(ctx, text, border = 2) } catch (e: Exception) { return null }
         return ImageView(ctx).apply {
-            setImageDrawable(android.graphics.drawable.BitmapDrawable(ctx.resources, bmp).apply { setFilterBitmap(false); setAntiAlias(false) })
+            setImageDrawable(d)
             scaleType = ImageView.ScaleType.FIT_CENTER
             background = Ui.rounded(ctx, Color.WHITE, Ui.R_SM)
             setPadding(6.dp, 6.dp, 6.dp, 6.dp)
@@ -239,11 +205,6 @@ internal class SetupUi(val ctx: Context, val k: PremiumKit) {
             clipToOutline = true
             layoutParams = LinearLayout.LayoutParams(sizeDp.dp, sizeDp.dp)
         }
-    }
-
-    companion object {
-        val GREEN = Color.parseColor("#4ADE80")
-        val WARN = Color.parseColor("#FBBF24")
     }
 }
 
@@ -283,10 +244,12 @@ internal class SetupScreen(val ui: SetupUi, title: String?, val kickerText: Stri
 
     init {
         if (kickerText != null) root.addView(ui.kicker(kickerText), LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT).apply { bottomMargin = 6.dp })
-        if (title != null) root.addView(ui.heading(title).apply { setPadding(6.dp, 0, 6.dp, 0) }, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { bottomMargin = 10.dp })
+        // The gap under the heading is larger than the list's lift room, so the list's fade never covers the heading.
+        if (title != null) root.addView(ui.heading(title).apply { setPadding(6.dp, 0, 6.dp, 0) }, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { bottomMargin = (LIFT_V + 6).dp })
         scroll.addView(body, FrameLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
         root.addView(scroll, LinearLayout.LayoutParams(MATCH_PARENT, 0, 1f))
-        scroll.post { Ui.liftRoom(scroll, 10, 6) }
+        // Room for a focused row's lift and its 12 dp halo on all four sides (6 dp cut the last pill's glow at the bottom).
+        scroll.post { Ui.liftRoom(scroll, LIFT_H, LIFT_V) }
     }
 
     /** Adds [v] to the body, [top] dp below the previous view. */
@@ -346,11 +309,6 @@ internal class SetupScreen(val ui: SetupUi, title: String?, val kickerText: Stri
         v.visibility = View.GONE
     }
 
-    /** Hides every keyed row or view starting with [prefix] that isn't in [keep]. */
-    fun hideOthers(prefix: String, keep: Set<String>) {
-        for (k in rows.keys.toList() + views.keys.toList()) if (k.startsWith(prefix) && k !in keep) hide(k)
-    }
-
     fun rowFor(key: String) = rows[key]
 
     /** Called by the panel when the screen shows. */
@@ -365,6 +323,10 @@ internal class SetupScreen(val ui: SetupUi, title: String?, val kickerText: Stri
     }
 
     companion object {
+        /** Lift room around the list (dp): the halo (12) plus a wide row's 2% lift. */
+        const val LIFT_H = 24
+        const val LIFT_V = 16
+
         fun firstFocusable(v: View): View? {
             if (v.isFocusable && v.visibility == View.VISIBLE) return v
             if (v is ViewGroup && v.visibility == View.VISIBLE) for (i in 0 until v.childCount) firstFocusable(v.getChildAt(i))?.let { return it }
@@ -382,6 +344,8 @@ internal class SetupPanel(val ui: SetupUi) : FrameLayout(ui.ctx) {
     private val stack = ArrayList<SetupScreen>()
     val top: SetupScreen? get() = stack.lastOrNull()
     val depth get() = stack.size
+    /** Called after the stack changes (push, pop, replace) with the new depth. */
+    var onDepth: ((Int) -> Unit)? = null
     private var lifecycle: android.app.Application.ActivityLifecycleCallbacks? = null
 
     init {
@@ -472,6 +436,7 @@ internal class SetupPanel(val ui: SetupUi) : FrameLayout(ui.ctx) {
         unblock(s)
         s.alive = true
         if (animate) fadeIn(s.root, 22f)
+        onDepth?.invoke(stack.size)
         s.shown()
         focusInto(s)
     }
@@ -491,6 +456,7 @@ internal class SetupPanel(val ui: SetupUi) : FrameLayout(ui.ctx) {
         unblock(prev)
         prev.alive = true
         fadeIn(prev.root, -16f)
+        onDepth?.invoke(stack.size)
         prev.shown()
         focusInto(prev, prev.returnFocus)
         return true
@@ -505,13 +471,39 @@ internal class SetupPanel(val ui: SetupUi) : FrameLayout(ui.ctx) {
         unblock(s)
         s.alive = true
         fadeIn(s.root, 22f)
+        onDepth?.invoke(stack.size)
         s.shown()
         focusInto(s)
     }
 
-    fun release() {
+    /** Ends every screen. [keepViews]: they stay drawn (a page fading out takes them with it). */
+    fun release(keepViews: Boolean = false) {
         for (s in stack) { s.onHide(); s.alive = false }
         stack.clear()
-        removeAllViews()
+        if (!keepViews) removeAllViews()
     }
 }
+
+/**
+ * Numbered steps, the one builder for setup and its Settings pages: each number on a Dream OS monogram disc, the
+ * line beside it wrapping in full (setup text is never cut, STANDARDS §3) and centered on the disc when it fits.
+ */
+internal fun numberedStep(ctx: Context, k: PremiumKit, n: Int, text: CharSequence, badgeDp: Int = 30, size: Float = 17f) =
+    LinearLayout(ctx).apply {
+        orientation = LinearLayout.HORIZONTAL
+        gravity = Gravity.TOP
+        addView(SetupArt.monogram(ctx, "$n", badgeDp), LinearLayout.LayoutParams(Ui.dp(ctx, badgeDp), Ui.dp(ctx, badgeDp)))
+        addView(k.label(text, size, k.text, k.font, lines = 0).apply {
+            setLineSpacing(Ui.dp(ctx, 3).toFloat(), 1f)
+            minHeight = Ui.dp(ctx, badgeDp)
+            gravity = Gravity.CENTER_VERTICAL
+        }, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply { marginStart = Ui.dp(ctx, 14) })
+    }
+
+/** [lines] as [numberedStep]s, [gapDp] apart. */
+internal fun numberedSteps(ctx: Context, k: PremiumKit, lines: List<CharSequence>, badgeDp: Int = 30, size: Float = 17f, gapDp: Int = 14) =
+    LinearLayout(ctx).apply {
+        orientation = LinearLayout.VERTICAL
+        for ((i, l) in lines.withIndex()) addView(numberedStep(ctx, k, i + 1, l, badgeDp, size),
+            LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply { if (i > 0) topMargin = Ui.dp(ctx, gapDp) })
+    }

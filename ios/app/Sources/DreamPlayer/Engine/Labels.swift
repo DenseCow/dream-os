@@ -1,4 +1,5 @@
 import Foundation
+import DreamCore
 
 /// How Dream Player words formats, times and languages (ExoEngine.kt companion, PlayerOverlay.fmt, PlayerPrefs.normLang).
 public enum Labels {
@@ -51,12 +52,8 @@ public enum Labels {
         return "\(min / 60) hr \(min % 60) min left"
     }
 
-    /// PlayerMeta.runtime: "2h" / "1h 5m" / "45 min".
-    public static func runtime(_ minutes: Int) -> String? {
-        guard minutes > 0 else { return nil }
-        if minutes >= 60 { return minutes % 60 == 0 ? "\(minutes / 60)h" : "\(minutes / 60)h \(minutes % 60)m" }
-        return "\(minutes) min"
-    }
+    /// "2 hr 46 min", "2 hr", "45 min": the one runtime form, as the title page's Information says it.
+    public static func runtime(_ minutes: Int) -> String? { TitleInfo.runtimeWords(minutes) }
 
     /// "4.2 GB" / "700 MB"; nil when unknown.
     public static func size(_ bytes: Int64) -> String? {

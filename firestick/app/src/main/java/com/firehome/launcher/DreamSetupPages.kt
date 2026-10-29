@@ -5,7 +5,6 @@ import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.Color
 import android.graphics.drawable.BitmapDrawable
-import android.graphics.drawable.ColorDrawable
 import android.graphics.drawable.Drawable
 import android.os.SystemClock
 import android.util.Log
@@ -20,9 +19,7 @@ import android.widget.FrameLayout
 import android.widget.LinearLayout
 import android.widget.TextView
 import java.lang.ref.WeakReference
-import java.text.SimpleDateFormat
 import java.util.Date
-import java.util.Locale
 
 /**
  * Dream OS's own setup pages, shared by the first-run setup ([SetupWizard]) and Settings:
@@ -114,8 +111,8 @@ internal class BrandRow(
         val interactive = onClick != null
         isFocusable = interactive
         isClickable = interactive
+        // Only what can be chosen looks like a control; a plain fact (Status, Version) is text on the page.
         val glow = if (interactive) PearlFocus.apply(this, Ui.R_MD) else null
-        if (!interactive) background = Ui.rounded(ctx, Ui.alpha(Color.WHITE, 0.035f), Ui.R_MD)
         if (icon != null) {
             addView(icon, LayoutParams(40.dp, 40.dp).apply { marginEnd = 16.dp })
             markLeft = null
@@ -124,18 +121,16 @@ internal class BrandRow(
             addView(markLeft, LayoutParams(26.dp, 26.dp).apply { marginStart = 4.dp; marginEnd = 14.dp })
         }
         val texts = LinearLayout(ctx).apply { orientation = VERTICAL; isDuplicateParentStateEnabled = true }
-        // Names stay on one line and never break mid-word ("AllDe-brid"); captions get two lines at most.
-        title = k.label("", 17f, SetupBrand.TEXT, k.medium, lines = 1).apply {
+        // Setup text is never cut: title and caption wrap at word breaks, never mid-word ("AllDe-brid") and never "…".
+        title = k.label("", 17f, SetupBrand.TEXT, k.medium, lines = 0).apply {
             isDuplicateParentStateEnabled = true
             setTextColor(PearlFocus.states(PearlFocus.INK, SetupBrand.TEXT))
-            ellipsize = android.text.TextUtils.TruncateAt.END
             hyphenationFrequency = android.text.Layout.HYPHENATION_FREQUENCY_NONE
         }
-        caption = k.label("", 13.5f, SetupBrand.DIM, k.font, lines = 2).apply {
+        caption = k.label("", 13.5f, SetupBrand.DIM, k.font, lines = 0).apply {
             isDuplicateParentStateEnabled = true
             setPadding(0, 4.dp, 0, 0)
-            setLineSpacing(2.dp.toFloat(), 1f)
-            ellipsize = android.text.TextUtils.TruncateAt.END
+            setLineSpacing(3.dp.toFloat(), 1f)
             hyphenationFrequency = android.text.Layout.HYPHENATION_FREQUENCY_NONE
             visibility = GONE
         }
@@ -144,7 +139,7 @@ internal class BrandRow(
         addView(texts, LayoutParams(0, WRAP_CONTENT, 1f))
         markRight = markView()
         addView(markRight, LayoutParams(22.dp, 22.dp).apply { marginStart = 14.dp })
-        value = k.label("", 14.5f, SetupBrand.DIM, k.medium, lines = 2).apply {
+        value = k.label("", 14.5f, SetupBrand.DIM, k.medium, lines = 0).apply {
             isDuplicateParentStateEnabled = true
             gravity = Gravity.END
             maxWidth = 210.dp
@@ -303,23 +298,24 @@ internal class SetupParts(val ctx: Context, val k: PremiumKit) {
 
     fun row(icon: View? = null, chevron: Boolean = false, switch: Boolean? = null, onClick: (() -> Unit)? = null) = BrandRow(ctx, k, icon, chevron, switch, onClick)
 
-    /** A section heading with its "Required" / "Optional" tag. */
+    /**
+     * A section heading in Title Case (quiet gray, no tracked caps) with "Required" / "Optional" after it as
+     * plain dim words: a fact about the section, so it reads as text, not as another button-shaped capsule.
+     */
     fun section(t: String, required: Boolean?) = LinearLayout(ctx).apply {
         orientation = LinearLayout.HORIZONTAL
-        gravity = Gravity.CENTER_VERTICAL
+        gravity = Gravity.BOTTOM
         setPadding(6.dp, 0, 0, 0)
-        addView(k.label(t.uppercase(), 12f, Ui.alpha(Color.WHITE, 0.62f), k.semibold, Ui.TRACK_CAPS))
+        addView(k.label(t, 15f, Ui.alpha(Color.WHITE, 0.78f), k.semibold, lines = 0))
         if (required != null) addView(tag(if (required) "Required" else "Optional", required), LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT).apply { marginStart = 12.dp })
     }
 
-    fun tag(t: String, strong: Boolean) = k.label(t, 11.5f, if (strong) Color.WHITE else SetupBrand.DIM, k.semibold, 0.04f).apply {
-        setPadding(10.dp, 3.dp, 10.dp, 4.dp)
-        background = Ui.rounded(ctx, Ui.alpha(Color.WHITE, if (strong) 0.14f else 0.05f), Ui.R_PILL, 1f, Ui.alpha(Color.WHITE, if (strong) 0.30f else 0.16f))
-    }
+    fun tag(t: String, strong: Boolean) = k.label(t, 13f, if (strong) Ui.alpha(Color.WHITE, 0.62f) else SetupBrand.DIM, k.font)
 
     fun note(t: String, size: Float = 15f) = k.label(t, size, SetupBrand.DIM, k.font, lines = 0).apply {
-        setLineSpacing(4.dp.toFloat(), 1f)
+        setLineSpacing(5.dp.toFloat(), 1f)
         setPadding(6.dp, 0, 6.dp, 0)
+        hyphenationFrequency = android.text.Layout.HYPHENATION_FREQUENCY_NONE
     }
 
     fun pill(label: String, primary: Boolean, onClick: () -> Unit): TextView =
@@ -336,13 +332,19 @@ internal class SetupParts(val ctx: Context, val k: PremiumKit) {
 
     fun resultMark(ok: Boolean?) = when (ok) { true -> BrandRow.Mark.OK; false -> BrandRow.Mark.WARN; null -> BrandRow.Mark.BUSY }
 
-    /** A big result line: a status disc and a headline (the link and test results). */
+    /**
+     * A big result line: a status disc and a headline (the link and test results, numbered steps). The
+     * headline wraps as far as it needs: a 2-line cap cut "press your Fire T…" on the 1080p stick.
+     */
     fun result(ok: Boolean?, headline: String) = LinearLayout(ctx).apply {
         orientation = LinearLayout.HORIZONTAL
         gravity = Gravity.CENTER_VERTICAL
         // The drawn status disc (never a text check / "!" / "•").
         addView(View(ctx).apply { background = StatusGlyph(resultMark(ok)) }, LinearLayout.LayoutParams(40.dp, 40.dp))
-        addView(k.label(headline, 22f, SetupBrand.TEXT, k.semibold, lines = 2), LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f).apply { marginStart = 16.dp })
+        addView(k.label(headline, 20f, SetupBrand.TEXT, k.semibold, lines = 0).apply {
+            setLineSpacing(3.dp.toFloat(), 1f)
+            hyphenationFrequency = android.text.Layout.HYPHENATION_FREQUENCY_NONE
+        }, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f).apply { marginStart = 18.dp })
     }
 }
 
@@ -380,7 +382,6 @@ internal fun setupEntry(
         background = Ui.rounded(ctx, Ui.alpha(Color.WHITE, 0.07f), Ui.R_PILL, 1f, Ui.alpha(Color.WHITE, 0.14f))
         setQuery(initial)
     }
-    s.add(field.apply { layoutParams = LinearLayout.LayoutParams(MATCH_PARENT, dp(48)) }, 0)
     val kb = DreamKeyboard(k, field, 420, 32, 6, null).apply {
         glideStroke = true
         glideColors = { CinemaStyle.glowNow.let { intArrayOf(it, it) } }
@@ -391,6 +392,37 @@ internal fun setupEntry(
     val row = LinearLayout(ctx).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
     val keys = extras.map { e -> key(e) { field.insert(e) } } + key("Caps") { kb.caps = !kb.caps }
     for ((i, v) in keys.withIndex()) row.addView(v, LinearLayout.LayoutParams(WRAP_CONTENT, dp(36)).apply { if (i > 0) marginStart = dp(10) })
+    val ok = parts.pill("Done", true) { val t = field.text.toString().trim(); if (t.isNotEmpty() && t != "https://") done(t) }
+    if (ui.roomy) {
+        // The setup wizard's stage: the keyboard and Done on the left, the phone help beside them, so the whole
+        // entry fits the 1080p screen without scrolling.
+        val wrap = LinearLayout(ctx).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.TOP; clipChildren = false; clipToPadding = false }
+        val left = LinearLayout(ctx).apply { orientation = LinearLayout.VERTICAL; clipChildren = false; clipToPadding = false }
+        left.addView(field, LinearLayout.LayoutParams(dp(420), dp(48)))
+        left.addView(row, LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT).apply { topMargin = dp(12) })
+        left.addView(kb, LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT).apply { topMargin = dp(12) })
+        left.addView(parts.pills(ok), LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT).apply { topMargin = dp(16) })
+        wrap.addView(left, LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT))
+        val right = LinearLayout(ctx).apply { orientation = LinearLayout.VERTICAL }
+        right.addView(parts.note(note ?: "", 15f).apply { setPadding(0, 0, 0, 0) }, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
+        val codes = LinearLayout(ctx).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.TOP }
+        if (qr != null) ui.qr(qr, 112)?.let { code ->
+            val col = LinearLayout(ctx).apply { orientation = LinearLayout.VERTICAL; gravity = Gravity.CENTER_HORIZONTAL }
+            col.addView(code, LinearLayout.LayoutParams(dp(112), dp(112)))
+            col.addView(k.label("Open the Website", 13f, Ui.alpha(Color.WHITE, 0.72f), k.medium).apply { gravity = Gravity.CENTER },
+                LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT).apply { topMargin = dp(8) })
+            codes.addView(col, LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT).apply { marginEnd = dp(20) })
+        }
+        codes.addView(PhoneTyping.view(ctx, k, 112), LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT))
+        right.addView(codes, LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT).apply { topMargin = dp(18) })
+        wrap.addView(right, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f).apply { marginStart = dp(40) })
+        s.add(wrap, 0)
+        s.focus = { kb.entryKey() }
+        s.onShow = { SetupText.shown(field) }
+        s.onHide = { SetupText.hidden(field) }
+        return s
+    }
+    s.add(field.apply { layoutParams = LinearLayout.LayoutParams(MATCH_PARENT, dp(48)) }, 0)
     s.add(row, 12)
     s.add(kb.apply { layoutParams = LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT) }, 12)
     run {
@@ -407,7 +439,6 @@ internal fun setupEntry(
         wrap.addView(PhoneTyping.view(ctx, k, 104), LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT).apply { marginStart = dp(18) })
         s.add(wrap, 14)
     }
-    val ok = parts.pill("Done", true) { val t = field.text.toString().trim(); if (t.isNotEmpty() && t != "https://") done(t) }
     s.add(parts.pills(ok), 14)
     s.focus = { kb.entryKey() }
     s.onShow = { SetupText.shown(field) }
@@ -428,11 +459,20 @@ internal object SetupGate {
 
     fun savedStep(ctx: Context): String? = prefs(ctx).getString("step", null)
     fun saveStep(ctx: Context, step: String) = prefs(ctx).edit().putString("step", step).apply()
-    fun checkPassed(ctx: Context) = prefs(ctx).getBoolean("check_ok", false)
-    fun setCheckPassed(ctx: Context, ok: Boolean) = prefs(ctx).edit().putBoolean("check_ok", ok).apply()
+    /** Setup finished, or this stick took another one's data: the next first-run setup starts at the beginning. */
+    fun clearStep(ctx: Context) = prefs(ctx).edit().remove("step").commit()
+    /** The last check passed with the services and scrapers set up now (a change since means checking again). */
+    fun checkPassed(ctx: Context) = prefs(ctx).let { it.getBoolean("check_ok", false) && it.getInt("check_inputs", 0) == checkInputs(ctx) }
+    fun setCheckPassed(ctx: Context, ok: Boolean) = prefs(ctx).edit().putBoolean("check_ok", ok).putInt("check_inputs", checkInputs(ctx)).apply()
+
+    /** What the check depends on: the linked debrid services, the scraper repositories and the providers on. */
+    private fun checkInputs(ctx: Context): Int {
+        val services = DreamAccounts.DEFAULT_ORDER.filter { DreamAccounts.linked(ctx, it) }
+        val scrapers = try { Scrapers.status(ctx).let { s -> s.repos.map { it.id } + s.providers.filter { it.enabled }.map { it.id } } } catch (e: Exception) { emptyList() }
+        return (services + "|" + scrapers).joinToString(",").hashCode()
+    }
     fun zoneConfirmed(ctx: Context) = prefs(ctx).getBoolean("zone_ok", false)
     fun setZoneConfirmed(ctx: Context) = prefs(ctx).edit().putBoolean("zone_ok", true).apply()
-    fun reset(ctx: Context) = prefs(ctx).edit().remove("step").remove("check_ok").remove("zone_ok").apply()
 
     // ---- accounts ----
 
@@ -442,25 +482,25 @@ internal object SetupGate {
         val i = AccountHealth.last(ctx, s) ?: return false
         if (fresh && System.currentTimeMillis() - i.at > AccountHealth.STALE_MS) return false
         if (i.health != AccountHealth.Health.OK && i.health != AccountHealth.Health.LIMIT) return false
-        if (i.premium == false) return false
-        return !(i.until in 1 until System.currentTimeMillis())
+        return !expired(i)
     }
 
-    fun anyVerified(ctx: Context, fresh: Boolean = false) = DreamAccounts.linkedInOrder(ctx).any { verified(ctx, it, fresh) }
+    /** No premium, or its end date has passed. */
+    private fun expired(i: AccountHealth.Info) = i.premium == false || i.until in 1 until System.currentTimeMillis()
 
-    private val DATE = SimpleDateFormat("MMM d, yyyy", Locale.US)
+    fun anyVerified(ctx: Context, fresh: Boolean = false) = DreamAccounts.linkedInOrder(ctx).any { verified(ctx, it, fresh) }
 
     /** A service's live status: (words, color, mark). [checking]: a check is running for it now. */
     fun status(ctx: Context, s: String, checking: Boolean): Triple<String, Int?, BrandRow.Mark> {
         if (!DreamAccounts.linked(ctx, s)) return Triple("Not Connected", null, BrandRow.Mark.NONE)
         if (checking) return Triple("Checking…", null, BrandRow.Mark.BUSY)
         val i = AccountHealth.last(ctx, s) ?: return Triple("Connected · Not Checked Yet", null, BrandRow.Mark.NONE)
-        val now = System.currentTimeMillis()
         return when {
             i.health == AccountHealth.Health.INVALID -> Triple("Sign In Again", SetupBrand.RED, BrandRow.Mark.WARN)
-            i.premium == false || i.until in 1 until now -> Triple("Expired", SetupBrand.RED, BrandRow.Mark.WARN)
+            i.health == AccountHealth.Health.BLOCKED -> Triple("Approve New Location", SetupBrand.RED, BrandRow.Mark.WARN)
+            expired(i) -> Triple("Expired", SetupBrand.RED, BrandRow.Mark.WARN)
             i.health == AccountHealth.Health.OFFLINE -> Triple("Couldn't Check Right Now", null, BrandRow.Mark.NONE)
-            i.until > 0 -> Triple("Connected · Premium Until ${DATE.format(Date(i.until))}", SetupBrand.GREEN, BrandRow.Mark.OK)
+            i.until > 0 -> Triple("Connected · Premium Until ${DreamTime.fmt(ctx, "MMM d, yyyy").format(Date(i.until))}", SetupBrand.GREEN, BrandRow.Mark.OK)
             else -> Triple("Connected · Premium", SetupBrand.GREEN, BrandRow.Mark.OK)
         }
     }
@@ -468,7 +508,6 @@ internal object SetupGate {
     /** What still keeps the Accounts step from being done, in plain words; null when it's done. */
     fun accountsBlocker(ctx: Context, checking: Boolean): String? {
         val linked = DreamAccounts.linkedInOrder(ctx)
-        if (!Tmdb.hasKey(ctx) && linked.any { verified(ctx, it) }) return "Add your TMDB key to continue."
         if (linked.any { verified(ctx, it) }) return if (Tmdb.hasKey(ctx)) null else "Add your TMDB key to continue."
         if (linked.isEmpty()) return "Connect at least one debrid service to continue."
         if (checking) return "Checking your account…"
@@ -478,7 +517,8 @@ internal object SetupGate {
         return when {
             i == null -> "Checking your account…"
             i.health == AccountHealth.Health.INVALID -> "Sign in to $n again, or connect another service, to continue."
-            i.premium == false || i.until in 1 until System.currentTimeMillis() -> "Your $n plan has expired. Renew it, or connect another service, to continue."
+            i.health == AccountHealth.Health.BLOCKED -> "$n blocked this new location. Approve it from the email $n sent you, then choose $n to check again."
+            expired(i) -> "Your $n plan has expired. Renew it, or connect another service, to continue."
             else -> "Couldn't reach $n. Check your internet connection, then choose $n to check again."
         }
     }
@@ -539,8 +579,8 @@ internal object SetupGate {
         }
         card.addView(SetupArt(a, if (page == DreamSettingsPage.SCRAPERS) SetupArt.Kind.SCRAPERS else SetupArt.Kind.ACCOUNTS), LinearLayout.LayoutParams(dp(130), dp(130)))
         val col = LinearLayout(a).apply { orientation = LinearLayout.VERTICAL }
-        col.addView(k.label("FINISH SETTING UP", 12f, Ui.alpha(Color.WHITE, 0.62f), k.semibold, Ui.TRACK_CAPS))
-        col.addView(k.label(headline, 26f, SetupBrand.TEXT, k.semibold, Ui.TRACK_TITLE, lines = 2), LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT).apply { topMargin = dp(10) })
+        col.addView(k.label("Finish Setting Up", 15f, Ui.alpha(Color.WHITE, 0.62f), k.semibold))
+        col.addView(k.label(headline, 26f, SetupBrand.TEXT, k.semibold, Ui.TRACK_TITLE, lines = 0), LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT).apply { topMargin = dp(8) })
         col.addView(parts.note(line, 16f).apply { setPadding(0, 0, 0, 0) }, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { topMargin = dp(10) })
         val go = parts.pill("Set Up Now", true) { close { DreamSettingsPage.open(a, page) } }
         val later = parts.pill("Later", false) { close(null) }
@@ -550,6 +590,7 @@ internal object SetupGate {
         Ui.unclip(root)
         (a.window.decorView as FrameLayout).addView(root, MATCH_PARENT, MATCH_PARENT)
         promptView = root
+        Ui.onDetach(root) { if (promptView === root) promptView = null } // Activity recreated with it open: it can open again
         root.alpha = 0f
         root.animate().alpha(1f).setDuration(Ui.OVERLAY_IN).setInterpolator(Ui.EASE).start()
         card.translationY = dp(14).toFloat()
@@ -566,7 +607,6 @@ internal object SetupGate {
         root.postDelayed(watch, 2000)
     }
 
-    fun isPromptOpen() = promptView != null
 }
 
 /** A full-screen layer over the app: keeps focus inside, Back runs [onBack]. */
@@ -638,6 +678,8 @@ internal class AccountsPages(
     private fun app() = ctx.applicationContext
     private val checking = HashSet<String>()
     private var checkedOnce = false
+    /** Sign-in QR codes: big on setup's stage, where the sign-in has the whole column. */
+    private val qrDp get() = if (ui.roomy) 208 else 160
 
     fun isChecking() = checking.isNotEmpty()
 
@@ -671,10 +713,9 @@ internal class AccountsPages(
             "Expired Codes, Plans and Keys", { SetupGuide.debridSteps() }, SetupGuide.DEBRID_TROUBLE, top = top)
         fun paint() {
             s.view("k:debrid", 0) { parts.section("Debrid Services", true) }
-            s.view("n:pick", 8) { parts.note(SetupGuide.PICK_LINE, 14f) }
             if (helpFirst) help(12)
             for ((i, key) in SetupBrand.SERVICES.withIndex()) {
-                val r = rows.row("d:$key", if (i == 0) (if (helpFirst) 18 else 12) else 8) {
+                val r = rows.row("d:$key", if (i == 0) (if (helpFirst) 20 else 12) else 8) {
                     parts.row(SetupArt.monogram(ctx, SetupBrand.monogram(key)), chevron = true) {
                         if (DreamAccounts.linked(app(), key)) panel.push(service(key)) else link(key)?.let { panel.push(it) }
                     }
@@ -688,11 +729,13 @@ internal class AccountsPages(
                     else SetupBrand.site(key)
                 r.set(AccountHealth.name(key), cap, if (linked) words.substringBefore(" · ") else "Connect", tone, if (linked) mark else BrandRow.Mark.NONE)
             }
-            if (!helpFirst) help(8)
+            // Which one to pick, right under the list it is about.
+            s.view("n:pick", 14) { parts.note(SetupGuide.PICK_LINE, 14f) }
+            if (!helpFirst) help(16)
             rows.row("info", 8) { parts.row(null, chevron = true) { panel.push(debridInfo()) } }
-                .set("What's a Debrid Service?", "What It Does, and Where to Get One")
+                .set("What's a Debrid Service?", "What it does, and where to get one")
             rows.row("best", 8) { parts.row(null, chevron = true) { panel.push(debridBest()) } }
-                .set("Which Service Works Best?", "Premiumize Gives the Fastest Play")
+                .set("Which Service Works Best?", "Premiumize gives the fastest play")
             // Setup has its own Connect Movie & Show Info step; Settings' Accounts shows the key while there is none.
             if (!inSetup && (!Tmdb.hasKey(app()) || s.has("k:tmdb"))) {
                 s.view("k:tmdb", 24) { parts.section("Movie & Show Info", true) }
@@ -706,7 +749,7 @@ internal class AccountsPages(
                     if (signedIn) SetupBrand.GREEN else null, if (signedIn) BrandRow.Mark.OK else BrandRow.Mark.NONE)
             rows.row("trakt:how", 8) { parts.row(null, chevron = true) {
                 panel.push(SetupGuide.guide(ui, parts, panel, "Show Me How to Connect Trakt", SetupGuide.traktSteps()))
-            } }.set("Show Me How to Connect Trakt", "Optional and Free. Add It Now or Later in Settings")
+            } }.set("Show Me How to Connect Trakt", "Optional and free. Add it now or later in Settings.")
         }
         s.onShow = {
             paint()
@@ -720,6 +763,63 @@ internal class AccountsPages(
         return s
     }
 
+    /**
+     * Setup's version of the overview: the four services as large tiles in one row (choose the one you have),
+     * nothing else. Help and Trakt are the wizard's quiet buttons ([help], [trakt]).
+     */
+    fun setupOverview(): SetupScreen {
+        val s = SetupScreen(ui, null, null)
+        val line = LinearLayout(ctx).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.TOP; clipChildren = false; clipToPadding = false }
+        val tiles = LinkedHashMap<String, SetupTile>()
+        for ((i, key) in SetupBrand.SERVICES.withIndex()) {
+            val t = SetupTile(ctx, k, SetupArt.monogram(ctx, SetupBrand.monogram(key))) {
+                if (DreamAccounts.linked(app(), key)) panel.push(service(key)) else link(key)?.let { panel.push(it) }
+            }
+            tiles[key] = t
+            line.addView(t, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, 1f).apply { if (i > 0) marginStart = 16.dp })
+        }
+        s.add(line.apply { layoutParams = LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT) }, 0)
+        fun paint() {
+            for ((key, t) in tiles) {
+                val linked = DreamAccounts.linked(app(), key)
+                val (words, tone, mark) = SetupGate.status(app(), key, key in checking)
+                t.set(AccountHealth.name(key), if (linked) words.substringBefore(" · ") else "Not Connected", tone, if (linked) mark else BrandRow.Mark.NONE)
+            }
+        }
+        s.onShow = {
+            paint()
+            val first = !checkedOnce
+            checkedOnce = true
+            for (key in DreamAccounts.linkedInOrder(app())) if (first || AccountHealth.stale(app(), key)) check(key)
+            onChange()
+        }
+        s.onResume = { paint(); onChange() }
+        // A service that isn't ready yet is the likely next press; the wizard puts focus on Continue once one is.
+        // A linked service that needs attention (Sign In Again, Expired) first; with nothing linked, the first to choose.
+        // Never a not-connected tile while another service is linked: Select would start a sign-in nobody asked for.
+        s.focus = {
+            tiles.entries.firstOrNull { DreamAccounts.linked(app(), it.key) && !SetupGate.verified(app(), it.key) }?.value
+                ?: tiles.entries.firstOrNull { DreamAccounts.linked(app(), it.key) }?.value ?: tiles.values.first()
+        }
+        return s
+    }
+
+    /** Setup's Help Me Choose: what a debrid service is, which works best, the sign-up steps and the trouble tips. */
+    fun help(): SetupScreen {
+        val s = SetupScreen(ui, "Help Me Choose", null)
+        val rows = ScreenRows(s)
+        rows.row("info", 0) { parts.row(null, chevron = true) { panel.push(debridInfo()) } }
+            .set("What's a Debrid Service?", "What it does, and where to get one")
+        rows.row("best", 8) { parts.row(null, chevron = true) { panel.push(debridBest()) } }
+            .set("Which Service Works Best?", "Premiumize gives the fastest play")
+        SetupGuide.helpRows(rows, "debrid", parts, panel, ui, "Sign Up, Then Connect It to Dream OS",
+            "Expired Codes, Plans and Keys", { SetupGuide.debridSteps() }, SetupGuide.DEBRID_TROUBLE)
+        return s
+    }
+
+    /** Trakt on its own (setup's quiet Trakt button). */
+    fun trakt(): SetupScreen = TraktPages(ctx, ui, panel, fromAccounts = true).overview()
+
     // ---- one service ----
 
     fun service(key: String): SetupScreen {
@@ -730,20 +830,24 @@ internal class AccountsPages(
             if (!DreamAccounts.linked(app(), key)) { panel.pop(); return@paint }
             val (words, tone, mark) = SetupGate.status(app(), key, key in checking)
             val user = DreamAccounts.user(app(), key) ?: AccountHealth.last(app(), key)?.user
-            rows.row("acct", 0) { parts.row(SetupArt.monogram(ctx, SetupBrand.monogram(key))) }.set(user ?: name, SetupBrand.site(key))
-            rows.row("status", 8) { parts.row() }.set("Status", null, words, tone, mark)
+            // Setup's stage has room for one screen without scrolling: who's signed in rides on the status row.
+            if (!inSetup) rows.row("acct", 0) { parts.row(SetupArt.monogram(ctx, SetupBrand.monogram(key))) }.set(user ?: name, SetupBrand.site(key))
+            rows.row("status", if (inSetup) 0 else 8) { parts.row() }.set("Status", if (inSetup) (user?.let { "Signed In as $it" } ?: SetupBrand.site(key)) else null, words, tone, mark)
             val bad = tone == SetupBrand.RED
-            if (bad) s.view("fix", 10) { parts.note("") }.let { (it as TextView).text = SetupGate.accountsBlocker(app(), false)?.takeIf { _ -> true }
-                ?.let { _ -> if (words == "Expired") "Renew your plan on $name's website, then choose Check Again." else "Link $name again to sign back in." } ?: "" }
+            if (bad) s.view("fix", 10) { parts.note("") }.let { (it as TextView).text = when {
+                AccountHealth.last(app(), key)?.health == AccountHealth.Health.BLOCKED -> AccountHealth.blockedLine(name)
+                words == "Expired" -> "Renew your plan on $name's website, then choose Check Again."
+                else -> "Link $name again to sign back in."
+            } }
             else s.hide("fix")
-            s.view("k:act", 22) { parts.section("Actions", null) }
-            rows.row("check", 10) { parts.row(null) { check(key) } }.set("Check Again", "Asks $name for Your Account's Status", if (key in checking) "Checking…" else null)
+            if (!inSetup) s.view("k:act", 22) { parts.section("Actions", null) }
+            rows.row("check", if (inSetup) 14 else 10) { parts.row(null) { check(key) } }.set("Check Again", "Asks $name for your account's status", if (key in checking) "Checking…" else null)
             val order = DreamAccounts.linkedInOrder(app())
             if (order.size > 1 && order.first() != key) rows.row("primary", 8) { parts.row(null) { DreamAccounts.makePrimary(app(), key); s.onShow() } }
-                .set("Use First", "Dream OS Asks $name Before Your Other Services")
+                .set("Use First", "Dream OS asks $name before your other services")
             else s.hide("primary")
-            rows.row("again", 8) { parts.row(null, chevron = true) { link(key)?.let { panel.push(it) } } }.set("Link Again", "Sign In Again, or With Another Account")
-            rows.row("unlink", 8) { parts.row(null, chevron = true) { panel.push(confirmUnlink(key)) } }.set("Disconnect", "Dream OS Stops Using This Account")
+            rows.row("again", 8) { parts.row(null, chevron = true) { link(key)?.let { panel.push(it) } } }.set("Link Again", "Sign in again, or with another account")
+            rows.row("unlink", 8) { parts.row(null, chevron = true) { panel.push(confirmUnlink(key)) } }.set("Disconnect", "Dream OS stops using this account")
         }
         s.focus = { rows.get("check") }
         return s
@@ -779,17 +883,17 @@ internal class AccountsPages(
         val s = SetupScreen(ui, "Connect $name", null)
         val wrap = LinearLayout(ctx).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
         val col = LinearLayout(ctx).apply { orientation = LinearLayout.VERTICAL }
-        val step = k.label("Getting a code…", 15f, SetupBrand.DIM, k.font, lines = 2)
-        val site = k.label("", 20f, SetupBrand.TEXT, k.semibold, lines = 2)
-        val code = k.label("", 46f, SetupBrand.TEXT, k.semibold).apply { letterSpacing = 0.14f; visibility = View.GONE }
-        val status = k.label("", 14f, SetupBrand.DIM, k.font, lines = 2).apply { visibility = View.GONE }
+        val step = k.label("Getting a code…", 15f, SetupBrand.DIM, k.font, lines = 0)
+        val site = k.label("", 20f, SetupBrand.TEXT, k.semibold, lines = 0)
+        val code = k.label("", 46f, SetupBrand.TEXT, k.semibold, lines = 0).apply { letterSpacing = 0.14f; visibility = View.GONE }
+        val status = k.label("", 14f, SetupBrand.DIM, k.font, lines = 0).apply { setLineSpacing(3.dp.toFloat(), 1f); visibility = View.GONE }
         col.addView(step)
         col.addView(site, LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT).apply { topMargin = 6.dp })
         col.addView(code, LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT).apply { topMargin = 14.dp })
         col.addView(status, LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT).apply { topMargin = 14.dp })
         val qrBox = FrameLayout(ctx)
         wrap.addView(col, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
-        wrap.addView(qrBox, LinearLayout.LayoutParams(160.dp, 160.dp).apply { marginStart = 24.dp })
+        wrap.addView(qrBox, LinearLayout.LayoutParams(qrDp.dp, qrDp.dp).apply { marginStart = 32.dp })
         s.add(wrap, 0)
         // "What to Try", filled when the sign-in fails (under the message, above the buttons).
         val helpBox = FrameLayout(ctx).apply { visibility = View.GONE; layoutParams = LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT) }
@@ -846,7 +950,7 @@ internal class AccountsPages(
                 code.visibility = View.VISIBLE
                 status.text = "Then enter this code. Waiting for you to approve…"
                 status.visibility = View.VISIBLE
-                ui.qr(p.qr, 160)?.let { v -> v.alpha = 0f; qrBox.addView(v); v.animate().alpha(1f).setDuration(Ui.OVERLAY_IN).setInterpolator(Ui.EASE).start() }
+                ui.qr(p.qr, qrDp)?.let { v -> v.alpha = 0f; qrBox.addView(v); v.animate().alpha(1f).setDuration(Ui.OVERLAY_IN).setInterpolator(Ui.EASE).start() }
                 ui.main.postAtTime({ poll(p) }, tag, SystemClock.uptimeMillis() + p.intervalS * 1000L)
             }
         }
@@ -872,7 +976,7 @@ internal class AccountsPages(
             "Paste it on your phone and tap Link.",
         )), LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
         val qrBox = FrameLayout(ctx)
-        wrap.addView(qrBox, LinearLayout.LayoutParams(160.dp, 160.dp).apply { marginStart = 24.dp })
+        wrap.addView(qrBox, LinearLayout.LayoutParams(qrDp.dp, qrDp.dp).apply { marginStart = 32.dp })
         s.add(wrap, 0)
         val status = rows.row("status", 18) { parts.row() }
         fun waiting() = status.set("Waiting for Your Phone", "Your key goes straight to this TV, on your home network only.", mark = BrandRow.Mark.BUSY)
@@ -890,7 +994,7 @@ internal class AccountsPages(
             if (url == null || url == shownUrl) return
             shownUrl = url
             qrBox.removeAllViews()
-            ui.qr(url, 160)?.let { v -> v.alpha = 0f; qrBox.addView(v); v.animate().alpha(1f).setDuration(Ui.OVERLAY_IN).setInterpolator(Ui.EASE).start() }
+            ui.qr(url, qrDp)?.let { v -> v.alpha = 0f; qrBox.addView(v); v.animate().alpha(1f).setDuration(Ui.OVERLAY_IN).setInterpolator(Ui.EASE).start() }
         }
         // A phone used the one-time code: the QR code gets a fresh one (a second scan still works).
         fun refresh() {
@@ -917,7 +1021,7 @@ internal class AccountsPages(
                 if (!s.alive) { reply(false, "Choose $name on your TV first."); return@hook }
                 if (checking) { reply(false, "Still checking your last key. One moment."); return@hook }
                 checking = true
-                status.set("Checking Your Key", "One Moment…", mark = BrandRow.Mark.BUSY)
+                status.set("Checking Your Key", "One moment…", mark = BrandRow.Mark.BUSY)
                 Log.w(SetupBrand.TAG, "Setup: step Accounts, $name key received from the phone")
                 Net.run {
                     val r = try { DebridLink.premiumizeKey(typed) } catch (e: Exception) { DebridLink.Poll.Failed("$name didn't answer. Try again.") }
@@ -957,7 +1061,7 @@ internal class AccountsPages(
             "https://www.premiumize.me/account") { typed ->
             val s = SetupScreen(ui, "Connect $name", null)
             val rows = ScreenRows(s)
-            rows.row("check", 0) { parts.row() }.set("Checking Your Key", "One Moment…", mark = BrandRow.Mark.BUSY)
+            rows.row("check", 0) { parts.row() }.set("Checking Your Key", "One moment…", mark = BrandRow.Mark.BUSY)
             panel.replace(s)
             s.bg({ DebridLink.premiumizeKey(typed) }) { r ->
                 when (r) {
@@ -981,29 +1085,39 @@ internal class AccountsPages(
         val s = SetupScreen(ui, "Connect $name", null)
         val head = s.view("head", 0) { parts.result(null, "Checking Your Account…") } as LinearLayout
         val line = s.view("line", 12) { parts.note("") } as TextView
-        val done = parts.pill("Done", true) { panel.pop() }
         var recheck: () -> Unit = {}
-        val again = parts.pill("Check Again", false) { recheck() }
-        s.view("buttons", 24) { parts.pills(done, again) }
-        again.visibility = View.GONE
-        s.focus = { done }
+        // One forward action only when it's needed: a ready account goes back on its own after the result shows.
+        val again = parts.pill("Check Again", true) { recheck() }
+        val later = parts.pill("Not Now", false) { panel.pop() }
+        val buttons = s.view("buttons", 24) { parts.pills(again, later) }
+        buttons.visibility = View.INVISIBLE
+        s.focus = { again }
+        var leaving = false
         fun show() {
             val ok = SetupGate.verified(app(), key)
             val (words, _, _) = SetupGate.status(app(), key, key in checking)
             head.getChildAt(0).background = StatusGlyph(parts.resultMark(if (key in checking) null else ok))
+            val blocked = key !in checking && !ok && AccountHealth.last(app(), key)?.health == AccountHealth.Health.BLOCKED
             (head.getChildAt(1) as TextView).text = when {
                 key in checking -> "Checking Your Account…"
                 ok -> "$name Is Connected"
+                blocked -> "Approve This Location"
                 else -> "$name Isn't Ready Yet"
             }
             val user = DreamAccounts.user(app(), key)
             line.text = when {
                 key in checking -> "One moment while Dream OS asks $name about your plan."
                 ok -> listOfNotNull(user?.let { "Signed in as $it." }, words.removePrefix("Connected · ").let { "$it." }).joinToString(" ")
+                blocked -> AccountHealth.blockedLine(name)
                 words == "Expired" -> "This account doesn't have an active premium plan. Renew it on $name's website, then choose Check Again."
                 else -> "Dream OS couldn't confirm your plan. Check your internet connection, then choose Check Again."
             }
-            again.visibility = if (key in checking || ok) View.GONE else View.VISIBLE
+            val failed = key !in checking && !ok
+            if (failed && buttons.visibility != View.VISIBLE) { buttons.visibility = View.VISIBLE; again.requestFocus() }
+            if (key !in checking && ok && !leaving) {
+                leaving = true
+                ui.main.postDelayed({ if (s.alive && panel.top === s) panel.pop() }, 1600)
+            }
         }
         recheck = { check(key) { if (s.alive) show() }; show() }
         var started = false
@@ -1011,37 +1125,45 @@ internal class AccountsPages(
         return s
     }
 
-    private fun debridInfo(): SetupScreen {
-        val s = SetupScreen(ui, "What's a Debrid Service?", null)
-        s.add(parts.note("A debrid service is a paid account that keeps a huge library of movies and shows on fast servers. " +
-            "When you pick something, Dream OS finds it and plays it from your account in full quality, with no waiting."), 0)
-        s.add(parts.note("You need at least one. If you don't have one yet, sign up on your phone with any of these, then come back and connect it."), 12)
-        for ((i, key) in SetupBrand.SERVICES.withIndex()) {
-            val r = parts.row(SetupArt.monogram(ctx, SetupBrand.monogram(key)), chevron = true) { panel.push(siteQr(key)) }
-            r.set(AccountHealth.name(key), SetupBrand.site(key), "Sign Up")
-            s.add(r, if (i == 0) 18 else 8)
-        }
-        return s
-    }
+    private fun debridInfo(): SetupScreen = explain("What's a Debrid Service?", listOf(
+        "A debrid service is a paid account that keeps a huge library of movies and shows on fast servers. Dream OS plays what you pick from your account, in full quality.",
+        "You need one. Sign up on your phone with any of these, then come back and choose it.",
+    ), SetupBrand.SERVICES)
 
     /**
      * Which Service Works Best? (owner, 2026-10-28; the iPhone's page): Premiumize and TorBox can be asked whether a
      * title is ready without adding anything to the account, so Instant Play and the pills check ahead; AllDebrid
      * and Real-Debrid are asked only on Play (magnet safety).
      */
-    private fun debridBest(): SetupScreen {
-        val s = SetupScreen(ui, "Which Service Works Best?", null)
-        s.add(parts.note("Premiumize is the best match for Dream OS. Dream OS can ask Premiumize whether a title is ready without adding anything to your account, " +
-            "so your stream is ready the moment you open a title, and Available Now is checked before you reach it. Play starts almost instantly."), 0)
-        s.add(parts.note("TorBox works the same way, so it's a great choice too."), 12)
-        s.add(parts.note("AllDebrid and Real-Debrid answer that question only once a title is added to your account. To keep your account tidy, " +
-            "Dream OS asks them when you choose Play, so Play takes a second or two longer. Everything else works the same."), 12)
-        s.add(parts.note("You can connect more than one. Dream OS asks them in the order you choose."), 12)
-        for ((i, key) in listOf("pm", "tb").withIndex()) {
-            val r = parts.row(SetupArt.monogram(ctx, SetupBrand.monogram(key)), chevron = true) { panel.push(siteQr(key)) }
-            r.set(AccountHealth.name(key), SetupBrand.site(key), "Sign Up")
-            s.add(r, if (i == 0) 18 else 8)
+    private fun debridBest(): SetupScreen = explain("Which Service Works Best?", listOf(
+        "Premiumize is the best match. Dream OS can ask it whether a title is ready before you press Play, so Play starts almost at once. TorBox works the same way.",
+        "AllDebrid and Real-Debrid are asked only when you press Play, so Play takes a second or two longer. Everything else works the same.",
+        "You can connect more than one. Dream OS asks them in the order you choose.",
+    ), listOf("pm", "tb"))
+
+    /**
+     * A page to read on the TV: the words, then each service's sign-up page as a QR code to scan with a phone, and
+     * Done. Fits one screen: nothing to scroll, nothing nested to open.
+     */
+    private fun explain(title: String, lines: List<String>, services: List<String>): SetupScreen {
+        val s = SetupScreen(ui, title, null)
+        for ((i, l) in lines.withIndex()) s.add(parts.note(l, 16f), if (i == 0) 0 else 10)
+        val codes = LinearLayout(ctx).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.TOP }
+        for ((i, key) in services.withIndex()) {
+            val col = LinearLayout(ctx).apply { orientation = LinearLayout.VERTICAL; gravity = Gravity.CENTER_HORIZONTAL }
+            ui.qr("https://" + (if (key == "pm") "www." else "") + SetupBrand.site(key), 96)?.let { col.addView(it, LinearLayout.LayoutParams(96.dp, 96.dp)) }
+            col.addView(k.label(AccountHealth.name(key), 15f, SetupBrand.TEXT, k.semibold, lines = 0).apply { gravity = Gravity.CENTER },
+                LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT).apply { topMargin = 8.dp })
+            col.addView(k.label(SetupBrand.site(key), 13f, SetupBrand.DIM, k.font, lines = 0).apply { gravity = Gravity.CENTER },
+                LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT).apply { topMargin = 2.dp })
+            codes.addView(col, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f).apply { if (i > 0) marginStart = 16.dp })
         }
+        // Two codes stay code-sized at the start of the line instead of spreading across it.
+        if (services.size < 4) codes.addView(View(ctx), LinearLayout.LayoutParams(0, 1, (4 - services.size).toFloat()))
+        s.add(codes.apply { layoutParams = LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT) }, 18)
+        val done = parts.pill("Done", true) { panel.pop() }
+        s.add(parts.pills(done), 20)
+        s.focus = { done }
         return s
     }
 
@@ -1069,6 +1191,8 @@ internal class ScraperPages(
     private val ctx: Context,
     private val ui: SetupUi,
     private val panel: SetupPanel,
+    /** First-run setup: a new repository starts on the recommended providers (the default a beginner wants). */
+    private val inSetup: Boolean = false,
     private val onChange: () -> Unit,
 ) {
     private val k = ui.k
@@ -1076,6 +1200,49 @@ internal class ScraperPages(
     private val Int.dp get() = Ui.dp(ctx, this)
     private fun app() = ctx.applicationContext
     private var lastUrl = ""
+
+    /**
+     * Setup's summary: no repository yet, what an address looks like; otherwise each repository and how many
+     * providers are on. Adding, managing and help are the wizard's buttons ([addRepo], [overview], [help]).
+     */
+    fun summary(): SetupScreen {
+        val s = SetupScreen(ui, null, null)
+        val rows = ScreenRows(s)
+        var shape = ""
+        fun paint() {
+            val st = try { Scrapers.status(app()) } catch (e: Exception) { Scrapers.Status(emptyList(), emptyList(), false) }
+            val now = st.repos.joinToString { it.id } + "|" + st.providers.count { it.enabled }
+            if (now == shape) return
+            shape = now
+            rows.clear()
+            if (st.repos.isEmpty()) {
+                s.view("k:ex", 0) { parts.section("Repository Addresses Look Like This", null) }
+                s.view("examples", 12) { SetupGuide.addressExamples(ctx, k) }
+                return
+            }
+            for ((i, r) in st.repos.withIndex()) {
+                rows.row("r:${r.id}", if (i == 0) 0 else 8) { parts.row(SetupArt.monogram(ctx, r.name.take(1).uppercase())) }
+                    .set(r.name, listOfNotNull(r.version.takeIf { it.isNotBlank() }?.let { "Version $it" }, host(r.url)).joinToString(" · "),
+                        "Installed", SetupBrand.GREEN, BrandRow.Mark.OK)
+            }
+            val on = st.providers.count { it.enabled }
+            val rec = try { Scrapers.isRecommended(app()) } catch (e: Exception) { false }
+            rows.row("prov", 8) { parts.row() }.set("Providers", if (rec) "Recommended Settings" else null,
+                "$on of ${st.providers.size} On", if (on > 0) SetupBrand.GREEN else SetupBrand.RED, if (on > 0) BrandRow.Mark.OK else BrandRow.Mark.WARN)
+        }
+        val listener: () -> Unit = { ui.main.post { if (s.alive) { paint(); onChange() } } }
+        s.onShow = { Scrapers.addListener(listener); paint(); onChange() }
+        s.onHide = { Scrapers.removeListener(listener) }
+        s.onResume = { paint() }
+        return s
+    }
+
+    /** Setup's Help: the steps for adding a repository and the trouble tips. */
+    fun help(): SetupScreen {
+        val s = SetupScreen(ui, "Help With Scrapers", null)
+        helpRows(ScreenRows(s))
+        return s
+    }
     /** A repository was just added: back on the overview, focus lands on Use Recommended Settings. */
     private var focusRecommended = false
 
@@ -1101,7 +1268,7 @@ internal class ScraperPages(
                 s.view("none", 10) { parts.note("No repository yet. Add the one you use by typing its address. Repositories are shared by the people who make them, usually on a web page or on GitHub.", 15f) }
                 s.view("examples", 12) { SetupGuide.addressExamples(ctx, k) }
                 rows.row("add", 14) { parts.row(null, chevron = true) { panel.push(addRepo()) } }
-                    .set("Add Scraper Repository", "Type Its Address, Like Adding a Repository on Other Media Apps")
+                    .set("Add Scraper Repository", "Type its address, like adding a repository on other media apps")
                 helpRows(rows)
             } else {
                 s.view("k:repo", 0) { parts.section(if (st.repos.size == 1) "Your Repository" else "Your Repositories", true) }
@@ -1113,7 +1280,7 @@ internal class ScraperPages(
                 rows.row("add", 8) { parts.row(null, chevron = true) { panel.push(addRepo()) } }.set("Add Another Repository")
                 helpRows(rows)
                 val on = st.providers.count { it.enabled }
-                (s.view("k:prov", 24) { parts.section("", null) } as LinearLayout).let { (it.getChildAt(0) as TextView).text = "PROVIDERS · $on OF ${st.providers.size} ON" }
+                (s.view("k:prov", 24) { parts.section("", null) } as LinearLayout).let { (it.getChildAt(0) as TextView).text = "Providers  ·  $on of ${st.providers.size} On" }
                 if (st.providers.isEmpty()) s.view("noprov", 10) { parts.note("This repository didn't add any providers yet. Try Update, or add another repository.", 14f) }
                 else {
                     // Use Recommended Settings: the fastest, most reliable set in one press (Scrapers.recommended).
@@ -1148,8 +1315,8 @@ internal class ScraperPages(
                 }
             }
         }
-        val listener: () -> Unit = { ui.main.post { if (s.alive) { paint(); onChange() } } }
-        s.onShow = { Scrapers.addListener(listener); paint(); onChange() }
+        val listener: () -> Unit = { readModules(); ui.main.post { if (s.alive) { paint(); onChange() } } }
+        s.onShow = { Scrapers.addListener(listener); readModules(); paint(); onChange() }
         s.onHide = { Scrapers.removeListener(listener); focusRecommended = false }
         s.onResume = { paint() }
         s.focus = { (if (focusRecommended) rows.get("rec") else null) ?: rows.get("add") }
@@ -1193,11 +1360,15 @@ internal class ScraperPages(
                         Log.w(SetupBrand.TAG, "Setup: step Scrapers, added ${r.repo.name} ${r.repo.version}")
                         bar.set(1f)
                         val n = Scrapers.status(app()).providers.size
-                        focusRecommended = n > 0 // back on the overview, Use Recommended Settings is focused first
-                        row.set("Added ${r.repo.name}", if (n > 0) "$n Providers Ready" else "Installed", mark = BrandRow.Mark.OK)
-                        val done = parts.pill("Done", true) { panel.pop() }
-                        s.view("done", 22) { parts.pills(done) }
-                        done.requestFocus()
+                        focusRecommended = n > 0 && !inSetup // back on the overview, Use Recommended Settings is focused first
+                        row.set("Added ${r.repo.name}", if (n > 0) "$n providers ready" else "Installed", mark = BrandRow.Mark.OK)
+                        // In setup the recommended providers go on by themselves (one press saved; Manage Scrapers changes them).
+                        if (inSetup && n > 0 && !Scrapers.isRecommended(app())) Net.run {
+                            try { Scrapers.applyRecommended(app()) } catch (e: Exception) { Log.w(SetupBrand.TAG, "Setup: recommended providers failed: $e") }
+                            ui.main.post { onChange() }
+                        }
+                        // The result shows briefly, then the page goes back by itself: no Done to press.
+                        ui.main.postDelayed({ if (s.alive && panel.top === s) panel.pop() }, 1500)
                     }
                     is Scrapers.AddResult.Failed -> {
                         Log.w(SetupBrand.TAG, "Setup: step Scrapers, add failed: ${r.message}")
@@ -1216,6 +1387,10 @@ internal class ScraperPages(
     }
 
     /** Installed scraper modules as (name, version), read from their addon.xml in Dream OS's private scraper folder. */
+    /** [installedModules], read in the background while the list shows, so a repository page opens without disk reads. */
+    @Volatile private var modules: List<Pair<String, String>>? = null
+    private fun readModules() = Net.run { modules = installedModules() }
+
     private fun installedModules(): List<Pair<String, String>> = try {
         (java.io.File(app().filesDir, "scrapers/home/addons").listFiles() ?: emptyArray()).mapNotNull { d ->
             val x = java.io.File(d, "addon.xml").takeIf { it.isFile }?.readText()?.take(4000) ?: return@mapNotNull null
@@ -1232,7 +1407,7 @@ internal class ScraperPages(
         val rows = ScreenRows(s)
         var updating = false
         // The scraper module's own version (e.g. CocoScrapers 1.0.45), not the repository wrapper's (1.0.1).
-        val modules = installedModules()
+        val modules = this.modules ?: installedModules()
         if (modules.isEmpty()) rows.row("v", 0) { parts.row() }.set("Version", null, r.version.ifBlank { "Unknown" })
         else for ((i, m) in modules.withIndex()) rows.row("m$i", if (i == 0) 0 else 8) { parts.row() }.set(m.first, "Installed", "Version ${m.second}")
         rows.row("a", 8) { parts.row() }.set("Address", r.url)
@@ -1256,8 +1431,8 @@ internal class ScraperPages(
                 }
             }
         } }
-        upd.set("Update", "Gets the Newest Version of Its Providers")
-        rows.row("remove", 8) { parts.row(null, chevron = true) { panel.push(confirmRemove(r)) } }.set("Remove Repository", "Its Providers Are Removed Too")
+        upd.set("Update", "Gets the newest version of its providers")
+        rows.row("remove", 8) { parts.row(null, chevron = true) { panel.push(confirmRemove(r)) } }.set("Remove Repository", "Its providers are removed too")
         s.focus = { rows.get("update") }
         return s
     }
@@ -1286,9 +1461,8 @@ internal class ScraperPages(
 object DreamSettingsPage {
     const val ACCOUNTS = "accounts"
     const val SCRAPERS = "scrapers"
-    private var openPage: View? = null
 
-    fun isOpen() = openPage != null
+    fun isOpen() = DreamPanelPage.isOpen()
 
     /** The Settings row values: short status words. */
     fun accountsValue(ctx: Context): String {
@@ -1308,17 +1482,16 @@ object DreamSettingsPage {
         }
     }
 
-    /** Opens [kind] ([ACCOUNTS] or [SCRAPERS]) over the current screen; [onClose] runs once it's gone. */
-    fun open(a: Activity, kind: String, onClose: (() -> Unit)? = null) {
-        if (openPage != null) return
-        val k = PremiumKit(a)
-        val ui = SetupUi(a, k)
-        val panel = SetupPanel(ui)
-        val parts = SetupParts(a, k)
-        val back = a.currentFocus
+    /** Opens [kind] ([ACCOUNTS] or [SCRAPERS]) over the current screen ([DreamPanelPage]); [onClose] runs once it's gone. */
+    fun open(a: Activity, kind: String, onClose: (() -> Unit)? = null) = DreamPanelPage.open(a,
+        if (kind == ACCOUNTS) SetupArt.Kind.ACCOUNTS else SetupArt.Kind.SCRAPERS,
+        if (kind == ACCOUNTS) "Accounts" else "Scrapers",
+        if (kind == ACCOUNTS) "Your debrid services find and stream your movies and shows in high quality. Connect, check or disconnect them here. Trakt is optional."
+        else "Scrapers search the web for streams of what you pick. Dream OS doesn't include any: add the repository you use, and choose its providers.",
+        onClose) { ui, panel, left ->
         val dp = { v: Int -> Ui.dp(a, v) }
-        lateinit var root: OverlayRoot
-        val status = parts.note("", 15f).apply { setPadding(0, 0, 0, 0) }
+        val status = SetupParts(a, ui.k).note("", 15f).apply { setPadding(0, 0, 0, 0) }
+        left.addView(status, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { topMargin = dp(16) })
         lateinit var accounts: AccountsPages
         fun paintStatus() {
             val (t, c) = if (kind == ACCOUNTS) {
@@ -1336,48 +1509,10 @@ object DreamSettingsPage {
             status.compoundDrawablePadding = dp(10)
         }
         accounts = AccountsPages(a, ui, panel, inSetup = false) { paintStatus() }
-        fun close() {
-            val r = root
-            openPage = null
-            r.uncover()
-            r.animate().alpha(0f).setDuration(Ui.OVERLAY_OUT).setInterpolator(Ui.EXIT).withEndAction {
-                panel.release()
-                (r.parent as? ViewGroup)?.removeView(r)
-            }.start()
-            if (back != null && back.isAttachedToWindow) back.requestFocus()
-            onClose?.invoke()
-        }
-        root = OverlayRoot(a) { if (!panel.pop()) close() }
-        root.isClickable = true
-        SetupBrand.backdrop(root)
-        root.coverBelow()
-        val row = LinearLayout(a).apply {
-            orientation = LinearLayout.HORIZONTAL
-            setPadding(dp(PremiumKit.EDGE), dp(44), dp(56), dp(36))
-        }
-        val left = LinearLayout(a).apply { orientation = LinearLayout.VERTICAL }
-        left.addView(SetupArt(a, if (kind == ACCOUNTS) SetupArt.Kind.ACCOUNTS else SetupArt.Kind.SCRAPERS), LinearLayout.LayoutParams(dp(132), dp(132)))
-        left.addView(k.label("SETTINGS", 12f, Ui.alpha(Color.WHITE, 0.62f), k.semibold, Ui.TRACK_CAPS), LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT).apply { topMargin = dp(18) })
-        left.addView(k.label(if (kind == ACCOUNTS) "Accounts" else "Scrapers", 32f, SetupBrand.TEXT, k.semibold, Ui.TRACK_TITLE, lines = 2),
-            LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT).apply { topMargin = dp(8) })
-        left.addView(parts.note(if (kind == ACCOUNTS)
-            "Your debrid services find and stream your movies and shows in high quality. Connect, check or disconnect them here. Trakt is optional."
-            else "Scrapers search the web for streams of what you pick. Dream OS doesn't include any: add the repository you use, and choose its providers.", 16f)
-            .apply { setPadding(0, 0, 0, 0) }, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { topMargin = dp(12) })
-        left.addView(status, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { topMargin = dp(16) })
-        row.addView(left, LinearLayout.LayoutParams(0, WRAP_CONTENT, 0.36f))
-        row.addView(panel, LinearLayout.LayoutParams(0, MATCH_PARENT, 0.64f).apply { marginStart = dp(56) })
-        root.addView(row, FrameLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT, Gravity.TOP))
-        Ui.unclip(row)
-        (a.window.decorView as FrameLayout).addView(root, MATCH_PARENT, MATCH_PARENT)
-        openPage = root
-        root.alpha = 0f
-        root.animate().alpha(1f).setDuration(Ui.OVERLAY_IN).setInterpolator(Ui.EASE).start()
-        Log.w(SetupBrand.TAG, "Setup: Settings › ${if (kind == ACCOUNTS) "Accounts" else "Scrapers"} opened")
-        panel.push(if (kind == ACCOUNTS) accounts.overview() else ScraperPages(a, ui, panel) { paintStatus() }.overview(), animate = false)
+        val first = if (kind == ACCOUNTS) accounts.overview() else ScraperPages(a, ui, panel) { paintStatus() }.overview()
         paintStatus()
+        first
     }
 }
 
 /** Unused drawable helper kept local (transparent rest face for picture-like controls). */
-internal fun clearFace(): Drawable = ColorDrawable(Color.TRANSPARENT)

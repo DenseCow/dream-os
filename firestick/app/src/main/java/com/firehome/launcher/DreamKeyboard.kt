@@ -38,6 +38,10 @@ class QueryField(ctx: Context) : EditText(ctx) {
     var onSearch: ((String) -> Unit)? = null
     /** Shows (true) or clears (false) the "Alexa is listening" state on the owning page. */
     var onAlexa: ((Boolean) -> Unit)? = null
+    /** Alexa has heard: the owning page shows it's searching, and gives the part of it that keeps moving. */
+    var onAlexaSearching: (() -> ScreenCover.Live?)? = null
+    /** Draws the owning page as it will look once Alexa has heard, without showing it (see CinemaSearch). */
+    var drawAsSearching: (((View?) -> Unit) -> Unit)? = null
     var caretColor = 0
     var caretShown = true
         set(v) { if (field != v) { field = v; invalidate() } }
@@ -229,7 +233,7 @@ class DreamKeyboard(
         last.addView(modeKey, keyParams(1, voice != null))
         last.addView(glyphKey(KeyGlyph.SPACE, "Space") { field.insert(" ") }, keyParams(if (voice != null) 2 else 3, true))
         last.addView(deleteKey(), keyParams(1, true))
-        last.addView(key("clear", 1) { field.setQuery("") }.apply { textSize = Ui.T_CAPTION; typeface = kit.semibold }, keyParams(1, true))
+        last.addView(key("Clear", 1) { field.setQuery("") }.apply { textSize = Ui.T_CAPTION; typeface = kit.semibold }, keyParams(1, true))
     }
 
     /** The key to land on when the keyboard gets focus. */
@@ -324,7 +328,7 @@ class DreamKeyboard(
         }
         val ch = e.unicodeChar
         if (ch != 0 && !Character.isISOControl(ch) && code !in NAV) {
-            field.insert(String(Character.toChars(ch)).lowercase())
+            field.insert(String(Character.toChars(ch))) // as typed: keys and addresses can need capitals
             return true
         }
         return false
@@ -453,7 +457,9 @@ class DreamKeyboard(
 
 /**
  * The listening light in the search field: a mic disc that breathes with the voice. It only moves
- * when the audio level changes (no looping animation), and rests still between words.
+ * when the audio level changes, and rests still between words. While Alexa looks up what it heard
+ * ([searching]) the glow breathes on its own, timed by the clock so a copy of it on the hand-off's
+ * cover (AlexaSearch) breathes in step with this one.
  */
 class ListenIndicator(private val kit: PremiumKit) : View(kit.ctx) {
     private val d = kit.ctx.resources.displayMetrics.density
@@ -467,10 +473,13 @@ class ListenIndicator(private val kit: PremiumKit) : View(kit.ctx) {
         set(v) {
             if (field == v) return
             field = v
-            if (!v) setLevel(0f)
+            if (!v) { setLevel(0f); searching = false }
             glyph.color = if (v) kit.onSelect else Ui.alpha(kit.text, 0.55f)
             invalidate()
         }
+    /** Alexa has heard and the search is on its way: the glow breathes until it lands (only while [active]). */
+    var searching = false
+        set(v) { if (field != v) { field = v; invalidate() } }
 
     init { glyph.color = Ui.alpha(kit.text, 0.55f) }
 
@@ -497,10 +506,21 @@ class ListenIndicator(private val kit: PremiumKit) : View(kit.ctx) {
         val cy = height / 2f
         val r = min(width, height) / 2f
         if (active) {
-            halo.color = Ui.alpha(kit.select, 0.18f + 0.22f * level)
-            canvas.drawCircle(cx, cy, r * (0.62f + 0.38f * level), halo)
+            val l = if (searching) breath() else level
+            halo.color = Ui.alpha(kit.select, 0.18f + 0.22f * l)
+            canvas.drawCircle(cx, cy, r * (0.62f + 0.38f * l), halo)
             canvas.drawCircle(cx, cy, r * 0.56f, disc)
+            if (searching) postInvalidateOnAnimation()
         }
         glyph.draw(canvas)
+    }
+
+    private fun breath(): Float {
+        val t = (android.os.SystemClock.uptimeMillis() % BREATH_MS) / BREATH_MS.toFloat()
+        return 0.5f - 0.5f * kotlin.math.cos(t * 2f * Math.PI.toFloat())
+    }
+
+    private companion object {
+        const val BREATH_MS = 1400L
     }
 }

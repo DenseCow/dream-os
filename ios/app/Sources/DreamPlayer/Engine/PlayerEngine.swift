@@ -2,9 +2,8 @@ import Foundation
 import UIKit
 import AVFoundation
 
-// The seam between Dream Player's screen and whatever decodes the video (fire-home PlayerContract.kt
-// `PlayerEngine`). The screen never knows which engine it has: libmpv (MPVEngine, the default: MKV, HEVC,
-// DTS, TrueHD, ASS subtitles) or AVPlayer (AVEngine, the fallback when libmpv isn't linked).
+// The seam between Dream Player's screen and what decodes the video (fire-home PlayerContract.kt `PlayerEngine`):
+// libmpv (MPVEngine: MKV, HEVC, DTS, TrueHD, ASS subtitles).
 
 /// What to play. `headers` are request headers (a URL may also carry them after '|', as on the Fire TV).
 public struct EngineSource: Sendable, Hashable {
@@ -208,7 +207,6 @@ public protocol PlayerEngine: AnyObject {
 
 /// What Picture in Picture floats for an engine.
 public enum PiPContent {
-    case playerLayer(AVPlayerLayer)
     case sampleBuffer(AVSampleBufferDisplayLayer)
 }
 
@@ -227,21 +225,7 @@ public extension PlayerEngine {
     func refitPicture() {}
 }
 
-/// Makes the best engine this build has.
 @MainActor
 public enum Engines {
-    public static func make() -> PlayerEngine {
-        #if canImport(Libmpv)
-        return MPVEngine()
-        #else
-        return AVEngine()
-        #endif
-    }
-    public static var hasMPV: Bool {
-        #if canImport(Libmpv)
-        return true
-        #else
-        return false
-        #endif
-    }
+    public static func make() -> PlayerEngine { MPVEngine() }
 }

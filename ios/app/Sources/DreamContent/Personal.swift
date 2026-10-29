@@ -25,7 +25,7 @@ enum HomePicks {
         async let tb = (try? await Tmdb.list("/trending/all/week", "&page=2")) ?? []
         let (a, b) = (await ta, await tb)
         var seen = Set<String>()
-        let pool = (a + b).filter { $0.backdropPath != nil && RowMix.released($0) && !RowMix.isAnime($0) && !$0.adult && seen.insert($0.key).inserted }
+        let pool = (a + b).filter { $0.backdropPath != nil && RowMix.released($0) && !RowMix.animeHidden($0) && !$0.adult && seen.insert($0.key).inserted }
         return pool.enumerated().map { (i, t) in
             (t, (1.0 - Double(i) / 40.0) + (t.genreIds.contains(where: m.genres.contains) ? 1 : 0) + (t.kind == .movie ? 0.6 * m.movies : 0)
                 + 0.8 * taste.strength * taste.affinity(t) + 0.4 * Taste.quality(t))
@@ -170,7 +170,7 @@ actor NewEpisodes {
         let keys = Set(recent.map(\.key))
         let firstRun = DreamStore.shared.get([String].self, "newep_known", perProfile: true) == nil
         var f = fresh
-        if !firstRun { for k in keys where !known.contains(k) { f.insert(k) } }
+        if !firstRun { let seen = known; for k in keys where !seen.contains(k) { f.insert(k) } }
         DreamStore.shared.set(Array(keys), "newep_known", perProfile: true)
         DreamStore.shared.set(Array(f.intersection(keys)), "newep_fresh", perProfile: true)
         return (recent, upcoming)
@@ -221,5 +221,4 @@ actor NewEpisodes {
         return (recent, upcoming)
     }
 
-    private static func same(_ first: Int, _ last: Int) -> (Int, Int) { (min(first, last), last) }
 }

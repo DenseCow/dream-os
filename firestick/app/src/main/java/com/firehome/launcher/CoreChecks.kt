@@ -19,7 +19,8 @@ object CoreChecks {
     const val SCRAPERS = "scrapers"
     /** Health pages refresh often; the account is asked at most this often. */
     private const val CORE_TTL = 60_000L
-    @Volatile private var coreCache: Triple<Long, String, List<Check>>? = null
+    /** The account check only (network); the scrapers line is read fresh each time (local, cheap). */
+    @Volatile private var coreCache: Triple<Long, String, Check>? = null
 
     fun dreamCore(ctx: Context): List<Check> {
         val app = ctx.applicationContext
@@ -27,16 +28,14 @@ object CoreChecks {
         val acc = DebridAccounts.get(app)
         // The linked account changed: asked again at once, whatever the cache holds.
         val key = "${listOf(acc?.allDebrid, acc?.premiumize, acc?.torBox, acc?.realDebrid).hashCode()}"
-        coreCache?.let { (at, k, list) -> if (k == key && now - at < CORE_TTL) return list }
-        val out = ArrayList<Check>()
-        out += if (acc?.any != true) Check(DREAM_CORE, TITLE, State.FIX, "No Debrid Service Linked · Add One in Settings › Accounts")
-            else account(app, acc)
-        out += scrapers(app)
-        coreCache = Triple(now, key, out)
-        return out
+        val core = coreCache?.takeIf { (at, k, _) -> k == key && now - at < CORE_TTL }?.third
+            ?: (if (acc?.any != true) noAccount() else account(app, acc)).also { coreCache = Triple(now, key, it) }
+        return listOf(core, scrapers(app))
     }
 
     private const val TITLE = "Dream Core Resolver"
+
+    private fun noAccount() = Check(DREAM_CORE, TITLE, State.FIX, "No Debrid Service Linked · Add One in Settings › Accounts")
 
     /** One service's account call; [read] gives true (signed in, plan active), false (refused, no plan) or null (no answer to judge by). */
     private class Service(val name: String, val url: String, val token: String, val read: (DebridHttp.Reply) -> Boolean?)
@@ -63,7 +62,7 @@ object CoreChecks {
             acc.realDebrid?.let { t -> Service("Real-Debrid", "https://api.real-debrid.com/rest/1.0/user", t) { r ->
                 if (r.ok) r.json().optString("type") == "premium" else null
             } },
-        ).firstOrNull() ?: return Check(DREAM_CORE, TITLE, State.FIX, "No Debrid Service Linked · Add One in Settings › Accounts")
+        ).firstOrNull() ?: return noAccount()
         val ok = try { s.read(DebridHttp.get(s.url, s.token, timeoutMs = 4_000)) } catch (e: Exception) { null }
         Log.w(TAG, "System health: Dream Core account (${s.name}) ${when (ok) { true -> "valid"; false -> "refused"; null -> "not checked" }}")
         return when (ok) {

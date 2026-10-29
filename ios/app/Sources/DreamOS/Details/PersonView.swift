@@ -73,8 +73,8 @@ struct PersonView: View {
             CastPortrait(member: portraitMember, size: 96)
             VStack(alignment: .leading, spacing: 5) {
                 if !person.character.isEmpty {
-                    Text("As \(person.character)".uppercased())
-                        .font(Cinema.Fonts.kicker).tracking(Cinema.kickerTracking)
+                    Text("As \(person.character)")
+                        .font(Cinema.Fonts.kicker)
                         .foregroundStyle(Palette.textSecondary).lineLimit(1)
                 }
                 Text(details?.name.isEmpty == false ? details!.name : person.name)

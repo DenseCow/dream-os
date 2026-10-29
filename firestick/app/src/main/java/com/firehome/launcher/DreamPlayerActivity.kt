@@ -92,6 +92,8 @@ class DreamPlayerActivity : Activity(), PlayerHost {
         private const val REAL_WATCH_MS = 90_000L
         /** Quiet switches to the next source per title before the error screen shows. */
         private const val SILENT_TRIES = 2
+        /** Sound this long with no picture counts as a failed source (a video track no decoder here can start). */
+        private const val NO_PICTURE_MS = 12_000L
         private const val DAMAGED_TEXT = "This file is damaged or incomplete. Try Again plays another copy."
 
         /** The player window is on screen (MainActivity skips its process-wide GPU trim while it is). */
@@ -222,6 +224,7 @@ class DreamPlayerActivity : Activity(), PlayerHost {
     private var sessionSrc: ExoEngine.Source? = null
     private var sessionStartMs = 0L
     private var retriedFromTop = false
+    private var noPictureReported = false
     /** Quiet switches to the next source for the title in [silentKey] ([silentFallback]). */
     private var silentTries = 0
     private var silentKey: String? = null
@@ -303,12 +306,18 @@ class DreamPlayerActivity : Activity(), PlayerHost {
                 if (!trailerMode) request?.let { r -> rawUrl?.let { u -> try { NativeResolver.firstFrame(this, r, u) } catch (e: Exception) {} } }
                 if (!trailerMode) PlaybackTrim.started(this) // background work waits, idle memory goes back (AirPods' audio needs the headroom)
                 // Played with the user's filters set aside (only a CAM copy, say): said once as the picture starts.
+                var noted = false
                 PlayFlow.session?.takeIf { it.isFor(request) }?.let { s ->
                     s.note?.let { n ->
                         s.note = null
+                        noted = true
                         overlay.notice(n, if (n == PlayFlow.CAM_NOTE) Availability.Status.CAM.tint else Ui.alpha(Color.WHITE, 0.92f))
                     }
                 }
+                // The languages this copy's audio carries, for the title page's language pills and Dream Core's ranking.
+                if (!trailerMode) request?.let { r -> LangPills.heard(this, r, rawUrl, exo.tracks("audio")) }
+                // Audio in another language than the viewer's (a new anime episode in Japanese): its subtitles come on.
+                if (!trailerMode) overlay.audioCheck(dreamSubs, after = noted)
             }
         }
         exo.addListener(engineListener)
@@ -343,7 +352,8 @@ class DreamPlayerActivity : Activity(), PlayerHost {
         if (released) {
             // Back after being hidden (screensaver, Home): same spot, paused, controls up.
             released = false
-            if (exo.hasSource && exo.player == null) {
+            // A source that failed stays failed: re-preparing it would lift the error screen at its first frame.
+            if (exo.hasSource && exo.player == null && exo.error == null) {
                 exo.restore(playWhenReady = false)
                 if (componentsOn) overlay.setControlsVisible(true)
             }
@@ -383,6 +393,7 @@ class DreamPlayerActivity : Activity(), PlayerHost {
         saveProgress(force = true)
         Trakt.onPlayerClosed(this)
         stopComponents()
+        dreamSubs.end()
         if (waiting) PlayFlow.cancel(this)
         exo.release()
         session?.run { isActive = false; release() }
@@ -586,6 +597,7 @@ class DreamPlayerActivity : Activity(), PlayerHost {
         sessionSrc = src
         sessionStartMs = startMs
         retriedFromTop = false
+        noPictureReported = false
         // On the row for this title, and not for a later episode: an older episode started by mistake (a stale card, a
         // misplaced press) must play 90 s for real before it takes the show back from where the viewer is.
         onRow = req != null && req.tmdbId > 0 && (if (req.type == "episode") "tv:" else "movie:").let { p ->
@@ -656,6 +668,13 @@ class DreamPlayerActivity : Activity(), PlayerHost {
         }
 
         override fun onProgress(positionMs: Long) {
+            if (!firstFrame && !trailerMode && !noPictureReported && exo.isPlaying && positionMs - sessionStartMs > NO_PICTURE_MS) {
+                noPictureReported = true
+                Log.w(TAG, "dream player: sound for ${(positionMs - sessionStartMs) / 1000} s and no picture")
+                // Through the engine, so the overlay hears it too (no Pause Screen over the error screen).
+                exo.fail("The picture didn't start. Try another source.")
+                return
+            }
             // Real watching time: only small forward steps while playing count (a seek or a skip jumps and adds nothing).
             if (exo.isPlaying) {
                 if (lastTickPos >= 0) (positionMs - lastTickPos).takeIf { it in 1 until 2_500 }?.let { realWatchedMs += it }
@@ -946,7 +965,8 @@ class DreamPlayerActivity : Activity(), PlayerHost {
             @Suppress("DEPRECATION")
             setFlags(MediaSession.FLAG_HANDLES_MEDIA_BUTTONS or MediaSession.FLAG_HANDLES_TRANSPORT_CONTROLS)
             setCallback(object : MediaSession.Callback() {
-                override fun onPlay() { if (!waiting) exo.play() }
+                // Not under the curtain: a failed source would start again behind its error screen.
+                override fun onPlay() { if (!waiting && !curtain.isShowing) exo.play() }
                 override fun onPause() { exo.pause() }
                 override fun onStop() { exo.pause() }
                 override fun onSeekTo(pos: Long) { exo.seekTo(pos) }

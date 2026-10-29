@@ -28,7 +28,10 @@ import androidx.media3.exoplayer.DefaultLoadControl
 import androidx.media3.exoplayer.DefaultRenderersFactory
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.analytics.AnalyticsListener
+import androidx.media3.exoplayer.Renderer
 import androidx.media3.exoplayer.audio.AudioCapabilities
+import androidx.media3.exoplayer.mediacodec.MediaCodecSelector
+import androidx.media3.exoplayer.video.VideoRendererEventListener
 import androidx.media3.exoplayer.audio.AudioSink
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.exoplayer.trackselection.DefaultTrackSelector
@@ -82,9 +85,9 @@ class ExoEngine(context: Context) : PlayerEngine {
     private var surfaceView: SurfaceView? = null
     private var speed = 1f
     private var savedPosition = 0L
-    private var savedPlay = true
     private var retries = 0
     private var audioErrorShown = false
+    private var videoErrorShown = false
     private var lastError: String? = null
     private var loadedAt = 0L
 
@@ -119,9 +122,9 @@ class ExoEngine(context: Context) : PlayerEngine {
         forceHls = false
         retries = 0
         audioErrorShown = false
+        videoErrorShown = false
         lastError = null
         savedPosition = startMs
-        savedPlay = playWhenReady
         releaseExo()
         prepare(startMs, playWhenReady)
     }
@@ -136,7 +139,6 @@ class ExoEngine(context: Context) : PlayerEngine {
     fun releasePlayer() {
         val p = player ?: return
         savedPosition = p.currentPosition
-        savedPlay = p.playWhenReady
         releaseExo()
     }
 
@@ -297,9 +299,18 @@ class ExoEngine(context: Context) : PlayerEngine {
                     .setEnableFloatOutput(enableFloatOutput)
                     .setEnableAudioTrackPlaybackParams(enableAudioTrackPlaybackParams)
                     .build()
+
+            // Video stays on the hardware decoders: FFmpeg's software video would crawl on a stick (a file too big for
+            // the hardware moves on to the next source instead).
+            override fun buildVideoRenderers(context: Context, extensionRendererMode: Int, mediaCodecSelector: MediaCodecSelector,
+                                             enableDecoderFallback: Boolean, eventHandler: Handler, eventListener: VideoRendererEventListener,
+                                             allowedVideoJoiningTimeMs: Long, out: ArrayList<Renderer>) =
+                super.buildVideoRenderers(context, EXTENSION_RENDERER_MODE_OFF, mediaCodecSelector, enableDecoderFallback,
+                    eventHandler, eventListener, allowedVideoJoiningTimeMs, out)
         }
             .setEnableDecoderFallback(true)
-            .setExtensionRendererMode(DefaultRenderersFactory.EXTENSION_RENDERER_MODE_OFF)
+            // FFmpeg audio only when the stick can neither decode nor pass a track through (DD+ on the Fire TV Stick HD).
+            .setExtensionRendererMode(DefaultRenderersFactory.EXTENSION_RENDERER_MODE_ON)
         // Debrid streams are fast but bursty: begin after 1 s (the first frame sooner, like a streaming app),
         // 3 s after a stall, then keep up to ~2 min ahead, capped in bytes (Java heap is 192 MB on this stick;
         // ExoPlayer's buffer lives there).
@@ -463,24 +474,13 @@ class ExoEngine(context: Context) : PlayerEngine {
         // (Remembering the choice for the next title is the controls' job: PlayerPrefs, read in buildPlayer.)
     }
 
-    override fun addExternalSubtitle(uri: String, language: String?, label: String?) {
-        val path = uri
-        if (subs.any { it.uri == path }) return
-        subs.add(SubtitleFile(path, language ?: StreamUrls.langFromName(path), label))
-        val p = player ?: return
-        // Subtitle files are part of the media item: swap it in place (keeps the position; a brief rebuffer).
-        val playing = p.playWhenReady
-        p.setMediaItem(mediaItem(), false)
-        p.prepare()
-        p.playWhenReady = playing
-    }
-
     /** Several at once, with one swap of the media item (Dream Subtitles: [DreamSubtitles.Session] picks a moment it can't be seen). */
     fun addExternalSubtitles(list: List<SubtitleFile>) {
         val add = list.filter { s -> subs.none { it.uri == s.uri } }
         if (add.isEmpty()) return
         subs.addAll(add)
         val p = player ?: return
+        // Subtitle files are part of the media item: swap it in place (keeps the position; a brief rebuffer).
         val playing = p.playWhenReady
         p.setMediaItem(mediaItem(), false)
         p.prepare()
@@ -532,6 +532,7 @@ class ExoEngine(context: Context) : PlayerEngine {
         override fun onTracksChanged(tracks: Tracks) {
             logAudioTracks(tracks)
             checkAudio(tracks)
+            checkVideo(tracks)
             fire { it.onTracks() }
             onFormat?.invoke()
         }
@@ -621,14 +622,37 @@ class ExoEngine(context: Context) : PlayerEngine {
 
     /** Audio exists but none of it can be decoded here (no passthrough for DTS/TrueHD): say so instead of playing silent. */
     private fun checkAudio(tracks: Tracks) {
-        if (audioErrorShown) return
+        if (audioErrorShown || videoErrorShown) return
         val audio = tracks.groups.filter { it.type == C.TRACK_TYPE_AUDIO }
         if (audio.isEmpty() || audio.any { g -> (0 until g.length).any { g.isTrackSupported(it) } }) return
         audioErrorShown = true
         val name = audio.firstOrNull()?.takeIf { it.length > 0 }?.getTrackFormat(0)?.let { audioCodecLong(it) } ?: "this format"
-        val msg = "This source's audio ($name) can't play on this TV. Try another source."
+        fail("This source's audio ($name) can't play on this TV. Try another source.")
+    }
+
+    /**
+     * A picture bigger than any decoder here takes (a 4K file on the 1080p Fire TV Stick HD): an error, so the player
+     * moves on to the next source instead of playing sound behind the curtain. Other "exceeds" verdicts still get tried.
+     */
+    private fun checkVideo(tracks: Tracks) {
+        // One failure per source: a copy with both bad audio and bad video mustn't use up two of the quiet retries.
+        if (videoErrorShown || audioErrorShown || DeviceVideo.plays4k(ctx)) return
+        val video = tracks.groups.filter { it.type == C.TRACK_TYPE_VIDEO }
+        if (video.isEmpty() || video.any { g -> (0 until g.length).any { g.isTrackSupported(it) } }) return
+        val f = video.first().takeIf { it.length > 0 }?.getTrackFormat(0) ?: return
+        if (maxOf(f.width, f.height) <= 1920 && minOf(f.width, f.height) <= 1088) return
+        videoErrorShown = true
+        Log.w(TAG, "dream player: video can't be decoded here: ${f.sampleMimeType} ${f.width}x${f.height}")
+        fail("This source's video (${if (f.width >= 3840) "4K" else "${f.width}x${f.height}"}) is too big for this Fire Stick. Try another source.")
+    }
+
+    /**
+     * Gives up on this source (a track it can't play, or no picture): every listener hears [msg]. Stopped, not
+     * paused: a paused player still draws its first frame, which lifted the error screen.
+     */
+    fun fail(msg: String) {
         lastError = msg
-        player?.pause()
+        player?.stop()
         fire { it.onError(msg) }
     }
 
@@ -799,13 +823,12 @@ class ExoEngine(context: Context) : PlayerEngine {
         fun languageCode(lang: String?): String? {
             val l = lang?.trim()?.takeIf { it.isNotEmpty() && !it.equals("und", true) && !it.equals("unknown", true) } ?: return null
             if (l.length > 3 && !l.contains('-') && !l.contains('_')) {
-                Locale.getISOLanguages().firstOrNull { Locale(it).getDisplayLanguage(Locale.ENGLISH).equals(l, true) }?.let { return it }
-                return l
+                return AudioLanguages.codeForName(l) ?: l
             }
             val loc = Locale.forLanguageTag(l.replace('_', '-'))
             return loc.language.ifEmpty { l }.lowercase(Locale.US).let { code ->
                 // 3-letter codes to 2-letter where one exists ("eng" -> "en").
-                if (code.length == 3) Locale.getISOLanguages().firstOrNull { Locale(it).isO3Language == code } ?: code else code
+                if (code.length == 3) AudioLanguages.iso2(code) ?: code else code
             }
         }
 

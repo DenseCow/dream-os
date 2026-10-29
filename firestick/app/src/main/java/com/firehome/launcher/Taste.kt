@@ -110,6 +110,8 @@ object Taste {
     private val STOP = setOf("the", "a", "an", "of", "and", "in", "on", "to", "for", "with", "at", "from", "by", "&")
     private val PART = Regex("\\s+(part|chapter|vol\\.?|volume|episode)\\s+[0-9ivx]+$")
     private val NUMBER = Regex("\\s+([0-9]+|ii|iii|iv|v|vi|vii|viii|ix)$")
+    private val SPACES = Regex("\\s+")
+    private val SEPARATORS = listOf(":", " - ", " – ", " — ")
 
     /**
      * A franchise key: the name up to a colon or dash, without a trailing number, then its first two telling words.
@@ -118,9 +120,9 @@ object Taste {
      */
     fun stem(name: String): String {
         var s = name.lowercase()
-        for (sep in listOf(":", " - ", " – ", " — ")) s.indexOf(sep).takeIf { it >= 0 }?.let { s = s.substring(0, it) }
+        for (sep in SEPARATORS) s.indexOf(sep).takeIf { it >= 0 }?.let { s = s.substring(0, it) }
         s = s.replace(PART, "").replace(NUMBER, "")
-        val words = s.split(Regex("\\s+")).filter { it.isNotEmpty() && it !in STOP }
+        val words = s.split(SPACES).filter { it.isNotEmpty() && it !in STOP }
         return if (words.isEmpty()) s.trim() else words.take(2).joinToString(" ")
     }
 

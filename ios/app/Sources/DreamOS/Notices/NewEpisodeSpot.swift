@@ -193,16 +193,6 @@ final class NewEpisodeSpot {
         return today ? "Out Today" : "Out Now"
     }
 
-    // ---- developer test ----
-
-    /// Forgets every played / dismissed mark (this profile) and looks again.
-    func reset() {
-        put(nil as [String]?, "done")
-        put(nil as [String: Int64]?, "first")
-        current = nil
-        Task { await refresh() }
-    }
-
     // ---- storage (per profile) ----
 
     private func get<T: Decodable>(_ t: T.Type, _ name: String) -> T? { DreamStore.shared.get(t, "newep_banner." + name, perProfile: true) }

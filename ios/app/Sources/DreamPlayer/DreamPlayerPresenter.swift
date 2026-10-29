@@ -31,8 +31,6 @@ public final class DreamPlayerPresenter {
     public var isFloating: Bool { parked != nil || minimized != nil }
     /// The player is minimized into the mini player.
     public var isMinimized: Bool { minimized != nil }
-    /// Floating in Picture in Picture (the player is out of the way).
-    public var isInPictureInPicture: Bool { parked != nil }
     /// The open player's session (nil when closed): Cellular Data Saver pauses it and switches its copy (DreamOS).
     public var currentSession: PlayerSession? { controller != nil ? session : nil }
     /// Full screen and in front, so the pull-down / chevron may minimize it.
@@ -57,6 +55,9 @@ public final class DreamPlayerPresenter {
             if minimized != nil { expand() }
             return s
         }
+        // A session whose screen is gone without a close (its presentation was refused): ended before a new one,
+        // or its mpv keeps playing unseen.
+        if session != nil { finish() }
         let s = PlayerSession()
         session = s
         VideoDock.shared.spot = .full

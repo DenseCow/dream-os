@@ -25,7 +25,7 @@ struct XRayView: View {
             VStack(alignment: .leading, spacing: 10) {
                 HStack {
                     VStack(alignment: .leading, spacing: 4) {
-                        Text(kicker).font(.system(size: 12, weight: .bold)).tracking(2).textCase(.uppercase).foregroundStyle(.white.opacity(0.62)).lineLimit(1)
+                        Text(kicker).font(.system(size: 12, weight: .bold)).foregroundStyle(.white.opacity(0.62)).lineLimit(1)
                         Text(person == nil ? (session.request?.episode != nil ? "In This Episode" : "Cast") : (person?.name ?? ""))
                             .font(.system(size: 24, weight: .bold)).foregroundStyle(.white).lineLimit(1)
                     }
@@ -110,7 +110,7 @@ struct XRayView: View {
                     }
                 }
             }
-            Text("Known For").font(.system(size: 13, weight: .bold)).tracking(1.6).textCase(.uppercase).foregroundStyle(.white.opacity(0.55))
+            Text("Known For").font(.system(size: 13, weight: .bold)).foregroundStyle(.white.opacity(0.55))
                 .padding(.top, 4)
             if knownForFailed {
                 Text("Couldn't load this person's titles right now.").font(.system(size: 14, weight: .medium)).foregroundStyle(.white.opacity(0.6))

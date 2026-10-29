@@ -155,12 +155,14 @@ enum PageSnapshots {
         return s
     }
 
-    /// The current profile's kids settings, as snapshots record them (also kept in `known`).
+    /// The current profile's kids settings and Keep Anime in Anime Sections, as snapshots record them (also kept in
+    /// `known`). The anime part is only there when it's off, so rows saved before the setting existed stay usable.
     static func fingerprint() async -> String {
-        let f: String
+        var f: String
         if let p = await Services.shared.profiles.current() {
             f = "\(p.id)|\(p.isKids)|\(p.ratingLimit ?? "")|\(p.kidsLevel.map(String.init) ?? "")"
         } else { f = "-" }
+        if !AnimePrefs.apart { f += "|anime" }
         known = f
         return f
     }

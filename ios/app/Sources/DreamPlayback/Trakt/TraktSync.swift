@@ -6,12 +6,16 @@ extension Trakt {
     // MARK: When to sync
 
     /// The app came to the front (the TV's Home opening): a sync if the last one is old or something played since.
-    /// Returns at once.
+    /// Returns at once: the state (watchlist snapshot, ledger) is decoded on the sync queue, not the main thread.
     public func onHomeOpened() {
         guard signedIn, !isSyncing else { return }
-        let st = vault.state(pid)
-        if !st.dirty && wallMs() - st.at < Self.homeEveryMs { return }
-        sync(pid, "home")
+        let p = pid
+        syncer.run {
+            let t = Trakt.shared
+            let st = t.vault.state(p)
+            if !st.dirty && wallMs() - st.at < Self.homeEveryMs { return }
+            await t.syncNow(p, "home")
+        }
     }
 
     /// Starts a sync for the current profile in the background (Sync Now: `force`).
@@ -19,8 +23,10 @@ extension Trakt {
 
     func sync(_ p: String, _ reason: String, force: Bool = false) {
         guard signedIn(p) else { return }
-        if force { markDirty(p) }
-        syncer.run { await Trakt.shared.syncNow(p, reason) }
+        syncer.run {
+            if force { Trakt.shared.markDirty(p) }
+            await Trakt.shared.syncNow(p, reason)
+        }
     }
 
     func syncNow(_ p: String, _ reason: String) async {
@@ -31,7 +37,8 @@ extension Trakt {
         let started = wallMs()
         var ok = false
         defer {
-            lock.withLock { _lastSyncFailed = !ok; _syncing = false }
+            let mine = pid == p // a sync cut short by a profile switch isn't a failure to show
+            lock.withLock { _lastSyncFailed = !ok && mine; _syncing = false }
             changed()
         }
         do {
@@ -44,21 +51,26 @@ extension Trakt {
             func moved(_ group: String, _ field: String) -> Bool { prev == nil || at(prev, group, field) != at(la, group, field) }
 
             if vault.user(p) == nil { await fetchUser(p) }
+            // Without a TMDB key nothing can be pulled; moving the activity marks on would skip it for good.
+            guard !Keys.tmdb.isEmpty else { return }
             var watched = 0, progress = 0, listed = 0
-            if !Keys.tmdb.isEmpty {
-                if moved("episodes", "watched_at") || moved("movies", "watched_at") { watched = try await pullHistory(p, &st, prev) }
-                if moved("episodes", "paused_at") || moved("movies", "paused_at") { progress = try await pullPlayback(p, &st) }
-                if moved("movies", "watchlisted_at") || moved("shows", "watchlisted_at") || st.wl == nil {
-                    listed = try await syncWatchlist(p, &st, la)
-                }
+            // Only what this pass pulled is written back: the rest of `st` is a snapshot that edits made meanwhile
+            // (Continue Watching removals, My List changes) may have moved past.
+            var pulledShows = false, pulledPb = false, pulledWl = false
+            if moved("episodes", "watched_at") || moved("movies", "watched_at") { watched = try await pullHistory(p, &st, prev); pulledShows = true }
+            if moved("episodes", "paused_at") || moved("movies", "paused_at") { progress = try await pullPlayback(p, &st); pulledPb = true }
+            if moved("movies", "watchlisted_at") || moved("shows", "watchlisted_at") || st.wl == nil {
+                listed = try await syncWatchlist(p, &st, la); pulledWl = true
             }
-            // Saved as one: the activity marks move on only once everything they stand for is in.
+            // Saved as one: the activity marks move on only once everything they stand for is in. Another profile
+            // took over mid-sync (its pulls were skipped): the marks stay, so the next sync pulls them again.
+            let same = pid == p
             let saved: Bool = vault.store.withLock {
-                guard vault.tokens(p) != nil else { return false }
+                guard same, vault.tokens(p) != nil else { return false }
                 var cur = vault.state(p)
-                cur.shows = st.shows
-                cur.pb = st.pb
-                if st.wl != nil { cur.wl = st.wl }
+                if pulledShows { cur.shows = st.shows }
+                if pulledPb { cur.pb = st.pb }
+                if pulledWl, st.wl != nil { cur.wl = st.wl }
                 cur.la = String(data: r.body, encoding: .utf8)
                 cur.at = wallMs()
                 cur.dirty = false
@@ -198,12 +210,24 @@ extension Trakt {
         var remote: [String: Int64] = [:]
         var order: [String] = []
         for (path, type, field) in [("movies", "movie", "movie"), ("shows", "tv", "show")] {
-            for o in try await getArray(p, "/sync/watchlist/\(path)?page=1&limit=500") {
-                let id = TJ.tmdb(o, field)
-                guard id > 0 else { continue }
-                let k = "\(type):\(id)"
-                if remote[k] == nil { order.append(k) }
-                remote[k] = TraktTime.ms(TJ.str(o, "listed_at"))
+            // Every page: a title missing from the read would count as removed on Trakt and leave My List.
+            var page = 1
+            while page <= Self.watchlistPages {
+                let a = try await getArray(p, "/sync/watchlist/\(path)?page=\(page)&limit=\(Self.watchlistPage)")
+                for o in a {
+                    let id = TJ.tmdb(o, field)
+                    guard id > 0 else { continue }
+                    let k = "\(type):\(id)"
+                    if remote[k] == nil { order.append(k) }
+                    remote[k] = TraktTime.ms(TJ.str(o, "listed_at"))
+                }
+                if a.count < Self.watchlistPage { break }
+                page += 1
+            }
+            // Past the last page read the rest is unknown: no two-way sync rather than removals that aren't real.
+            if page > Self.watchlistPages {
+                plog.notice("Trakt: watchlist over \(Self.watchlistPages * Self.watchlistPage) \(path, privacy: .public), not synced")
+                return 0
             }
         }
         let snap: Set<String>? = st.wl.map(Set.init)

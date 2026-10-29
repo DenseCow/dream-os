@@ -181,7 +181,7 @@ class MyListMark(ctx: Context, saved: Boolean) : View(ctx) {
 
     companion object {
         /** Fresh green on the dark glass. */
-        const val GREEN = 0xFF4ADE80.toInt()
+        const val GREEN = Ui.GREEN
         /** A deeper green on the pearl focus box (reads against the light fill). */
         const val GREEN_DEEP = 0xFF15A34A.toInt()
         private const val ADD_MS = 420L

@@ -50,6 +50,10 @@ public final class ImageStore: @unchecked Sendable {
         // Sized to the phone (a 4 GB iPhone gets ~256 MB, 8 GB ~384 MB): older iPhones never get pushed to the edge.
         memory.totalCostLimit = min(384 << 20, Int(ProcessInfo.processInfo.physicalMemory / 16))
         memory.countLimit = 1500
+        // Views hold the art they show, so emptying the cache costs nothing on screen.
+        NotificationCenter.default.addObserver(forName: UIApplication.didReceiveMemoryWarningNotification, object: nil, queue: nil) { [weak self] _ in
+            self?.trimMemory()
+        }
     }
 
     /// Downloads ahead into the disk cache only (no decode, no memory): art a later screen may show.

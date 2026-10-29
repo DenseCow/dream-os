@@ -8,7 +8,6 @@ import android.graphics.Color
 import android.graphics.Matrix
 import android.graphics.Paint
 import android.graphics.Typeface
-import android.graphics.drawable.BitmapDrawable
 import android.graphics.drawable.ColorDrawable
 import android.graphics.drawable.GradientDrawable
 import android.os.Handler
@@ -118,7 +117,7 @@ class ScreensaverView(ctx: Context) : FrameLayout(ctx) {
     }
     private val info = LinearLayout(ctx).apply { orientation = LinearLayout.VERTICAL; alpha = 0f }
 
-    // ---- bottom right: the brand ----
+    // ---- top left: the brand ----
     private val brand = LinearLayout(ctx).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
     /** "Dream OS", fading through the rainbow one hue at a time, as Play does when focused ([Rainbow.fadeColor]). */
     private val brandWord = kit.label("Dream OS", 15f, Rainbow.fadeColor(), kit.semibold, tracking = 0.02f).apply {
@@ -145,7 +144,7 @@ class ScreensaverView(ctx: Context) : FrameLayout(ctx) {
 
     init {
         // The page itself until the first backdrop is in (then nothing under the art: it covers everything).
-        background = SmoothGradient.pageBitmap(ctx)?.let { BitmapDrawable(ctx.resources, it) } ?: ColorDrawable(kit.bg)
+        background = SmoothGradient.pageDrawable(ctx) ?: ColorDrawable(kit.bg)
         // The two backdrops live in their own frame (as CinemaHero's artFrame): the crossfade lifts the incoming one
         // with translationZ, and a ViewGroup draws its children in Z order. Added straight to the saver, the art
         // (Z 1) drew over every other child (Z 0): the title block, the clock and the mark all vanished under it.
@@ -195,10 +194,10 @@ class ScreensaverView(ctx: Context) : FrameLayout(ctx) {
             }, LinearLayout.LayoutParams(WRAP_CONTENT, dp(22)))
         }
         brand.addView(brandWord, LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT).apply { marginStart = dp(10) })
-        // Tucked into the corner, below the synopsis's last line, so a long synopsis never runs into it.
-        addView(brand, LayoutParams(WRAP_CONTENT, WRAP_CONTENT, Gravity.BOTTOM or Gravity.END).apply {
-            rightMargin = dp(BRAND_EDGE)
-            bottomMargin = dp(BRAND_EDGE)
+        // Top left (owner), level with the clock's top edge on the right, over the left scrim so it stays readable.
+        addView(brand, LayoutParams(WRAP_CONTENT, WRAP_CONTENT, Gravity.TOP or Gravity.START).apply {
+            leftMargin = kit.gutter
+            topMargin = dp(36)
         })
     }
 
@@ -285,7 +284,11 @@ class ScreensaverView(ctx: Context) : FrameLayout(ctx) {
         }
     }
 
-    fun stop() {
+    /**
+     * Stops every timer. [keepArt]: the art and logo stay on screen for a fade-out ([releaseArt] after it); else
+     * they go now. Clearing them before the fade left the clock and title floating over Home for 400 ms.
+     */
+    fun stop(keepArt: Boolean = false) {
         running = false
         gen++
         handler.removeCallbacks(tick)
@@ -298,10 +301,13 @@ class ScreensaverView(ctx: Context) : FrameLayout(ctx) {
         info.setLayerType(LAYER_TYPE_NONE, null)
         brand.setLayerType(LAYER_TYPE_NONE, null)
         info.animate().cancel()
-        for (l in layers) {
-            l.animate().cancel()
-            l.setImageDrawable(null) // the bitmaps go
-        }
+        for (l in layers) l.animate().cancel()
+        if (!keepArt) releaseArt()
+    }
+
+    /** Lets go of the art and logo bitmaps. */
+    fun releaseArt() {
+        for (l in layers) l.setImageDrawable(null)
         logo.setImageDrawable(null)
     }
 
@@ -324,8 +330,8 @@ class ScreensaverView(ctx: Context) : FrameLayout(ctx) {
         if (Tmdb.hasKey(ctx)) try {
             val moment = HomePicks.moment().name
             // Anime stays in the anime sections (the user's rule): not in the saver's picks or trending.
-            for (t in HomePicks.featured(ctx, 8)) if (!RowMix.isAnime(t)) disc += Slide(t, moment)
-            for (t in Tmdb.trending(ctx)) if (t.backdropPath != null && !RowMix.isAnime(t)) disc += Slide(t, "Trending Now")
+            for (t in HomePicks.featured(ctx, 8)) if (!RowMix.animeHidden(ctx, t)) disc += Slide(t, moment)
+            for (t in Tmdb.trendingShown(ctx, art = "backdrop")) disc += Slide(t, "Trending Now")
         } catch (e: Exception) { Log.w("FireHome", "saver: trending: $e") }
         val a = lib.distinctBy { it.t.key }.shuffled()
         val b = disc.distinctBy { it.t.key }.shuffled()
@@ -470,7 +476,7 @@ class ScreensaverView(ctx: Context) : FrameLayout(ctx) {
 
     private fun fillInfo(r: Ready) {
         val t = r.s.t
-        kicker.text = r.s.kicker.uppercase()
+        kicker.text = r.s.kicker
         val name = t.name
         bigTitle.text = name
         bigTitle.textSize = when {
@@ -515,7 +521,6 @@ class ScreensaverView(ctx: Context) : FrameLayout(ctx) {
         private const val MAX_HOLD_MS = 30_000L
         private const val HOLD_STEP_MS = 1_000L
         /** The brand's distance from the screen's right and bottom edges (dp): in the corner, inside TV overscan. */
-        private const val BRAND_EDGE = 26
         /** The brand's rainbow step (ms): ~15 a second, smooth for a slow fade, a tiny redraw each. */
         private const val BRAND_STEP_MS = 66L
 
@@ -543,6 +548,8 @@ class DreamSaver : DreamService() {
         super.onAttachedToWindow()
         isInteractive = false
         isFullscreen = true
+        // The screensaver can start before MainActivity in a fresh process (after an update): load the chosen zone first.
+        DreamTime.init(this)
         view = ScreensaverView(this).also { setContentView(it) }
     }
 

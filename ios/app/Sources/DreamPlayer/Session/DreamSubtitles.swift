@@ -32,6 +32,11 @@ enum DreamSubtitles {
 
     /// Settings › Subtitles as Dream OS keeps them: DreamFilters' "dream_filters" in DreamStore (DreamPlayer reads
     /// the store directly; the keys are `subs.*`).
+    /// The same name for the same address in every launch (`hashValue` is seeded per launch, so the cache never hit).
+    static func stableKey(_ s: String) -> String {
+        String(s.utf8.reduce(UInt64(14_695_981_039_346_656_037)) { ($0 ^ UInt64($1)) &* 1_099_511_628_211 })
+    }
+
     private static func settings() -> [String: String] { DreamStore.shared.get([String: String].self, "dream_filters") ?? [:] }
 
     /// Languages in order: the player's subtitle choice, then Settings' first and second language. Subtitles off
@@ -127,7 +132,7 @@ enum DreamSubtitles {
     private static func download(_ url: URL) async -> URL? {
         let dir = FileManager.default.temporaryDirectory.appendingPathComponent("dreamsubs", isDirectory: true)
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        let file = dir.appendingPathComponent(String(UInt64(bitPattern: Int64(url.absoluteString.hashValue))) + ".srt")
+        let file = dir.appendingPathComponent(Self.stableKey(url.absoluteString) + ".srt")
         if FileManager.default.fileExists(atPath: file.path) { return file }
         var req = URLRequest(url: url)
         req.timeoutInterval = 6

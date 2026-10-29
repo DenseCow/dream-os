@@ -16,7 +16,6 @@ public enum Cinema {
     // ---- shape ----
     public static let rCard: CGFloat = 10
     public static let rButton: CGFloat = 10
-    public static let rChip: CGFloat = 100
 
     // ---- motion ----
     public static let pressScale: CGFloat = 0.97
@@ -39,7 +38,6 @@ public enum Cinema {
         public static let kicker = Font.caption2.weight(.semibold)
         public static let chip = Font.subheadline.weight(.medium)
         public static let badge = Font.caption2.weight(.bold)
-        public static let tab = Font.caption2.weight(.medium)
     }
 
     /// Tracking for kicker caps.
@@ -92,37 +90,32 @@ private struct CinemaLayoutKey: EnvironmentKey {
 }
 
 public extension EnvironmentValues {
-    /// The page's card sizes; set once per page with `.cinemaLayout()`.
+    /// The page's card sizes; each page sets it from its width (`CinemaLayout(width:)`).
     var cinemaLayout: CinemaLayout {
         get { self[CinemaLayoutKey.self] }
         set { self[CinemaLayoutKey.self] = newValue }
     }
 }
 
-public extension View {
-    /// Measures the width this view gets and hands it down as `cinemaLayout`.
-    func cinemaLayout() -> some View { modifier(CinemaLayoutReader()) }
+private struct PageActiveKey: EnvironmentKey {
+    static let defaultValue = true
 }
 
-private struct CinemaLayoutReader: ViewModifier {
-    @State private var width: CGFloat = CinemaLayout.phone.width
-    func body(content: Content) -> some View {
-        content
-            .environment(\.cinemaLayout, CinemaLayout(width: width))
-            .background(GeometryReader { g in
-                Color.clear
-                    .onAppear { width = g.size.width }
-                    .onChange(of: g.size.width) { _, w in width = w }
-            })
+public extension EnvironmentValues {
+    /// False inside a tab that is kept alive but not showing: its timers and animations rest.
+    var pageActive: Bool {
+        get { self[PageActiveKey.self] }
+        set { self[PageActiveKey.self] = newValue }
     }
 }
 
-/// "NEW SERIES": a kicker line.
+
+/// "New Series": a kicker line, in Title Case like every label (STANDARDS §4; the Fire Stick's c2cfcd4).
 public struct Kicker: View {
     let text: String
     var color: Color
     public init(_ text: String, color: Color = .white.opacity(0.72)) { self.text = text; self.color = color }
     public var body: some View {
-        Text(text.uppercased()).font(Cinema.Fonts.kicker).tracking(Cinema.kickerTracking).foregroundStyle(color).lineLimit(1)
+        Text(text).font(Cinema.Fonts.kicker).foregroundStyle(color).lineLimit(1)
     }
 }

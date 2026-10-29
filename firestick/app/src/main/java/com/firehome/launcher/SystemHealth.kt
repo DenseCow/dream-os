@@ -335,15 +335,15 @@ class SystemHealth(
         val dataFrac = if (s.dataTotal > 0) usedData.toFloat() / s.dataTotal else 0f
         storage.set(size(s.dataFree), "free", dataFrac, levelColor(dataFrac, 0.8f, 0.9f),
             "${size(usedData)} of ${size(s.dataTotal)} used",
-            if (dataFrac > 0.9f) "Almost full — remove unused apps" else "${(dataFrac * 100).toInt()}% used",
-            if (dataFrac > 0.9f) BAD else dim)
+            if (dataFrac > 0.9f) "Almost Full · Remove Unused Apps" else "${(dataFrac * 100).toInt()}% used",
+            if (dataFrac > 0.9f) BAD_TEXT else dim)
 
         val usedMem = s.memTotal - s.memAvail
         val memFrac = if (s.memTotal > 0) usedMem.toFloat() / s.memTotal else 0f
         memory.set(size(s.memAvail), "free", memFrac, if (s.lowMemory) BAD else levelColor(memFrac, 0.85f, 2f),
             "${size(usedMem)} of ${size(s.memTotal)} used",
-            if (s.lowMemory) "Low memory — close background apps" else "Memory OK",
-            if (s.lowMemory) BAD else GOOD)
+            if (s.lowMemory) "Low Memory · Close Background Apps" else "Memory OK",
+            if (s.lowMemory) BAD_TEXT else GOOD_TEXT)
 
         val cur = s.curKhz
         val max = s.maxKhz
@@ -351,7 +351,7 @@ class SystemHealth(
         cpu.set(if (cur != null) ghz(cur) else "${s.cores}", if (cur != null) "GHz" else "cores", freqFrac, select,
             listOfNotNull("${s.cores} cores", max?.let { "up to ${ghz(it)} GHz" }).joinToString("  ·  "),
             listOfNotNull(s.tempC?.let { "${it.toInt()}°C" }, "Up ${uptime(s.uptimeMs)}").joinToString("  ·  "),
-            if ((s.tempC ?: 0f) >= 80f) BAD else dim)
+            if ((s.tempC ?: 0f) >= 80f) BAD_TEXT else dim)
 
         network.set(s.netName, "", s.signal, levelColor(1f - s.signal, 0.55f, 0.75f), s.netDetail, s.netExtra, dim)
     }
@@ -401,8 +401,10 @@ class SystemHealth(
         if (list.map { it.key } != checkRows.keys.toList()) {
             streaming.removeAllViews()
             checkRows.clear()
-            // Dream Core's row opens Settings › Accounts, the Scrapers row Settings › Scrapers.
-            for (c in list) CheckRow(when (c.key) { CoreChecks.DREAM_CORE -> ({ DreamSettingsPage.open(act, DreamSettingsPage.ACCOUNTS) }); CoreChecks.SCRAPERS -> ({ DreamSettingsPage.open(act, DreamSettingsPage.SCRAPERS) }); else -> null })
+            // Dream Core's row opens Settings › Accounts, the Scrapers row Settings › Scrapers; both rows are
+            // checked again when that page closes (it sits over this page, which never sees itself hidden).
+            fun open(kind: String): () -> Unit = { DreamSettingsPage.open(act, kind) { if (attached) checkStreaming() } }
+            for (c in list) CheckRow(when (c.key) { CoreChecks.DREAM_CORE -> open(DreamSettingsPage.ACCOUNTS); CoreChecks.SCRAPERS -> open(DreamSettingsPage.SCRAPERS); else -> null })
                 .also { checkRows[c.key] = it; streaming.addView(it.view) }
         }
         for (c in list) checkRows[c.key]?.set(c)
@@ -436,9 +438,9 @@ class SystemHealth(
             handler.post {
                 closing = false
                 status.text = when {
-                    denied -> "Not allowed yet — update Dream OS to enable this."
+                    denied -> "Not allowed yet. Update Dream OS to turn this on."
                     freed > 4L * 1048576 -> "Freed ${size(freed)} of memory."
-                    else -> "All clear — nothing was running in the background."
+                    else -> "All clear. Nothing was running in the background."
                 }
                 if (running) refresh(full = false)
             }
@@ -729,9 +731,12 @@ class SystemHealth(
         private const val TOP_APPS = 10
         private const val FIRE_SETTINGS = "com.amazon.tv.settings.v2"
         private const val AMAZON_LAUNCHER = "com.amazon.tv.launcher"
-        private val GOOD = Color.parseColor("#4ADE80")
-        private val WARN = Color.parseColor("#FBBF24")
-        private val BAD = Color.parseColor("#F87171")
+        // STANDARDS §2 status colors.
+        private val GOOD = Ui.GREEN
+        private val WARN = Ui.AMBER
+        private val BAD = Ui.RED
+        private val GOOD_TEXT = Ui.GREEN_TEXT
+        private val BAD_TEXT = Ui.RED_TEXT
 
         /** One shared worker: reads are short and must never overlap each other. */
         private val exec = ThreadPoolExecutor(1, 1, 30, TimeUnit.SECONDS, LinkedBlockingQueue<Runnable>()).apply {

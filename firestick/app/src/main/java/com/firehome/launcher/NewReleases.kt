@@ -46,6 +46,18 @@ object NewReleases {
         if (!path.startsWith("/discover/") || ANIME_ASKED.any { it.containsMatchIn(query) }) ""
         else "&without_keywords=${Discover.ANIME_KEYWORD}"
 
+    /**
+     * Keep Anime in Anime Sections off ([RowMix.animeApart]): [query] without TMDB's anime keyword among the left-out
+     * keywords, wherever a category or seasonal row wrote it in.
+     */
+    fun withAnime(query: String): String = query.split('&').filter { it.isNotEmpty() }.mapNotNull { p ->
+        if (!p.startsWith("without_keywords=")) return@mapNotNull p
+        val v = p.substringAfter('=')
+        val sep = if ('|' in v) "|" else ","
+        v.split(',', '|').filter { it.isNotEmpty() && it != "${Discover.ANIME_KEYWORD}" }
+            .takeIf { it.isNotEmpty() }?.joinToString(sep, "without_keywords=")
+    }.joinToString("") { "&$it" }
+
     // ---- loaders (background threads) ----
 
     /**

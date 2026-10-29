@@ -37,7 +37,15 @@ public final class DreamStore: @unchecked Sendable {
             let data = cache[url.path] ?? (try? Data(contentsOf: url))
             guard let data else { return nil }
             cache[url.path] = data
-            return try? JSONDecoder().decode(T.self, from: data)
+            do { return try JSONDecoder().decode(T.self, from: data) } catch {
+                // Callers read nil as empty and their next save replaces the file: a copy is kept aside first, once.
+                let aside = url.appendingPathExtension("unreadable")
+                if !FileManager.default.fileExists(atPath: aside.path) {
+                    try? FileManager.default.copyItem(at: url, to: aside)
+                    Log.core.error("Store: \(key, privacy: .public) couldn't be read; a copy was kept")
+                }
+                return nil
+            }
         }
     }
 
@@ -71,23 +79,45 @@ public final class DreamStore: @unchecked Sendable {
 public enum SecureStore {
     private static let service = "com.dreamos.secure"
 
-    public static func get(_ key: String) -> String? {
-        let q: [String: Any] = [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: service,
-                                kSecAttrAccount as String: key, kSecReturnData as String: true, kSecMatchLimit as String: kSecMatchLimitOne]
+    public static func get(_ key: String) -> String? { lookup(key).value }
+
+    /// [key]'s value, and whether the Keychain answered at all. `readable` false (locked since the phone started,
+    /// or a Keychain error) means unknown, never "not saved".
+    public static func lookup(_ key: String) -> (value: String?, readable: Bool) {
+        var q = query(key)
+        q[kSecReturnData as String] = true
+        q[kSecMatchLimit as String] = kSecMatchLimitOne
         var out: CFTypeRef?
-        guard SecItemCopyMatching(q as CFDictionary, &out) == errSecSuccess, let data = out as? Data else { return nil }
-        return String(data: data, encoding: .utf8)
+        let s = SecItemCopyMatching(q as CFDictionary, &out)
+        switch s {
+        case errSecSuccess: return ((out as? Data).flatMap { String(data: $0, encoding: .utf8) }, true)
+        case errSecItemNotFound: return (nil, true)
+        default:
+            Log.core.error("Keychain: reading \(key, privacy: .public) failed (\(s, privacy: .public))")
+            return (nil, false)
+        }
     }
 
+    /// Saves in place: a write that fails keeps the old value (deleting first lost it whenever the add then failed).
+    /// nil or empty deletes.
     public static func set(_ key: String, _ value: String?) {
-        let q: [String: Any] = [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: service,
-                                kSecAttrAccount as String: key]
-        SecItemDelete(q as CFDictionary)
-        guard let value, !value.isEmpty else { return }
-        var add = q
-        add[kSecValueData as String] = Data(value.utf8)
-        add[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlock
-        SecItemAdd(add as CFDictionary, nil)
+        let q = query(key)
+        guard let value, !value.isEmpty else {
+            let s = SecItemDelete(q as CFDictionary)
+            if s != errSecSuccess && s != errSecItemNotFound { Log.core.error("Keychain: deleting \(key, privacy: .public) failed (\(s, privacy: .public))") }
+            return
+        }
+        let attrs: [String: Any] = [kSecValueData as String: Data(value.utf8),
+                                    kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlock]
+        var s = SecItemUpdate(q as CFDictionary, attrs as CFDictionary)
+        if s == errSecItemNotFound {
+            s = SecItemAdd(q.merging(attrs) { $1 } as CFDictionary, nil)
+        }
+        if s != errSecSuccess { Log.core.error("Keychain: saving \(key, privacy: .public) failed (\(s, privacy: .public)); the old value stays") }
+    }
+
+    private static func query(_ key: String) -> [String: Any] {
+        [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: service, kSecAttrAccount as String: key]
     }
 }
 

@@ -234,7 +234,9 @@ public final class StreamCache: @unchecked Sendable {
 
     private func fetch(_ job: Job) async {
         let t0 = Date()
-        var entry: Entry = lock.withLock {
+        let start: Entry? = lock.withLock {
+            // Stopped meanwhile (the player opened another title): making room would delete what it reads.
+            if cancelRunning || running?.id != job.id { return nil }
             loadIndex()
             makeRoom(for: job.id)
             if var e = entries[job.id] { e.at = wallNow(); e.headers = job.headers; entries[job.id] = e; saveIndex(); return e }
@@ -245,6 +247,7 @@ public final class StreamCache: @unchecked Sendable {
             saveIndex()
             return e
         }
+        guard var entry = start else { return }
         var pieces = 0
         // The head first: it also tells the file's size (Content-Range) and type. A big file (a 4K remux) gets more:
         // the same seconds of video at its bitrate.
@@ -320,25 +323,32 @@ public final class StreamCache: @unchecked Sendable {
         if job.headers.keys.first(where: { $0.lowercased() == "user-agent" }) == nil { r.setValue(Net.userAgent, forHTTPHeaderField: "User-Agent") }
         r.setValue("bytes=\(offset)-\(offset + length - 1)", forHTTPHeaderField: "Range")
         r.setValue("*/*", forHTTPHeaderField: "Accept")
-        guard let (data, resp) = try? await session.data(for: r), let http = resp as? HTTPURLResponse else { return nil }
+        // Streamed and cut at [length]: a host that ignores Range sends the whole file, which must never sit in memory.
+        guard let (stream, resp) = try? await session.bytes(for: r), let http = resp as? HTTPURLResponse else { return nil }
+        defer { stream.task.cancel() }
         guard http.statusCode == 206 || (http.statusCode == 200 && offset == 0) else {
             Log.core.notice("Stream cache: \(job.label, privacy: .public): HTTP \(http.statusCode) at \(offset >> 20) MB")
             return nil
         }
+        var data = Data(capacity: Int(length))
+        do {
+            for try await b in stream {
+                data.append(b)
+                if data.count >= Int(length) { break }
+            }
+        } catch { return nil }
         var total: Int64 = -1
         if let cr = http.value(forHTTPHeaderField: "Content-Range"), let slash = cr.lastIndex(of: "/") {
             total = Int64(cr[cr.index(after: slash)...].trimmingCharacters(in: .whitespaces)) ?? -1
         } else if http.statusCode == 200 {
             total = Int64(http.value(forHTTPHeaderField: "Content-Length") ?? "") ?? -1
         }
-        // A 200 to a range request: the whole file would follow; what came is the head anyway, cut to what was asked.
-        let bytes = data.count > Int(length) ? data.prefix(Int(length)) : data[...]
-        guard !bytes.isEmpty else { return nil }
+        guard !data.isEmpty else { return nil }
         let name = "\(offset).bin"
         let file = root.appendingPathComponent(e.id, isDirectory: true).appendingPathComponent(name)
-        do { try bytes.write(to: file, options: .atomic) } catch { return nil }
+        do { try data.write(to: file, options: .atomic) } catch { return nil }
         e.segments.removeAll { $0.offset == offset }
-        e.segments.append(Segment(offset: offset, length: Int64(bytes.count), file: name))
+        e.segments.append(Segment(offset: offset, length: Int64(data.count), file: name))
         e.segments.sort { $0.offset < $1.offset }
         return (total, http.value(forHTTPHeaderField: "Content-Type"))
     }

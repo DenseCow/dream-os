@@ -144,27 +144,9 @@ object DreamTime {
     fun formatClock(ctx: Context, epochMs: Long = System.currentTimeMillis()): String =
         fmt(ctx, if (use24h(ctx)) "HH:mm" else "h:mm").format(epochMs)
 
-    /** "9 PM" style: drops ":00" on the hour in 12-hour mode. */
-    fun formatTimeShort(ctx: Context, epochMs: Long): String {
-        if (use24h(ctx)) return formatTime(ctx, epochMs)
-        val c = calendar(ctx, epochMs)
-        return if (c.get(Calendar.MINUTE) == 0) fmt(ctx, "h a").format(epochMs) else fmt(ctx, "h:mm a").format(epochMs)
-    }
-
     /** Days between today (in the chosen zone) and [epochMs]'s day: 0 = today, 1 = tomorrow, -1 = yesterday. */
     fun dayDelta(ctx: Context, epochMs: Long, now: Long = System.currentTimeMillis()): Int =
         (dayIndex(calendar(ctx, epochMs)) - dayIndex(calendar(ctx, now))).toInt()
-
-    /** Days between today (chosen zone) and a date-only "yyyy-MM-dd" (no zone shift: the date is the date). */
-    fun dayDeltaForDate(ctx: Context, ymd: String, now: Long = System.currentTimeMillis()): Int? {
-        val p = ymd.take(10).split("-")
-        if (p.size != 3) return null
-        val y = p[0].toIntOrNull() ?: return null
-        val m = p[1].toIntOrNull() ?: return null
-        val d = p[2].toIntOrNull() ?: return null
-        val c = Calendar.getInstance(zone(ctx), Locale.US).apply { clear(); set(y, m - 1, d) }
-        return (dayIndex(c) - dayIndex(calendar(ctx, now))).toInt()
-    }
 
     /** Today in the chosen zone as "yyyy-MM-dd". */
     fun todayYmd(ctx: Context, now: Long = System.currentTimeMillis()): String = fmt(ctx, "yyyy-MM-dd").format(now)
@@ -264,14 +246,20 @@ object DreamTime {
     fun labelFor(id: String): String {
         CURATED.firstOrNull { it.id == id }?.let { return it.label }
         ALIASES[id]?.let { return labelFor(it) }
-        // Same rules as a curated zone right now (e.g. America/Detroit -> Eastern Time).
-        val tz = TimeZone.getTimeZone(id)
-        CURATED.firstOrNull { c ->
-            val o = TimeZone.getTimeZone(c.id)
-            c.id in US_IDS && o.rawOffset == tz.rawOffset && o.useDaylightTime() == tz.useDaylightTime() && id.startsWith("America/")
-        }?.let { return it.label }
+        // A US zone with the same rules as a curated one (e.g. America/Indiana/Knox -> Central Time). Only US
+        // zones: Caracas or Hermosillo share a US zone's rules but aren't "Puerto Rico" or "Arizona".
+        if (US_OTHER_PREFIXES.any { id.startsWith(it) } || id in US_OTHER) {
+            val tz = TimeZone.getTimeZone(id)
+            CURATED.firstOrNull { c ->
+                val o = TimeZone.getTimeZone(c.id)
+                c.id in US_IDS && o.rawOffset == tz.rawOffset && o.useDaylightTime() == tz.useDaylightTime()
+            }?.let { return it.label }
+        }
         return id.substringAfterLast('/').replace('_', ' ').ifBlank { "Local Time" }
     }
+    private val US_OTHER_PREFIXES = listOf("America/Indiana/", "America/Kentucky/", "America/North_Dakota/")
+    private val US_OTHER = setOf("America/Menominee", "America/Juneau", "America/Sitka", "America/Nome", "America/Yakutat",
+        "America/Metlakatla")
     private val ALIASES = mapOf(
         "US/Eastern" to "America/New_York", "US/Central" to "America/Chicago", "US/Mountain" to "America/Denver",
         "US/Arizona" to "America/Phoenix", "US/Pacific" to "America/Los_Angeles", "US/Alaska" to "America/Anchorage",

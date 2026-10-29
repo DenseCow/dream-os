@@ -1,7 +1,8 @@
 import Foundation
 
 // The shared data every module speaks. Mirrors the Fire TV app's types (fire-home Tmdb.kt, TitleInfo.kt,
-// DebridApi.kt, WatchHistory.kt) so behaviour ports 1:1. Add fields with defaults; never rename or remove one.
+// DebridApi.kt, WatchHistory.kt) so behaviour ports 1:1. Never rename or remove a field. A new field on a stored type
+// must be optional: synthesized Codable ignores default values, so a new non-optional field makes every saved copy unreadable.
 
 public enum MediaKind: String, Codable, Sendable, Hashable {
     case movie, tv
@@ -126,6 +127,8 @@ public struct TitleInfo: Codable, Sendable, Hashable {
     public var networks: [String] = []
     public var countries: [String] = []
     public var language = ""
+    /// TMDB's spoken languages ("ko", "en"): a dub tells itself from an original track by them (LanguagePills).
+    public var spoken: [String]? = nil
     public var originalTitle = ""
     public var budget: Int64 = 0
     public var revenue: Int64 = 0

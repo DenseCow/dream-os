@@ -36,7 +36,9 @@ class SleepTimer(private val service: AccessibilityService) {
     /** Like Netflix: "Keep watching" re-arms for the full chosen time, at least 90 minutes. */
     private fun keepWatching() = arm(maxOf(chosenMinutes, 90))
 
-    private val prompt = Runnable { showPrompt() }
+    // postDelayed runs on uptime, which stops while the stick sleeps: a timer that ran out during a sleep is over,
+    // not a card that appears (and turns the stick off) after it wakes.
+    private val prompt = Runnable { if (SystemClock.elapsedRealtime() > endsAt + 60_000L) cancel() else showPrompt() }
 
     private val tick = object : Runnable {
         override fun run() {
@@ -71,9 +73,6 @@ class SleepTimer(private val service: AccessibilityService) {
         if (overlay != null) return
         val dp = { v: Int -> (v * density).toInt() }
         countdown = TextView(service).apply {
-            textSize = 16f
-            setTextColor(Color.argb(200, 255, 255, 255))
-            setPadding(0, dp(6), 0, dp(20))
             textSize = Ui.T_BODY
             setTextColor(Color.argb(170, 255, 255, 255))
             setPadding(0, dp(Ui.S2), 0, dp(Ui.S5))

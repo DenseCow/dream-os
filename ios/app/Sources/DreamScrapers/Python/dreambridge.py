@@ -34,10 +34,6 @@ def reload_settings():
     return 0
 
 
-def trim():
-    return runner.trim()
-
-
 def cancel(job_id):
     runner.cancel(int(job_id))
     return 0
@@ -45,9 +41,3 @@ def cancel(job_id):
 
 def scrape(job_id, info_json, providers_json, opts_json):
     return runner.scrape(int(job_id), info_json, providers_json, opts_json, _Sink(int(job_id)))
-
-
-def version():
-    import sys
-    import ssl
-    return '%s; %s' % (sys.version.split()[0], ssl.OPENSSL_VERSION)

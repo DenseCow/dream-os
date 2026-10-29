@@ -139,7 +139,7 @@ public enum Taste {
     private static let openedKey = "taste.opened"
     private struct Opened: Codable { var k: String; var g: [Int]; var l: String; var y: String; var at: Date }
 
-    /// A title page opened (ContentCatalog.details): a weak signal, kept 60 days, at most 80.
+    /// A title page opened (TitleDetailsModel.load): a weak signal, kept 60 days, at most 80.
     public static func noteOpened(_ t: Title) {
         Task.detached(priority: .utility) {
             var list = DreamStore.shared.get([Opened].self, openedKey, perProfile: true) ?? []

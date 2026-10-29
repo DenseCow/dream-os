@@ -117,6 +117,8 @@ final class SourceMemory: @unchecked Sendable {
         guard g.count >= 2, g.count <= 20, g.first?.isLetter == true || g.first?.isNumber == true else { return nil }
         // Numbers alone (a "-1080p" tail) aren't a group.
         if g.allSatisfy({ $0.isNumber }) { return nil }
+        // Nor the tail of a hyphenated tag ("WEB-DL", "Blu-ray", "DTS-HD") or of a dotted name after it.
+        if g.contains(".") || ["dl", "hd", "ray", "rip", "ma", "audio", "x"].contains(g) { return nil }
         return g
     }
 

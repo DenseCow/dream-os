@@ -21,6 +21,8 @@ final class EpisodeAlerts: NSObject, UNUserNotificationCenterDelegate {
 
     private var installed = false
     private var observers: [NSObjectProtocol] = []
+    /// What the last load booked ahead (profile, episodes, air times).
+    private var lastBooking: String?
 
     // ---- the setting ----
 
@@ -88,7 +90,7 @@ final class EpisodeAlerts: NSObject, UNUserNotificationCenterDelegate {
         let nc = NotificationCenter.default
         observers.append(nc.addObserver(forName: .dreamMyListChanged, object: nil, queue: .main) { _ in
             MainActor.assumeIsolated {
-                Task {
+                _ = Task {
                     let followsShow = await Services.shared.myList.items().contains { $0.kind == .tv }
                     if followsShow { EpisodeAlerts.shared.maybeAsk() }
                 }
@@ -132,12 +134,18 @@ final class EpisodeAlerts: NSObject, UNUserNotificationCenterDelegate {
             let gone = pending.filter { !want.contains($0) }
             c.removePendingNotificationRequests(withIdentifiers: gone)
             booked.removeAll { k in gone.contains(Self.prefix + profile + "." + k) }
-            // Booked again every load (the same id replaces the old one: a moved air time moves the alert).
-            for i in ahead {
-                let wait = max(5, (i.at ?? Date()).timeIntervalSinceNow)
-                try? await c.add(UNNotificationRequest(identifier: Self.id(profile, i), content: Self.content(i),
-                                                       trigger: UNTimeIntervalNotificationTrigger(timeInterval: wait, repeats: false)))
-                if !booked.contains(i.key) { booked.append(i.key) }
+            // Booked again when something changed (the same id replaces the old one: a moved air time moves the alert).
+            // Home loads on every return from a title page; the same set still pending is left alone (was up to 40
+            // notification requests each time).
+            let signature = profile + "|" + ahead.map { "\($0.key)@\(Int($0.at?.timeIntervalSince1970 ?? 0))" }.joined(separator: ",")
+            if signature != lastBooking || !want.isSubset(of: Set(pending)) {
+                for i in ahead {
+                    let wait = max(5, (i.at ?? Date()).timeIntervalSinceNow)
+                    try? await c.add(UNNotificationRequest(identifier: Self.id(profile, i), content: Self.content(i),
+                                                           trigger: UNTimeIntervalNotificationTrigger(timeInterval: wait, repeats: false)))
+                    if !booked.contains(i.key) { booked.append(i.key) }
+                }
+                lastBooking = signature
             }
             // Now: what a load found that no alert covered. In front, the in-app banner tells it instead.
             for i in news where !sent.contains(i.key) && !booked.contains(i.key) && !done.contains(i.key) {

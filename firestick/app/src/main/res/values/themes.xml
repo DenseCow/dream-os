@@ -6,8 +6,10 @@
         <item name="android:colorAccent">#FFFFFF</item>
     </style>
 
-    <!-- Dream Player: black from the first frame (no flash), no title, no window animation. -->
+    <!-- Dream Player: black, no title, no window animation, and no preview window: the page stays up until the curtain
+         draws (on the Fire TV Stick HD the preview showed as a black flash for ~0.6 s). -->
     <style name="Theme.DreamPlayer" parent="android:Theme.Material.NoActionBar.Fullscreen">
+        <item name="android:windowDisablePreview">true</item>
         <item name="android:windowBackground">@android:color/black</item>
         <item name="android:colorBackground">@android:color/black</item>
         <item name="android:windowAnimationStyle">@null</item>

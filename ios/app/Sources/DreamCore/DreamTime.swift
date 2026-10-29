@@ -93,14 +93,29 @@ public enum DreamTime {
 
     private static let us = Locale(identifier: "en_US_POSIX")
 
-    /// A formatter already set to the chosen zone (US English month/day names), e.g. "EEEE, MMMM d".
+    private final class Formatters: @unchecked Sendable {
+        let lock = NSLock()
+        var byKey: [String: DateFormatter] = [:]
+    }
+    private static let formatters = Formatters()
+
+    /// A formatter already set to the chosen zone (US English month/day names), e.g. "EEEE, MMMM d". Shared per
+    /// pattern and zone (row filters ask for today's date once per title): use it, never change its settings.
     public static func formatter(_ pattern: String, zone tz: TimeZone? = nil) -> DateFormatter {
-        let f = DateFormatter()
-        f.locale = us
-        f.calendar = Calendar(identifier: .gregorian)
-        f.timeZone = tz ?? zone
-        f.dateFormat = pattern
-        return f
+        let z = tz ?? zone
+        let key = pattern + "|" + z.identifier
+        return formatters.lock.withLock {
+            if let f = formatters.byKey[key] { return f }
+            let f = DateFormatter()
+            f.locale = us
+            f.calendar = Calendar(identifier: .gregorian)
+            f.timeZone = z
+            f.dateFormat = pattern
+            // About 20 patterns in the app per zone; a few zone changes later it starts over.
+            if formatters.byKey.count >= 64 { formatters.byKey.removeAll() }
+            formatters.byKey[key] = f
+            return f
+        }
     }
 
     /// [date] in [pattern] in the chosen zone: `DreamTime.format(d, "MMM d")`.
@@ -339,6 +354,10 @@ public enum DreamTime {
     private static let usIds: Set<String> = ["America/New_York", "America/Chicago", "America/Denver", "America/Phoenix",
                                              "America/Los_Angeles", "America/Anchorage", "Pacific/Honolulu", "America/Puerto_Rico"]
 
+    private static let usOtherPrefixes = ["America/Indiana/", "America/Kentucky/", "America/North_Dakota/"]
+    private static let usOther: Set<String> = ["America/Menominee", "America/Juneau", "America/Sitka", "America/Nome", "America/Yakutat",
+                                               "America/Metlakatla"]
+
     private static let aliases: [String: String] = [
         "US/Eastern": "America/New_York", "US/Central": "America/Chicago", "US/Mountain": "America/Denver",
         "US/Arizona": "America/Phoenix", "US/Pacific": "America/Los_Angeles", "US/Alaska": "America/Anchorage",
@@ -365,8 +384,9 @@ public enum DreamTime {
     public static func labelFor(_ id: String) -> String {
         if let c = curated.first(where: { $0.id == id }) { return c.label }
         if let a = aliases[id] { return labelFor(a) }
-        // Same rules as a curated US zone right now (e.g. America/Detroit -> Eastern Time).
-        if id.hasPrefix("America/"), let tz = TimeZone(identifier: id) {
+        // A US zone with the same rules as a curated one right now (America/Indiana/Knox -> Central Time). Only US
+        // zones: Caracas or Hermosillo share a US zone's rules but aren't "Puerto Rico" or "Arizona".
+        if usOtherPrefixes.contains(where: { id.hasPrefix($0) }) || usOther.contains(id), let tz = TimeZone(identifier: id) {
             let now = Date()
             if let c = curated.first(where: { c in
                 guard usIds.contains(c.id), let o = TimeZone(identifier: c.id) else { return false }

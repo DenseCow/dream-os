@@ -1,6 +1,5 @@
 package com.firehome.launcher
 
-import android.animation.ArgbEvaluator
 import android.animation.ValueAnimator
 import android.content.Context
 import android.graphics.Bitmap
@@ -66,12 +65,14 @@ class CinemaDetails(private val ctx: Context, private val t: Title, private val 
     private var next: WatchHistory.Entry? = if (isShow) host.nextEpisode(t) else null
     private val playable = host.canPlay()
     private var details: Details? = Tmdb.cachedDetails(t)
+    /** The language pills (LangPills.kt) for what Play plays, beside the availability status ([loadLangPills]). */
+    private val langPills = listOf(Availability.Pill(ctx, large = true), Availability.Pill(ctx, large = true))
+    private var langAsked = false
     private var released = false
     private var closing = false
     private val images = ArrayList<ImageView>()
     private val today = DreamTime.todayYmd(ctx)
     private val ymd = SimpleDateFormat("yyyy-MM-dd", Locale.US)
-    private val pretty = SimpleDateFormat("MMM d, yyyy", Locale.getDefault())
 
     // ---- palette (the user's theme) and type ----
 
@@ -85,7 +86,6 @@ class CinemaDetails(private val ctx: Context, private val t: Title, private val 
     private val semibold = Ui.semibold(font)
     /** The current glow hue; small accents follow it (see [setHue]). */
     private var hue = CinemaStyle.glowNow
-    private var hueAnim: ValueAnimator? = null
 
     // ---- layers ----
 
@@ -148,7 +148,7 @@ class CinemaDetails(private val ctx: Context, private val t: Title, private val 
     }
     private val buttons = LinearLayout(ctx).apply { orientation = LinearLayout.HORIZONTAL; clipChildren = false; clipToPadding = false }
     private val progressLine = LinearLayout(ctx).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL; visibility = View.GONE }
-    private val also = label("", 12.5f, dim, font, 1)
+    private val also = label("", 12.5f, dim, font, 2)
     private var rating: Ratings.Rating? = Ratings.peek(ctx, t)
 
     // ---- sheet ----
@@ -263,6 +263,7 @@ class CinemaDetails(private val ctx: Context, private val t: Title, private val 
         val d = details
         buildButtons(d)
         fillMeta(d)
+        loadLangPills() // the saved answer on the first frame, not after the details
         if (d != null) applyDetails(d) else Net.background({ Tmdb.details(ctx, t) }) { r ->
             if (released) return@background
             if (r == null) { Log.w(TAG, "cinema details: no TMDB data for ${t.key}"); return@background }
@@ -376,7 +377,6 @@ class CinemaDetails(private val ctx: Context, private val t: Title, private val 
         released = true
         trailer.release()
         main.removeCallbacksAndMessages(null)
-        hueAnim?.cancel()
         backPh.setImageDrawable(null)
         logo.setImageDrawable(null)
         for (iv in images) {
@@ -405,8 +405,12 @@ class CinemaDetails(private val ctx: Context, private val t: Title, private val 
             topMargin = 2.dp; marginStart = -SYN_PAD.dp
         })
         stage.addView(buttons, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { topMargin = 22.dp })
-        // Available Now / CAM Only / Not Available Yet, and when it comes (Availability.kt); gone when there's nothing to say.
-        stage.addView(Availability.TitleStatus(ctx, t), LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT).apply { topMargin = 14.dp })
+        // Available Now / CAM Only / Not Available Yet, and when it comes (Availability.kt), then the language pills
+        // (LangPills.kt); the band has no height while there's nothing to say.
+        val band = LangPills.Band(ctx)
+        band.addView(Availability.TitleStatus(ctx, t))
+        for (p in langPills) band.addView(p)
+        stage.addView(band, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
         stage.addView(progressLine, LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT).apply { topMargin = 16.dp })
         stage.addView(also, LinearLayout.LayoutParams(TEXT_W.dp, WRAP_CONTENT).apply { topMargin = 12.dp })
         synopsis.minLines = 3
@@ -419,7 +423,47 @@ class CinemaDetails(private val ctx: Context, private val t: Title, private val 
         } catch (e: Exception) {}
         if (synopsis.text.isNullOrEmpty()) synopsis.text = d.overview.ifEmpty { "No description available." }
         if (t.backdropPath == null) loadBackdrop(d.backdropPath)
+        AnimeDubs.note(t) // before the episode rows, which read it
         buildTabs(d)
+    }
+
+    /** What Play plays: the movie, or the show's up-next episode (S1 E1 before any). */
+    private fun playRequest(): PlaybackRequest = if (isShow) {
+        val n = next
+        PlaybackRequest(title = t.name, type = "episode", tmdbId = t.id, season = n?.season ?: 1, episode = n?.episode ?: 1)
+    } else PlaybackRequest(title = t.name, type = "movie", tmdbId = t.id, year = t.year.take(4).toIntOrNull())
+
+    /** Original language as TMDB gives it (the details' title, else the card's). */
+    private fun originalLang(): String? = details?.title?.lang?.ifEmpty { null } ?: t.lang.ifEmpty { null }
+
+    /** What the language pills say now. */
+    private var langShown: List<LangPills.Pill> = emptyList()
+
+    private fun showLangPills(pills: List<LangPills.Pill>, fade: Boolean) {
+        if (pills == langShown) return
+        langShown = pills
+        for ((i, v) in langPills.withIndex()) {
+            v.language(pills.getOrNull(i))
+            if (fade) { v.alpha = 0f; v.animate().alpha(1f).setDuration(240).setInterpolator(Ui.EASE).start() }
+        }
+    }
+
+    /**
+     * Any title (LangPills.kt): when it isn't in the viewer's audio language, "English Dub Available", or its audio and
+     * whether subtitles in their language exist, as pills beside the status. The saved answer shows on the first frame,
+     * refreshed behind it; nothing known yet shows nothing. Informational, never focusable.
+     */
+    private fun loadLangPills() {
+        if (langAsked) return
+        langAsked = true
+        val app = ctx.applicationContext
+        val req = playRequest()
+        val orig = originalLang()
+        LangPills.saved(ctx, req, orig)?.let { showLangPills(it, fade = false) }
+        Net.background({ LangPills.lookup(app, req, orig, playable) }) { pills ->
+            if (released || pills == null) return@background
+            showLangPills(pills, fade = true)
+        }
     }
 
     private fun loadBackdrop(path: String?) {
@@ -458,15 +502,20 @@ class CinemaDetails(private val ctx: Context, private val t: Title, private val 
     }
 
     private fun loadRating() {
-        Ratings.load(ctx, t, Ratings.Omdb.DETAILS) { r ->
-            if (released || r == null) return@load
+        fun show(r: Ratings.Rating) {
             rating = r
             fillMeta(details, fade = true)
             details?.info?.let { infoGrid?.set(TitleInfo.RATINGS, it.ratingsWords(r)) }
         }
+        Ratings.load(ctx, t, Ratings.Omdb.DETAILS) { r ->
+            if (released || r == null) return@load
+            show(r)
+            // OMDb has no Tomatometer for it (often a series): rottentomatoes.com's own page, at most once a day.
+            if (Ratings.wantsRtWeb(ctx, t, r)) Ratings.loadRtWeb(ctx, t) { r2 -> if (!released && r2 != null && r2.tomatometer != null) show(r2) }
+        }
     }
 
-    /** "2019  ·  [TV-MA]  ·  3 Seasons  ·  Drama, Crime  ·  🍅 94%  ·  ★★★★☆": one line, the age rating boxed. */
+    /** "July 31, 2026  ·  [TV-MA]  ·  3 Seasons  ·  Drama, Crime  ·  tomato 94%  ·  IMDb 7.8": one line, the age rating boxed. */
     private fun fillMeta(d: Details?, fade: Boolean = false) {
         val before = meta.childCount
         meta.removeAllViews()
@@ -501,7 +550,7 @@ class CinemaDetails(private val ctx: Context, private val t: Title, private val 
     private fun tomatoScore(v: Int) = label("$v%", 14f, Ratings.scoreColor(kit, v), semibold, 1).apply {
         val px = (14f * 1.25f * ctx.resources.displayMetrics.scaledDensity).toInt()
         setCompoundDrawables(TomatoGlyph().apply { setBounds(0, 0, px, px) }, null, null, null)
-        compoundDrawablePadding = 7.dp
+        compoundDrawablePadding = 8.dp
         gravity = Gravity.CENTER_VERTICAL
     }
 
@@ -582,10 +631,13 @@ class CinemaDetails(private val ctx: Context, private val t: Title, private val 
         }
         buttons.addView(mine)
 
-        val elsewhere = d?.providers.orEmpty().map { it.name }.distinct().filterNot { n -> watchable.any { n.startsWith(it.name) } }
-        // TMDB's where-to-watch data comes from JustWatch, whose terms ask for this credit wherever it shows.
-        also.text = if (elsewhere.isNotEmpty()) android.text.SpannableString("Also Streaming On  " + elsewhere.take(3).joinToString("  ·  ") + JUSTWATCH_TAIL).apply {
-            setSpan(android.text.style.ForegroundColorSpan(Ui.alpha(dim, 0.62f)), length - JUSTWATCH_TAIL.length, length, android.text.Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+        // Names as the Information grid says them (no "with Ads" tiers or add-on channels, no YouTube store).
+        val elsewhere = d?.providers.orEmpty().mapNotNull { TitleInfo.providerName(it.id, it.name) }.distinct()
+            .filterNot { n -> watchable.any { n.startsWith(it.name) } }
+        // TMDB's where-to-watch data comes from JustWatch, whose terms ask for this credit wherever it shows: its own
+        // line, whole (STANDARDS §4), never the part an ellipsis cuts.
+        also.text = if (elsewhere.isNotEmpty()) android.text.SpannableString("Also Streaming On  " + elsewhere.take(3).joinToString("  ·  ") + "\n" + JUSTWATCH).apply {
+            setSpan(android.text.style.ForegroundColorSpan(Ui.alpha(dim, 0.62f)), length - JUSTWATCH.length, length, android.text.Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
         } else ""
         also.visibility = if (also.text.isEmpty()) View.GONE else View.VISIBLE
 
@@ -1106,8 +1158,13 @@ class CinemaDetails(private val ctx: Context, private val t: Title, private val 
         if (watched) Availability.attachWatched(card.art)
         val pillFocus = if (!resume && !watched && Availability.recentEpisode(0L, airDate))
             Availability.attachTarget(card.art, Availability.episode(t.id, t.name, null, n, num, 0L, airDate)) else null
-        return captioned(card, "$num.  $name", epRuntime(ep)) { has -> if (has) describeEpisode(n, ep); pillFocus?.invoke(has) }
+        val sub = listOfNotNull(epRuntime(ep).ifEmpty { null }, epLang(n, num)).joinToString("  ·  ")
+        return captioned(card, "$num.  $name", sub) { has -> if (has) describeEpisode(n, ep); pillFocus?.invoke(has) }
     }
+
+    /** "English Dub" / "Japanese Audio" once Dream Core has read this episode's copies, for a title in another language (LangPills.kt). */
+    private fun epLang(n: Int, num: Int): String? =
+        LangPills.episodeWords(ctx, PlaybackRequest(title = t.name, type = "episode", tmdbId = t.id, season = n, episode = num), originalLang())
 
     private fun describeEpisode(n: Int, ep: JSONObject, animate: Boolean = true) {
         val num = ep.optInt("episode_number")
@@ -1119,7 +1176,7 @@ class CinemaDetails(private val ctx: Context, private val t: Title, private val 
             return
         }
         val date = TitleInfo.longDate(ctx, ep.optString("air_date"))?.let { "Aired $it" }
-        val sub = listOfNotNull("Season $n, Episode $num", epRuntime(ep).ifEmpty { null }, date).joinToString("  ·  ")
+        val sub = listOfNotNull("Season $n, Episode $num", epRuntime(ep).ifEmpty { null }, date, epLang(n, num)).joinToString("  ·  ")
         epBlurb?.set(name, sub, ep.optString("overview").takeIf { it != "null" }.orEmpty(), animate)
     }
 
@@ -1213,14 +1270,8 @@ class CinemaDetails(private val ctx: Context, private val t: Title, private val 
         return captioned(card, "All Episodes", "Pick Any Episode") { has -> if (has) epBlurb?.set("All $total Episodes", "Season $season", "") }
     }
 
-    private fun epRuntime(ep: JSONObject): String {
-        val rt = ep.optInt("runtime")
-        return when {
-            rt >= 60 -> if (rt % 60 == 0) "${rt / 60}h" else "${rt / 60}h ${rt % 60}m"
-            rt > 0 -> "$rt Min"
-            else -> ""
-        }
-    }
+    /** "47 min", "1 hr 5 min": the Information grid's wording ([TitleInfo.runtimeWords]). */
+    private fun epRuntime(ep: JSONObject): String = TitleInfo.runtimeWords(ep.optInt("runtime")).orEmpty()
 
     // ---- More Like This ----
 
@@ -1739,7 +1790,6 @@ class CinemaDetails(private val ctx: Context, private val t: Title, private val 
         ellipsize = TextUtils.TruncateAt.END
     }
 
-    private fun Float.dpi() = maxOf(1, (this * density).toInt())
 
     /** Text drawn in its view's own color at [a] of its opacity (follows focus ink changes). */
     private class SoftInk(private val a: Float) : android.text.style.CharacterStyle() {
@@ -1753,11 +1803,9 @@ class CinemaDetails(private val ctx: Context, private val t: Title, private val 
     companion object {
         /** JustWatch's credit for the where-to-watch data TMDB passes on (its terms ask for it wherever that data shows). */
         const val JUSTWATCH = "Streaming Availability From JustWatch"
-        private const val JUSTWATCH_TAIL = "      Availability From JustWatch"
         /** The synopsis' focus face reaches this far past the text on each side (dp). */
         private const val SYN_PAD = 14
         private const val TAG = "FireHome"
-        private val EVAL = ArgbEvaluator()
         private const val EPISODES = "Episodes"
         /** How much of the sheet (its tab bar) peeks under the stage (dp). */
         private const val PEEK = 64

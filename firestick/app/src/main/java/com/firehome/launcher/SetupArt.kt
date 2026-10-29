@@ -123,23 +123,27 @@ class SetupArt(ctx: Context, private val kind: Kind) : View(ctx) {
         g.pen(c, Path().apply { moveTo(56f, 56f); lineTo(67f, 67f) }, w = g.weight * 1.3f)
     }
 
+    // The check's paths, built once: it draws every frame (30 fps) while the check runs and while it closes.
+    private val checkTrack by lazy { GlyphPen.circle(50f, 50f, 19f) }
+    private val okMark by lazy { PathMeasure(Path().apply { moveTo(41.5f, 50.5f); lineTo(47.5f, 56.5f); lineTo(59f, 44.5f) }, false) }
+    private val failMark by lazy { PathMeasure(Path().apply { moveTo(50f, 41f); lineTo(50f, 52f) }, false) }
+    private val markPart = Path()
+
     /** Final Check: a progress arc turning on a faint track, closing into a green check (or a red mark). */
     private fun check(c: Canvas) {
         rect.set(31f, 31f, 69f, 69f)
         if (checkState == CheckState.RUNNING) {
             val t = (SystemClock.uptimeMillis() - startedAt) / 1000f
-            g.pen(c, GlyphPen.circle(50f, 50f, 19f), alpha = 40)
+            g.pen(c, checkTrack, alpha = 40)
             g.arc(c, rect, (t * 220f) % 360f, 70f + 40f * Math.sin(t * 2.0).toFloat())
             return
         }
         val tone = if (checkState == CheckState.OK) GREEN else RED
         g.arc(c, rect, -90f, 360f * closing, color = tone)
-        val p = if (checkState == CheckState.OK) Path().apply { moveTo(41.5f, 50.5f); lineTo(47.5f, 56.5f); lineTo(59f, 44.5f) }
-            else Path().apply { moveTo(50f, 41f); lineTo(50f, 52f) }
-        val seg = Path()
-        val pm = PathMeasure(p, false)
-        pm.getSegment(0f, pm.length * ((closing - 0.35f) / 0.65f).coerceIn(0f, 1f), seg, true)
-        g.pen(c, seg, color = tone, w = g.weight * 1.15f)
+        val pm = if (checkState == CheckState.OK) okMark else failMark
+        markPart.reset()
+        pm.getSegment(0f, pm.length * ((closing - 0.35f) / 0.65f).coerceIn(0f, 1f), markPart, true)
+        g.pen(c, markPart, color = tone, w = g.weight * 1.15f)
         if (checkState == CheckState.FAIL && closing > 0.9f) g.dot(c, 50f, 59f, g.weight * 0.7f, tone)
     }
 
@@ -340,63 +344,6 @@ internal class GlyphPen(val weight: Float, private val ring: Float) {
             val w = h * 0.9f
             val x0 = cx - w * 0.42f
             moveTo(x0, cy - h / 2f); lineTo(x0 + w, cy); lineTo(x0, cy + h / 2f); close()
-        }
-    }
-}
-
-/**
- * The setup's progress: one disc per step with its name under it, joined by a hairline. Done steps
- * show a check, the current one is the pearl disc in a thin rainbow ring, the rest are quiet outlines.
- */
-class StepDiscs(ctx: Context, private val labels: List<String>) : View(ctx) {
-    private val d = ctx.resources.displayMetrics.density
-    private val fill = Paint(Paint.ANTI_ALIAS_FLAG)
-    private val ring = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE }
-    private val text = Paint(Paint.ANTI_ALIAS_FLAG).apply { textAlign = Paint.Align.CENTER; typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD) }
-    private val label = Paint(Paint.ANTI_ALIAS_FLAG).apply { textAlign = Paint.Align.CENTER }
-    private val check = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE; strokeCap = Paint.Cap.ROUND; strokeJoin = Paint.Join.ROUND; color = PearlFocus.INK }
-    private val path = Path()
-
-    var current = 0
-        set(v) { if (field != v) { field = v; invalidate() } }
-
-    init { label.textSize = 12.5f * d; text.textSize = 11f * d }
-
-    override fun onMeasure(w: Int, h: Int) = setMeasuredDimension(resolveSize((labels.size * 104 * d).toInt(), w), resolveSize((50 * d).toInt(), h))
-
-    override fun onDraw(c: Canvas) {
-        val n = labels.size
-        if (n == 0) return
-        val step = width.toFloat() / n
-        val cy = 12 * d
-        val r = 9 * d
-        for (i in 0 until n - 1) {
-            fill.color = Color.argb(if (i < current) 110 else 40, 255, 255, 255)
-            c.drawRect(step * (i + 0.5f) + r + 8 * d, cy - 0.6f * d, step * (i + 1.5f) - r - 8 * d, cy + 0.6f * d, fill)
-        }
-        for (i in 0 until n) {
-            val cx = step * (i + 0.5f)
-            when {
-                i < current -> {
-                    fill.color = Color.argb(225, 255, 255, 255); c.drawCircle(cx, cy, r, fill)
-                    check.strokeWidth = 1.9f * d
-                    path.reset(); path.moveTo(cx - 3.8f * d, cy + 0.2f * d); path.lineTo(cx - 1f * d, cy + 3f * d); path.lineTo(cx + 4f * d, cy - 2.6f * d)
-                    c.drawPath(path, check)
-                }
-                i == current -> {
-                    ring.shader = SweepGradient(cx, cy, Rainbow.COLORS + Rainbow.COLORS[0], null); ring.strokeWidth = 2f * d
-                    c.drawCircle(cx, cy, r + 4 * d, ring)
-                    fill.color = PearlFocus.PEARL; c.drawCircle(cx, cy, r, fill)
-                    text.color = PearlFocus.INK; c.drawText("${i + 1}", cx, cy + 4 * d, text)
-                }
-                else -> {
-                    ring.shader = null; ring.color = Color.argb(70, 255, 255, 255); ring.strokeWidth = 1.2f * d
-                    c.drawCircle(cx, cy, r, ring)
-                    text.color = Color.argb(130, 255, 255, 255); c.drawText("${i + 1}", cx, cy + 4 * d, text)
-                }
-            }
-            label.color = if (i == current) Color.WHITE else Color.argb(if (i < current) 170 else 110, 255, 255, 255)
-            c.drawText(labels[i], cx, cy + r + 20 * d, label)
         }
     }
 }

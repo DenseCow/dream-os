@@ -17,8 +17,10 @@ actor Ratings {
     func scores(_ d: TitleDetails) async -> Scores {
         let t = d.title
         var e = cache[t.key]
+        var asked = false
         if let id = d.imdbId, !Keys.omdb.isEmpty, !fresh(e), !tried.contains(id), Date() >= backoffUntil, spend() {
             tried.insert(id)
+            asked = true
             if let r = await askOmdb(id) { e = Entry(rt: r.0, imdb: r.1, at: Date(), released: t.date, rtWeb: e?.rtWeb, rtWebAt: e?.rtWebAt) }
         }
         // The website's tomatometer when OMDb answered without one (details pages only, 80 a day).
@@ -26,8 +28,10 @@ actor Ratings {
             x.rtWeb = await RtWeb.lookup(t)
             x.rtWebAt = Date()
             e = x
+            asked = true
         }
-        if let e { cache[t.key] = e; save() }
+        // Saved only when something was asked: every hero slide and title page reads this (up to 4000 entries).
+        if asked, let e { cache[t.key] = e; save() }
         let tomato = e?.rt ?? e?.rtWeb
         return Scores(tomatometer: tomato, audienceBadge: Self.audience(imdb: e?.imdb, t))
     }

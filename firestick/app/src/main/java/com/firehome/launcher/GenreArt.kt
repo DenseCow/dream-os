@@ -21,9 +21,9 @@ class GenreArt(genre: String, tint: Int) : Drawable() {
     private class Piece(val path: Path, val fill: Paint?, val line: Paint?, val shadow: Boolean)
 
     private val pieces: List<Piece>
-    private val shadowPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.argb(46, 10, 6, 24); style = Paint.Style.FILL }
+    private val shadowPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.argb(46, 8, 8, 10); style = Paint.Style.FILL }
     private val shadowLine = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = Color.argb(46, 10, 6, 24); style = Paint.Style.STROKE; strokeJoin = Paint.Join.ROUND; strokeCap = Paint.Cap.ROUND
+        color = Color.argb(46, 8, 8, 10); style = Paint.Style.STROKE; strokeJoin = Paint.Join.ROUND; strokeCap = Paint.Cap.ROUND
     }
 
     init {

@@ -376,13 +376,20 @@ enum ScraperRepos {
         var req = URLRequest(url: u)
         req.timeoutInterval = 20
         for (k, v) in headers { req.setValue(v, forHTTPHeaderField: k) }
-        let (data, resp): (Data, URLResponse)
-        do { (data, resp) = try await session.data(for: req) }
+        let (stream, resp): (URLSession.AsyncBytes, URLResponse)
+        do { (stream, resp) = try await session.bytes(for: req) }
         catch let e as URLError where e.code == .cancelled { throw UserError(insecure) }
         guard let http = resp as? HTTPURLResponse else { throw URLError(.badServerResponse) }
         if let final = http.url, final.scheme?.lowercased() != "https" { throw UserError(insecure) }
         guard http.statusCode == 200 else { throw URLError(.badServerResponse) }
-        if data.count > max { throw UserError(tooLarge) }
+        // Stops at the cap instead of reading a huge file (any address the viewer types) into memory first.
+        if http.expectedContentLength > Int64(max) { throw UserError(tooLarge) }
+        var data = Data()
+        if http.expectedContentLength > 0 { data.reserveCapacity(Int(http.expectedContentLength)) }
+        for try await b in stream {
+            data.append(b)
+            if data.count > max { throw UserError(tooLarge) }
+        }
         return data
     }
 

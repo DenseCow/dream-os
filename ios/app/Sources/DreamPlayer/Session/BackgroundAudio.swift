@@ -11,6 +11,8 @@ enum BackgroundAudio {
     private static var started = false
     private static var resumeAfterInterruption = false
     private static var observers: [NSObjectProtocol] = []
+    /// Bumped by every `activate`: a release queued before a new player started is dropped.
+    private static var generation = 0
 
     static func start() {
         activate()
@@ -25,7 +27,8 @@ enum BackgroundAudio {
         observers.append(nc.addObserver(forName: AVAudioSession.routeChangeNotification, object: nil, queue: .main) { n in
             let reason = (n.userInfo?[AVAudioSessionRouteChangeReasonKey] as? UInt).flatMap(AVAudioSession.RouteChangeReason.init)
             MainActor.assumeIsolated {
-                guard reason == .oldDeviceUnavailable, let s = NowPlaying.session, s.state.isPlaying else { return }
+                guard reason == .oldDeviceUnavailable, let s = NowPlaying.session,
+                      s.state.isPlaying || (s.state.isBuffering && !s.state.paused) else { return }
                 Log.player.info("Audio: output went away, pausing")
                 s.engine.pause()
             }
@@ -43,6 +46,24 @@ enum BackgroundAudio {
             try? a.setCategory(.playback, mode: .moviePlayback)
         }
         try? a.setActive(true)
+        generation += 1
+    }
+
+    /// The player closed: once mpv's sound has stopped (its teardown runs on its own queue), the session goes inactive
+    /// and tells others, so music or a podcast the player interrupted resumes. Dropped when a player starts meanwhile.
+    static func release() {
+        let g = generation
+        Task { @MainActor in
+            for delay in [0.4, 1.0, 2.0] {
+                try? await Task.sleep(for: .seconds(delay))
+                guard g == generation, NowPlaying.session == nil else { return }
+                // Busy while mpv's audio unit is still running: tried again a moment later.
+                if (try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)) != nil {
+                    Log.player.info("Audio: session released")
+                    return
+                }
+            }
+        }
     }
 
     private static func interruption(_ type: AVAudioSession.InterruptionType?, resume: Bool) {

@@ -88,8 +88,8 @@ class CinemaKit(val ctx: Context) {
         if (lines > 0) { maxLines = lines; ellipsize = TextUtils.TruncateAt.END }
     }
 
-    /** "TONIGHT": small tracked caps above a hero title or a big card's title. */
-    fun kicker(t: String, color: Int = Ui.alpha(text, 0.72f)) = label(t.uppercase(), CinemaStyle.T_CARD_KICKER, color, semibold, tracking = 0.14f)
+    /** "Tonight  ·  Movie": a small Title Case line above a hero title or a card's title (STANDARDS §4: no tracked caps). */
+    fun kicker(t: String, color: Int = Ui.alpha(text, 0.72f)) = label(t, CinemaStyle.T_CARD_KICKER, color, semibold)
 
     // ---- cards ----
 
@@ -150,6 +150,29 @@ class CinemaKit(val ctx: Context) {
         return unit to card
     }
 
+    private fun rankPen() = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        typeface = bold
+        style = Paint.Style.STROKE
+        strokeWidth = 2.2f.dpf
+        color = Ui.alpha(text, 0.75f)
+    }
+
+    /**
+     * The numerals' largest text size: the widest single digit fits a one-digit slot and "10" its wider slot. The same
+     * for every rank, so measured once (eleven glyph measurements per numeral held up making the Top 10 row).
+     */
+    private val rankFit: Float by lazy {
+        val p = rankPen().apply { textSize = 100f }
+        val ink = android.graphics.Rect()
+        var widest = 0
+        for (d in '0'..'9') { p.getTextBounds(d.toString(), 0, 1, ink); widest = maxOf(widest, ink.width()) }
+        p.getTextBounds("10", 0, 2, ink)
+        val ten = ink.width()
+        val room1 = RANK_NUM.dp - RANK_GAP.dp - p.strokeWidth
+        val room10 = (RANK_NUM + 40).dp - RANK_GAP.dp - p.strokeWidth
+        minOf(100f * room1 / widest, 100f * room10 / ten)
+    }
+
     /**
      * A Top 10 rank numeral, drawn from its measured ink (not the font's box), so every number from 1 to 10 has
      * the same text size, its ink ends exactly [RANK_GAP] dp from the slot's right edge (clear of the poster even
@@ -159,20 +182,8 @@ class CinemaKit(val ctx: Context) {
         private val stroke = 2.2f.dpf
         private val gap = RANK_GAP.dp.toFloat()
         private val ink = android.graphics.Rect()
-        private val pen = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            typeface = bold
-            style = Paint.Style.STROKE
-            strokeWidth = stroke
-            color = Ui.alpha(this@CinemaKit.text, 0.75f)
-            // One size for every rank: the widest single digit fits a one-digit slot and "10" fits its wider slot.
-            textSize = 100f
-            var widest = 0
-            for (d in '0'..'9') { getTextBounds(d.toString(), 0, 1, ink); widest = maxOf(widest, ink.width()) }
-            getTextBounds("10", 0, 2, ink)
-            val ten = ink.width()
-            val room1 = RANK_NUM.dp - gap - stroke
-            val room10 = (RANK_NUM + 40).dp - gap - stroke
-            textSize = minOf(slotH * 0.62f, 100f * room1 / widest, 100f * room10 / ten)
+        private val pen = rankPen().apply {
+            textSize = minOf(slotH * 0.62f, rankFit)
             getTextBounds(num, 0, num.length, ink)
         }
         /** The outline drawn once, off the main thread, into an alpha mask tinted by [tint]; null until it's ready. */
@@ -1144,6 +1155,11 @@ class CinemaRow(val kit: CinemaKit, title: String?) : FlatLinear(kit.ctx), Cinem
             a.slot = j
             a.bind(rankFor(j))
         }
+        // Cards two screens or more along the row let go of their art (the image cache still has it for a quick
+        // way back): a deep row paged on toward 100 titles kept every bitmap it had passed until it left the screen.
+        val keepFrom = index - 2 * visible
+        val keepTo = index + 2 * visible
+        for (j in cards.indices) if (j < keepFrom || j > keepTo) cards[j].artOrNull?.unbind()
     }
 
     private fun Int.dp() = Ui.dp(ctx, this)
@@ -1240,6 +1256,8 @@ class CinemaHero(
     private val kickerView = kit.kicker("")
     private val logoBox = Ui.dp(ctx, if (compact) 64 else 84)
     private val logo = FitImage(ctx, crop = false).apply { alpha = 0f }
+    /** The logo (or big title) box: a three-line synopsis takes its extra height from here, so the column keeps its height. */
+    private val logoFrame = FrameLayout(ctx)
     private val bigTitle = kit.label("", if (compact) 32f else CinemaStyle.T_HERO_TITLE, kit.text, kit.bold, lines = 2).apply {
         gravity = Gravity.BOTTOM
         letterSpacing = -0.015f
@@ -1247,7 +1265,7 @@ class CinemaHero(
         alpha = 0f
     }
     private val metaView = kit.label("", CinemaStyle.T_META + 1f, Ui.alpha(kit.text, 0.86f), kit.medium)
-    /** After the meta line: the tomato with its coloured Tomatometer (when known) and Netflix-style stars. */
+    /** After the meta line: the tomato with its coloured Tomatometer (when known) and the audience score badge. */
     private val heroScores = LinearLayout(ctx).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
 
     private fun setScores(t: Title) {
@@ -1269,14 +1287,34 @@ class CinemaHero(
         }
     }
     /**
-     * Two lines that always start at the first word: the whole sentences that fit ([fitSentences]), else the first
-     * one cut with an ellipsis. It never scrolls: a glide that held at its last line read as a synopsis starting
-     * mid-sentence ("lessons he's learned from nearly two decades..."; owner, 2026-10-28). The title page has it all.
+     * Whole sentences only, from the first word: as many as fit two lines; when even the first doesn't (a long one, as
+     * Spider-Man: Brand New Day's), that sentence a size smaller on up to three lines across the info column, the logo
+     * box giving up the room. Never a glide (one holding at its last line read as starting mid-sentence; owner,
+     * 2026-10-28) and never an ellipsis mid-sentence unless a first sentence outruns even that. The title page has it all.
      */
     private val synopsisW = Ui.dp(ctx, 470)
     private val synopsis = kit.label("", CinemaStyle.T_SYNOPSIS, Ui.alpha(kit.text, 0.80f), kit.font, lines = 2).apply {
         setLineSpacing(0f, 1.18f)
         hyphenationFrequency = android.text.Layout.HYPHENATION_FREQUENCY_NONE
+    }
+    /** Measures the synopsis at sizes other than the one showing (the view's own paint stays as it is). */
+    private val synopsisPaint = android.text.TextPaint(synopsis.paint)
+
+    /** [t]'s leading whole sentences that fit [lines] lines [w] px wide at [sp]; [t] when all of it fits; null when no sentence does. */
+    private fun fitSentences(t: String, sp: Float, w: Int, lines: Int): String? {
+        synopsisPaint.textSize = sp * ctx.resources.displayMetrics.scaledDensity
+        val inner = w - synopsis.compoundPaddingLeft - synopsis.compoundPaddingRight
+        fun count(s: String) = android.text.StaticLayout.Builder.obtain(s, 0, s.length, synopsisPaint, inner)
+            .setLineSpacing(synopsis.lineSpacingExtra, synopsis.lineSpacingMultiplier)
+            .setIncludePad(false).setHyphenationFrequency(android.text.Layout.HYPHENATION_FREQUENCY_NONE)
+            .build().lineCount
+        if (count(t) <= lines) return t
+        var best: String? = null
+        for (m in SENTENCE_END.findAll(t)) {
+            val s = t.substring(0, m.range.last + 1)
+            if (count(s) <= lines) best = s else break
+        }
+        return best
     }
 
     /**
@@ -1290,23 +1328,30 @@ class CinemaHero(
         return kit.meta(t, 0)
     }
 
-    /** [t]'s leading whole sentences that fit [synopsis]'s two lines; [t] itself when it fits or no sentence does. */
-    private fun fitSentences(t: String): String {
-        val text = t.trim()
-        if (text.isEmpty()) return text
-        val w = synopsisW - synopsis.compoundPaddingLeft - synopsis.compoundPaddingRight
-        fun lines(s: String) = android.text.StaticLayout.Builder.obtain(s, 0, s.length, synopsis.paint, w)
-            .setLineSpacing(synopsis.lineSpacingExtra, synopsis.lineSpacingMultiplier)
-            .setIncludePad(false).setHyphenationFrequency(android.text.Layout.HYPHENATION_FREQUENCY_NONE)
-            .build().lineCount
-        if (lines(text) <= 2) return text
-        val ends = Regex("[.!?…][\"”’)]*(?=\\s)").findAll(text).map { it.range.last + 1 }.toList()
-        var best: String? = null
-        for (e in ends) {
-            val s = text.substring(0, e)
-            if (lines(s) <= 2) best = s else break
+    /** The synopsis for [overview] ([fitSentences]), sized and boxed for the lines it takes. */
+    private fun setSynopsis(overview: String) {
+        val text = overview.trim()
+        val two = if (text.isEmpty()) text else fitSentences(text, CinemaStyle.T_SYNOPSIS, synopsisW, 2)
+        val long = two == null
+        val shown = two ?: fitSentences(text, SYNOPSIS_LONG_SP, infoW, 3) ?: text
+        synopsis.textSize = if (long) SYNOPSIS_LONG_SP else CinemaStyle.T_SYNOPSIS
+        synopsis.maxLines = if (long) 3 else 2
+        val twoH = Ui.dp(ctx, SYNOPSIS_H)
+        val h = if (!long) twoH else Math.ceil(synopsis.paint.getFontMetricsInt(null) * synopsis.lineSpacingMultiplier * 3.0).toInt() + 1
+        val w = if (long) infoW else synopsisW
+        val lp = synopsis.layoutParams as LinearLayout.LayoutParams
+        if (lp.width != w || lp.height != h) {
+            lp.width = w
+            lp.height = h
+            synopsis.layoutParams = lp
+            // The logo box gives up what the third line takes: nothing above it moves toward the bar.
+            val box = logoBox - maxOf(0, h - twoH)
+            (logoFrame.layoutParams as LinearLayout.LayoutParams).height = box + Ui.dp(ctx, 8)
+            (bigTitle.layoutParams as FrameLayout.LayoutParams).height = box + Ui.dp(ctx, 8)
+            (logo.layoutParams as FrameLayout.LayoutParams).height = box
+            logoFrame.requestLayout()
         }
-        return best ?: text
+        synopsis.text = shown
     }
     private val info = FlatLinear(ctx).apply { orientation = LinearLayout.VERTICAL; clipChildren = false; clipToPadding = false }
     val buttons = FlatLinear(ctx).apply { orientation = LinearLayout.HORIZONTAL; clipChildren = false; clipToPadding = false }
@@ -1352,7 +1397,7 @@ class CinemaHero(
         }, 0), MATCH_PARENT, MATCH_PARENT)
         addView(scrim, MATCH_PARENT, MATCH_PARENT)
         info.addView(kickerView, LinearLayout.LayoutParams(infoW, WRAP_CONTENT).apply { bottomMargin = Ui.dp(ctx, 8) })
-        info.addView(FrameLayout(ctx).apply {
+        info.addView(logoFrame.apply {
             addView(bigTitle, FrameLayout.LayoutParams(infoW, logoBox + Ui.dp(ctx, 8), Gravity.BOTTOM))
             addView(logo, FrameLayout.LayoutParams(Ui.dp(ctx, 360), logoBox, Gravity.BOTTOM))
         }, LinearLayout.LayoutParams(infoW, logoBox + Ui.dp(ctx, 8)))
@@ -1363,7 +1408,7 @@ class CinemaHero(
             addView(metaView, LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT))
             addView(heroScores, LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT))
         }, LinearLayout.LayoutParams(infoW, Ui.dp(ctx, 22)).apply { topMargin = Ui.dp(ctx, 12) })
-        info.addView(synopsis, LinearLayout.LayoutParams(synopsisW, Ui.dp(ctx, 42)).apply { topMargin = Ui.dp(ctx, 8) })
+        info.addView(synopsis, LinearLayout.LayoutParams(synopsisW, Ui.dp(ctx, SYNOPSIS_H)).apply { topMargin = Ui.dp(ctx, 8) })
         val playable = host.canPlay()
         // A plain "Play"; hold OK to pick the episode.
         if (playable) play = kit.button("Play", R.drawable.ic_play, primary = true) { current()?.let { host.watch(it, false) } }.apply {
@@ -1480,11 +1525,11 @@ class CinemaHero(
     }
 
     private fun setText(t: Title) {
-        kickerView.text = kickerFor(t).uppercase()
+        kickerView.text = kickerFor(t)
         kickerView.visibility = if (kickerView.text.isEmpty()) View.INVISIBLE else View.VISIBLE
         setScores(t)
         metaView.text = fitMeta(t)
-        synopsis.text = fitSentences(t.overview)
+        setSynopsis(t.overview)
         bigTitle.text = t.name
         bigTitle.textSize = when {
             t.name.length > 30 -> if (compact) 24f else 28f
@@ -1654,6 +1699,9 @@ class CinemaHero(
         v.translationX = -Ui.dpf(ctx, DRIFT_DX) * driftT
     }
 
+    /** The drift still has somewhere to go: the shared clock keeps its full rate only while this is true. */
+    internal val driftMoving: Boolean get() = DRIFT_ON && drifting && active && driftT < 1f
+
     /** The next title's backdrop and logo come into the caches while this one shows. */
     private fun prefetchNext() {
         if (titles.size < 2) return
@@ -1731,6 +1779,11 @@ class CinemaHero(
         const val DOT_GAP = 10
         const val DOT_MARK = 18
         const val LOGO_WAIT_MS = 420L
+        /** The synopsis box (dp): two lines at [CinemaStyle.T_SYNOPSIS]; a long first sentence takes three at [SYNOPSIS_LONG_SP]. */
+        const val SYNOPSIS_H = 42
+        const val SYNOPSIS_LONG_SP = 13.5f
+        /** Where a sentence ends (a closing quote or bracket included), for [fitSentences]. */
+        val SENTENCE_END = Regex("[.!?…][\"”’)]*(?=\\s)")
     }
 }
 

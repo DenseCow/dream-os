@@ -32,7 +32,7 @@ object HomePicks {
         val m = moment()
         val taste = Taste.current(ctx)
         val pool = (Tmdb.trending(ctx) + Tmdb.list(ctx, "/trending/all/week", "&page=2"))
-            .filter { it.backdropPath != null && RowMix.released(it) && !RowMix.isAnime(it) && !it.adult }.distinctBy { it.key }
+            .filter { it.backdropPath != null && RowMix.released(it) && !RowMix.animeHidden(ctx, it) && !it.adult }.distinctBy { it.key }
         return pool.withIndex().sortedByDescending { (i, t) ->
             (1.0 - i / 40.0) + (if (t.genreIds.any { it in m.genres }) 1.0 else 0.0) + (if (t.type == "movie") 0.6 * m.movies else 0.0) +
                 0.8 * taste.strength * taste.affinity(t) + 0.4 * Taste.quality(t)
@@ -52,8 +52,9 @@ object HomePicks {
         if (seeds.isEmpty()) return emptyList()
         val skip = HashSet<String>().apply { watched.forEach { add(it.key) }; saved.forEach { add(it.key) } }
         val score = LinkedHashMap<String, Pair<Title, Double>>()
-        for ((i, s) in seeds.withIndex()) {
-            val recs = RowMix.recs(ctx, s.first, s.second, null) // recent, widely rated, tidied
+        // Every seed's recommendations at once (one after another they were most of Home's first-row wait).
+        val all = RowPaging.all(*seeds.map { s -> { RowMix.recs(ctx, s.first, s.second, null) } }.toTypedArray()) // recent, widely rated, tidied
+        for ((i, recs) in all.withIndex()) {
             for ((rank, t) in recs.withIndex()) {
                 if (t.key in skip || (t.backdropPath == null && t.posterPath == null)) continue
                 // Each seed adds more for its top picks, and newer seeds count a little more.

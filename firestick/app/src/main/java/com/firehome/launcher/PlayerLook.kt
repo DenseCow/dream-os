@@ -93,18 +93,19 @@ object PlayerLook {
 
     private var tinted: CinemaGlow? = null
     private var tintedView: java.lang.ref.WeakReference<View>? = null
-    private var tintAt = 0L
-    private val ticker = android.animation.ValueAnimator.ofFloat(0f, 1f).apply {
-        duration = 1_000
-        repeatCount = android.animation.ValueAnimator.INFINITE
-        addUpdateListener {
+    // A posted step every 66 ms (an endless animator woke the UI thread on every frame just to skip most of them).
+    private val main = android.os.Handler(android.os.Looper.getMainLooper())
+    private var ticking = false
+    private val step = object : Runnable {
+        override fun run() {
             val v = tintedView?.get()
             val g = tinted
-            if (v == null || g == null || !v.isShown) { cancel(); return@addUpdateListener }
-            val now = android.os.SystemClock.uptimeMillis()
-            if (now - tintAt >= 66) { tintAt = now; g.tint(Rainbow.fadeColor()) }
+            if (v == null || g == null || !v.isShown) { ticking = false; return }
+            g.tint(Rainbow.fadeColor())
+            main.postDelayed(this, 66)
         }
     }
+    private fun startTicker() { if (!ticking) { ticking = true; main.postDelayed(step, 66) } }
 
     /** [glow] on [v] shows (in Play's current hue, then following it) or hides. */
     fun border(v: View, glow: CinemaGlow, has: Boolean) {
@@ -113,7 +114,7 @@ object PlayerLook {
             glow.show(c, c)
             tinted = glow
             tintedView = java.lang.ref.WeakReference(v)
-            if (!ticker.isStarted) ticker.start()
+            startTicker()
         } else {
             glow.hide()
             if (tinted === glow) { tinted = null; tintedView = null }
@@ -122,7 +123,7 @@ object PlayerLook {
 
     /** The focused border's view is back on screen (the controls showed again): keep its hue moving. */
     fun resume() {
-        if (tinted != null && tintedView?.get()?.isShown == true && !ticker.isStarted) ticker.start()
+        if (tinted != null && tintedView?.get()?.isShown == true) startTicker()
     }
 
     /**

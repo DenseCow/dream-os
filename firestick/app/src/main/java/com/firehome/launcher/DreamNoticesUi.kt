@@ -2,7 +2,6 @@ package com.firehome.launcher
 
 import android.app.Activity
 import android.content.Context
-import android.graphics.Bitmap
 import android.graphics.Color
 import android.graphics.drawable.GradientDrawable
 import android.graphics.drawable.LayerDrawable
@@ -44,8 +43,6 @@ class DreamNoticesUi(private val act: Activity, private val host: Host) : DreamN
         fun chime()
         /** MainActivity is resumed (banners only ever wait for it). */
         fun resumed(): Boolean
-        /** An action target this file doesn't know (future types); false if nobody does. */
-        fun runTarget(target: String): Boolean
     }
 
     private val kit by lazy { CinemaKit(act) }
@@ -60,7 +57,10 @@ class DreamNoticesUi(private val act: Activity, private val host: Host) : DreamN
     private val queue = ArrayList<DreamNotices.Notice>()
     private var hideRun: Runnable? = null
 
-    override fun canShowBanner() = host.homeFree() && panel == null
+    /** Not over the panel, the renewal sheet or the update card (both sit where banners land). */
+    override fun canShowBanner() = host.homeFree() && panel == null && sheet == null && !UpdatePage.isOpen()
+
+    override fun screenFreed() = onHomeBack()
 
     /** A banner is on screen right now (the update card waits for it). */
     val bannerShowing get() = banner != null
@@ -381,8 +381,6 @@ class DreamNoticesUi(private val act: Activity, private val host: Host) : DreamN
     private var panelReturn: View? = null
     private val listener: () -> Unit = { if (panel != null) fillList(keepFocus = true) }
 
-    val panelOpen get() = panel != null
-
     /** Opens the Notifications panel ([from]: what gets focus back when it closes; else whatever had it). */
     fun openPanel(from: View? = act.currentFocus) {
         if (panel != null) return
@@ -469,6 +467,7 @@ class DreamNoticesUi(private val act: Activity, private val host: Host) : DreamN
         val back = panelReturn
         panelReturn = null
         if (back != null && back.isAttachedToWindow) back.requestFocus()
+        onHomeBack() // notices that came in while the panel was open
     }
 
     /** Back: the renewal sheet first, then the panel. True when it was ours. */
@@ -653,12 +652,12 @@ class DreamNoticesUi(private val act: Activity, private val host: Host) : DreamN
             target.startsWith("renew:") -> openRenewSheet(target.removePrefix("renew:"), n)
             target == "accounts" -> { closePanel(); DreamSettingsPage.open(act, DreamSettingsPage.ACCOUNTS) }
             target == DreamUpdate.TARGET -> { closePanel(); UpdatePage.open(act, UpdatePage.INSTALL) }
-            else -> if (host.runTarget(target)) closePanel()
         }
     }
 
     private var sheet: FrameLayout? = null
     private var sheetReturn: View? = null
+    private var sheetKey: String? = null
 
     /** The service's renewal page as a QR code and as text, with its end date. */
     fun openRenewSheet(service: String, n: DreamNotices.Notice? = null) {
@@ -666,11 +665,10 @@ class DreamNoticesUi(private val act: Activity, private val host: Host) : DreamN
         val name = DreamNotices.serviceName(service)
         val url = DebridExpiry.renewUrl(service)
         sheetReturn = act.currentFocus
+        sheetKey = n?.key
         val qr = ImageView(act).apply {
-            setImageBitmap(qrBitmap(url))
+            setImageDrawable(Qr.drawable(act, url))
             scaleType = ImageView.ScaleType.FIT_CENTER
-            // Scaled up crisp, with no smoothing between modules.
-            (drawable as? android.graphics.drawable.BitmapDrawable)?.apply { isFilterBitmap = false; setAntiAlias(false) }
             val p = 14.dp
             setPadding(p, p, p, p)
             background = Ui.rounded(act, Color.WHITE, 16)
@@ -734,7 +732,13 @@ class DreamNoticesUi(private val act: Activity, private val host: Host) : DreamN
         if (p != null) p.descendantFocusability = ViewGroup.FOCUS_AFTER_DESCENDANTS else host.setHomeFocusable(true)
         val back = sheetReturn
         sheetReturn = null
-        if (back == null || !back.isAttachedToWindow || !back.requestFocus()) { if (p != null) focusFirstRow() }
+        // Marking the notice read rebuilt the list under the sheet: the same notice's new row, by its key.
+        val again = sheetKey?.let { k -> list?.findViewWithTag<View>(k) }
+        sheetKey = null
+        if (back == null || !back.isAttachedToWindow || !back.requestFocus()) {
+            if (again?.requestFocus() != true && p != null) focusFirstRow()
+        }
+        if (p == null) onHomeBack()
     }
 
     fun destroy() {
@@ -746,17 +750,6 @@ class DreamNoticesUi(private val act: Activity, private val host: Host) : DreamN
     // ---- helpers ----
 
     private fun oval(c: Int) = GradientDrawable().apply { shape = GradientDrawable.OVAL; setColor(c) }
-
-    /** Crisp QR bitmap (1 module = 8 px, drawn without smoothing). */
-    private fun qrBitmap(text: String): Bitmap {
-        val qr = io.nayuki.qrcodegen.QrCode.encodeText(text, io.nayuki.qrcodegen.QrCode.Ecc.MEDIUM)
-        val scale = 8
-        val bmp = Bitmap.createBitmap(qr.size * scale, qr.size * scale, Bitmap.Config.RGB_565)
-        val px = IntArray(bmp.width * bmp.height)
-        for (y in 0 until bmp.height) for (x in 0 until bmp.width) px[y * bmp.width + x] = if (qr.getModule(x / scale, y / scale)) Color.BLACK else Color.WHITE
-        bmp.setPixels(px, 0, bmp.width, 0, 0, bmp.width, bmp.height)
-        return bmp
-    }
 
     companion object {
         /** The banner grows with its words up to this width (dp). */

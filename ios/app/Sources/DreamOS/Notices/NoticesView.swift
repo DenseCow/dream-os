@@ -215,7 +215,7 @@ struct NoticeRenewView: View {
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {
-        let name = NoticeCenter.serviceName(service)
+        let name = DebridServices.name(service)
         let url = DebridExpiry.renewUrl(service)
         let n = noticeKey.flatMap { NoticeCenter.shared.find($0) }
         PageScaffold(title: "Renew \(name)") {

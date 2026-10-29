@@ -142,6 +142,17 @@ class PingReceiver : BroadcastReceiver() {
             }
             return
         }
+        // Voice search hand-off without a voice, for the developer: ... PingReceiver --es voice test [--es q office]
+        // [--ei listenMs 1800] [--ez results false: not a search] [--ez early true: results first] (Dream OS's Home in front;
+        // then: adb logcat -s DreamVoice FireHome | grep -E "voice|cover|Alexa")
+        if (intent.getStringExtra("voice") == "test") {
+            val q = intent.getStringExtra("q") ?: "the office"
+            val ms = intent.getIntExtra("listenMs", 1800).coerceIn(200, 10_000).toLong()
+            val results = intent.getBooleanExtra("results", true)
+            val early = intent.getBooleanExtra("early", false)
+            Handler(Looper.getMainLooper()).post { AlexaSearch.devRun(q, ms, results, early) }
+            return
+        }
         chime(context)
         intent.getStringExtra("msg")?.let { banner(it) }
     }

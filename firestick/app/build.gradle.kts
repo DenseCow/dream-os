@@ -23,7 +23,7 @@ val signingProps: Properties? = (System.getenv("DREAMOS_SIGNING") ?: localProps.
     ?.takeIf { p -> listOf("storeFile", "storePassword", "keyAlias", "keyPassword").all { !p.getProperty(it).isNullOrBlank() } }
 
 /** Dream OS's version (major.minor[.patch]): the one place to change it for a release. See versionCode below. */
-val dreamVersion = "4.2.1"
+val dreamVersion = "4.3"
 
 /** A local.properties value as a Java string literal for BuildConfig (quotes and backslashes escaped). */
 fun localString(key: String): String =
@@ -31,7 +31,8 @@ fun localString(key: String): String =
 
 android {
     namespace = "com.firehome.launcher"
-    compileSdk = 34
+    // 35 only for Media3 1.5 (the FFmpeg audio decoder's line); targetSdk stays 34.
+    compileSdk = 35
 
     defaultConfig {
         applicationId = "com.firehome.launcher"
@@ -55,7 +56,7 @@ android {
         buildConfigField("String", "TMDB_KEY", localString("tmdb.key"))
         buildConfigField("String", "OMDB_KEY", localString("omdb.key"))
         // Premiumize device sign-in needs Dream OS's own registered client id (premiumize.me). Empty =
-        // Premiumize is linked with the account's API key instead (KodiDebrid / Streaming Accounts).
+        // Premiumize is linked with the account's API key instead (DebridLink).
         buildConfigField("String", "PREMIUMIZE_CLIENT_ID", localString("premiumize.client_id"))
         // Trakt sync (Trakt.kt): an app registered at trakt.tv/oauth/applications. Empty = the feature hides itself.
         buildConfigField("String", "TRAKT_CLIENT_ID", localString("trakt.client_id"))
@@ -66,9 +67,6 @@ android {
     }
 
     buildFeatures { buildConfig = true }
-
-    // Kodi setup copies the bridge add-on (kodi/script.dreamos.bridge) into Kodi itself (KodiBridge).
-    sourceSets["main"].assets.srcDir("../kodi")
 
     signingConfigs {
         signingProps?.let { p ->
@@ -120,13 +118,15 @@ chaquopy {
 }
 
 dependencies {
-    // Dream Player engine. Media3 1.4.x is the last line that builds against compileSdk 34.
-    // media3-ui is only used for its SubtitleView (we draw our own controls).
-    val media3 = "1.4.1"
+    // Dream Player engine (needs compileSdk 35). media3-ui is only used for its SubtitleView (we draw our own controls).
+    val media3 = "1.5.0"
     implementation("androidx.media3:media3-exoplayer:$media3")
     implementation("androidx.media3:media3-exoplayer-hls:$media3")
     implementation("androidx.media3:media3-exoplayer-dash:$media3")
     implementation("androidx.media3:media3-ui:$media3")
+    // FFmpeg audio decoders (GPL-3.0, Jellyfin's build for this Media3 version): Dolby Digital Plus, TrueHD and DTS
+    // on sticks and TVs that can't decode or pass them through (the Fire TV Stick HD has no DD+ decoder).
+    implementation("org.jellyfin.media3:media3-ffmpeg-decoder:$media3+1")
     // Background hero trailers: resolves a title's YouTube trailer to its stream URLs (TrailerEngine).
     implementation("com.github.TeamNewPipe:NewPipeExtractor:v0.26.5")
     // Unlock Dream OS Features: an ADB client (Apache-2.0) for the stick's own ADB at 127.0.0.1 (DreamUnlock.kt).

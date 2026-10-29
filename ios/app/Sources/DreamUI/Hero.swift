@@ -1,10 +1,11 @@
 import SwiftUI
+import UIKit
 import DreamCore
 
 // The hero (CinemaKit.kt CinemaHero) and the Spotlight card (CinemaKit.spotlight), for touch: full-bleed art that
 // stretches when the page is pulled down and drifts slower than the page when it scrolls (parallax), the title's logo
 // art (or its name), the meta line with scores, two lines of synopsis, Play and More Info. Swipe for the next title:
-// the art crossfades, the words slide (as on the TV). Nothing advances by itself and nothing moves at rest.
+// the art crossfades, the words slide (as on the TV). It also advances by itself every 8 s, like the Fire Stick's.
 
 /// The coordinate space a page's vertical ScrollView names, so the hero can stretch and drift with it.
 public extension Cinema {
@@ -37,13 +38,15 @@ public final class TitleExtras: @unchecked Sendable {
 }
 
 /// The title's logo art, fitted into `maxWidth` × `height` at the bottom-left; its name in bold when there is none.
-/// It waits a moment for the logo before showing the name (no flash of text).
+/// It waits a moment for the logo before showing the name (no flash of text). The logo is held by the view, not only
+/// by the memory cache, which empties in the background and under memory pressure (`RemoteImage` does the same).
 public struct HeroLogo: View {
     let title: Title
     let maxWidth: CGFloat
     let height: CGFloat
     let font: Font
     @State private var extras: TitleExtras.Extras?
+    @State private var logoImage: UIImage?
     @State private var showName = false
 
     public init(_ title: Title, maxWidth: CGFloat, height: CGFloat, font: Font = Cinema.Fonts.heroTitle) {
@@ -53,7 +56,7 @@ public struct HeroLogo: View {
     public var body: some View {
         let ex = extras ?? TitleExtras.shared.cached(title)
         ZStack(alignment: .bottomLeading) {
-            if let logo = ex?.logo, let img = ImageStore.shared.cached(logo) {
+            if let img = logoImage ?? ex?.logo.flatMap({ ImageStore.shared.cached($0) }) {
                 Image(uiImage: img).resizable().aspectRatio(contentMode: .fit)
                     .frame(maxWidth: maxWidth, maxHeight: height, alignment: .bottomLeading)
                     .transition(.opacity)
@@ -70,11 +73,14 @@ public struct HeroLogo: View {
         .frame(width: maxWidth, height: height, alignment: .bottomLeading)
         .task(id: title.key) {
             showName = false
+            logoImage = nil
             let waitName = Task { try? await Task.sleep(for: .milliseconds(700)); if !Task.isCancelled { withAnimation(.easeOut(duration: 0.2)) { showName = true } } }
             let e = await TitleExtras.shared.extras(title)
-            if let logo = e?.logo { _ = await ImageStore.shared.image(logo) }
+            var img: UIImage?
+            if let logo = e?.logo { img = await ImageStore.shared.image(logo) }
             waitName.cancel()
-            withAnimation(.easeOut(duration: 0.26)) { extras = e; if e?.logo == nil { showName = true } }
+            // A logo that didn't load shows the name (it showed nothing before).
+            withAnimation(.easeOut(duration: 0.26)) { extras = e; logoImage = img; if img == nil { showName = true } }
         }
     }
 }
@@ -142,6 +148,7 @@ public struct SpotlightHero: View {
     @State private var swipes = 0
     @Environment(\.cinemaLayout) private var layout
     @Environment(\.scenePhase) private var phase
+    @Environment(\.pageActive) private var pageActive
     /// CinemaStyle.HERO_ADVANCE_MS: the next title after 8 s resting on one.
     static let advanceSeconds: Double = 8
 
@@ -209,9 +216,9 @@ public struct SpotlightHero: View {
             if autoMoved { autoMoved = false } else { swipes += 1 }
         }
         // Advances by itself like the Fire Stick's hero (every 8 s, wrapping round). Any swipe restarts the wait; it
-        // rests while the app is in the background or the page is gone (the task ends with the view).
-        .task(id: "\(current ?? "")|\(items.count)|\(phase == .active)") {
-            guard items.count > 1, phase == .active else { return }
+        // rests while the app is in the background, its tab isn't showing, or the page is gone (the task ends with it).
+        .task(id: "\(current ?? "")|\(items.count)|\(phase == .active && pageActive)") {
+            guard items.count > 1, phase == .active, pageActive else { return }
             try? await Task.sleep(for: .seconds(Self.advanceSeconds))
             guard !Task.isCancelled else { return }
             let next = items[(index + 1) % items.count].id

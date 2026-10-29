@@ -23,7 +23,6 @@ object Theme {
     const val SELECT = "select"      // menu selection / button fill
     const val TEXT = "text"
     const val TEXT_DIM = "textDim"
-    const val CLOCK_COLOR = "clockColor"
     const val TILE = "tile"
     const val FONT = "font"
     const val TILE_SIZE = "tileSize"
@@ -37,6 +36,7 @@ object Theme {
     const val NEW_EP_CHIME = "newEpChime" // chime when New Episodes finds a new episode
     const val NOTICE_SOUND = "noticeSound" // soft two-note pling when a notification banner slides in (Sounds.notice)
     const val ACCOUNT_SUMMARY = "accountSummary" // "Your Accounts" time-left notice once per boot (DebridExpiry)
+    const val ANIME_APART = "animeApart" // Settings › Keep Anime in Anime Sections ([RowMix.animeApart])
     const val BTN_PRIMARY = "btnPrimary"     // main button box (Play, Watch on ...)
     const val BTN_SECONDARY = "btnSecondary" // other button boxes (More Info, My List ...)
     /** The layout once picked here (0 Classic, 1 Dream Premium, 2 Dream Cinema): read only to migrate, see [prefs]. */
@@ -48,9 +48,9 @@ object Theme {
     /** What Settings › Themes and setup's look step say about themes. */
     const val FUTURE_NOTE = "Dream Cinema is your look. In a future update, you'll be able to download themes made by others and create your own."
 
-    /** Index 3 ("Photo") uses the picture sent from the phone remote. */
     val SAVER_MINUTES = listOf(0, 2, 5, 10, 15)
 
+    /** [BG_TYPE] for the picture sent from the phone remote. */
     const val BG_PHOTO = 3
     val FONTS = listOf(
         "Default" to "sans-serif",
@@ -73,14 +73,14 @@ object Theme {
     val CINEMA: Map<String, Int> = mapOf(
         BG_TOP to c("#000000"), BG_BOTTOM to c("#050506"), BG_TYPE to 0, BG_ANGLE to 1,
         ACCENT to c("#FFFFFF"), SELECT to c("#FBF8FF"), TEXT to c("#FFFFFF"), TEXT_DIM to c("#A1A1A6"),
-        CLOCK_COLOR to c("#FFFFFF"), TILE to c("#1C1C1E"),
+        TILE to c("#1C1C1E"),
         BTN_PRIMARY to c("#FFFFFF"), BTN_SECONDARY to c("#2C2C2E"),
         FONT to 0, TILE_SIZE to 1, CORNERS to 1, ZOOM to 1, GLOW to 1,
     )
 
     /** Everything else: how Dream OS behaves, kept as set. */
     private val SETTINGS = mapOf(
-        NAV_SOUND to 1, INTRO_SOUND to 1, SAVER to 2, AIRPODS_SLEEP to 0, NEW_EP_CHIME to 0, NOTICE_SOUND to 1, ACCOUNT_SUMMARY to 1,
+        NAV_SOUND to 1, INTRO_SOUND to 1, SAVER to 2, AIRPODS_SLEEP to 0, NEW_EP_CHIME to 0, NOTICE_SOUND to 1, ACCOUNT_SUMMARY to 1, ANIME_APART to 1,
     )
 
     private val DEFAULTS = CINEMA + SETTINGS
@@ -137,8 +137,6 @@ object Theme {
         wallpaperFile(ctx).delete()
     }
 
-    fun hex(color: Int) = String.format("#%06X", color and 0xFFFFFF)
-
     fun typeface(ctx: Context, style: Int = Typeface.NORMAL): Typeface =
         Typeface.create(FONTS[get(ctx, FONT)].second, style)
 
@@ -151,8 +149,8 @@ object Theme {
     /** The page background for the stored gradient settings. */
     fun background(ctx: Context): android.graphics.drawable.Drawable {
         if (get(ctx, BG_TYPE) == BG_PHOTO) photoBackground(ctx)?.let { return it }
-        // Full resolution and dithered (no bands); the plain GradientDrawable only if that bitmap can't be made.
-        SmoothGradient.pageBitmap(ctx)?.let { return android.graphics.drawable.BitmapDrawable(ctx.resources, it) }
+        // Dithered (no bands); a solid color is the plain GradientDrawable.
+        SmoothGradient.pageDrawable(ctx)?.let { return it }
         return gradient(
             get(ctx, BG_TOP), get(ctx, BG_BOTTOM), get(ctx, BG_TYPE).coerceAtMost(2), get(ctx, BG_ANGLE),
             ctx.resources.displayMetrics.widthPixels,

@@ -36,25 +36,42 @@ class HomeRedirectService : AccessibilityService() {
     private val watchdog = object : Runnable {
         override fun run() {
             if (amazonHome(this@HomeRedirectService)) return // Dream OS was closed: Fire TV's own home stays
-            val root = rootInActiveWindow
-            val onLauncher = root?.packageName == AMAZON_LAUNCHER
-            if (amazonSettingsOpen) {
-                val inGrace = SystemClock.uptimeMillis() - pausedAt < GRACE_MS
-                if (onLauncher && !inGrace && !showsAmazonSettings(root!!)) {
-                    amazonSettingsOpen = false
-                    goHome()
-                }
-                handler.postDelayed(this, CHECK_MS)
-                return
+            // The window reads are calls into the launcher's process: on the window thread, not on the main thread
+            // Dream OS (coming back from this very Home press) and the key filter share.
+            val g = watchGen
+            windowsHandler.post {
+                val root = try { rootInActiveWindow } catch (e: Exception) { null }
+                val onLauncher = root?.packageName == AMAZON_LAUNCHER
+                val showsSettings = onLauncher && showsAmazonSettings(root!!)
+                handler.post { if (g == watchGen) watchStep(onLauncher, showsSettings) }
             }
-            if (onLauncher) {
-                idleTicks = 0
-                goHome()
-            } else if (++idleTicks >= IDLE_TICKS_TO_STOP) {
-                return // something else has stayed in front; stop until the next launcher event
-            }
-            handler.postDelayed(this, CHECK_MS)
         }
+    }
+
+    /** Stops the [watchdog], a check already on its way included. */
+    private fun stopWatchdog() {
+        watchGen++
+        handler.removeCallbacks(watchdog)
+    }
+    @Volatile private var watchGen = 0
+
+    private fun watchStep(onLauncher: Boolean, showsSettings: Boolean) {
+        if (amazonSettingsOpen) {
+            val inGrace = SystemClock.uptimeMillis() - pausedAt < GRACE_MS
+            if (onLauncher && !inGrace && !showsSettings) {
+                amazonSettingsOpen = false
+                goHome()
+            }
+            handler.postDelayed(watchdog, CHECK_MS)
+            return
+        }
+        if (onLauncher) {
+            idleTicks = 0
+            goHome()
+        } else if (++idleTicks >= IDLE_TICKS_TO_STOP) {
+            return // something else has stayed in front; stop until the next launcher event
+        }
+        handler.postDelayed(watchdog, CHECK_MS)
     }
 
     private var forceStopDeadline = 0L
@@ -230,7 +247,7 @@ class HomeRedirectService : AccessibilityService() {
 
     override fun onDestroy() {
         sleepTimer?.cancel()
-        handler.removeCallbacks(watchdog)
+        stopWatchdog()
         handler.removeCallbacks(forceStopper)
         super.onDestroy()
     }
@@ -247,7 +264,7 @@ class HomeRedirectService : AccessibilityService() {
 
     private fun startWatchdog() {
         idleTicks = 0
-        handler.removeCallbacks(watchdog)
+        stopWatchdog()
         handler.postDelayed(watchdog, CHECK_MS)
     }
 
@@ -414,10 +431,6 @@ class HomeRedirectService : AccessibilityService() {
             instance?.performGlobalAction(AccessibilityService.GLOBAL_ACTION_BACK)
         }
 
-        fun globalHome() {
-            instance?.performGlobalAction(AccessibilityService.GLOBAL_ACTION_HOME)
-        }
-
         /** Package of the app on screen, or null if the service isn't running. */
         fun foregroundPackage(): String? =
             instance?.let { it.rootInActiveWindow?.packageName?.toString() ?: it.lastPkg }
@@ -473,7 +486,7 @@ class HomeRedirectService : AccessibilityService() {
             amazonHomeCache = on
             // commit(), not apply(): the process may end right after.
             ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().putBoolean(KEY_AMAZON_HOME, on).commit()
-            if (on) instance?.let { it.handler.removeCallbacks(it.watchdog) }
+            if (on) instance?.stopWatchdog()
         }
 
         private const val PREFS = "home_redirect"
@@ -490,7 +503,7 @@ class HomeRedirectService : AccessibilityService() {
 
     override fun onUnbind(intent: Intent?): Boolean {
         instance = null
-        handler.removeCallbacks(watchdog)
+        stopWatchdog()
         // A force-stop takes the service off the enabled list too (Fire OS's accessibility manager does that when
         // it handles the stop, sometimes seconds later, after a new Dream OS process has already put it back), so a
         // missing entry alone doesn't mean the user chose it. Only the user's own switch in Fire OS Settings counts:

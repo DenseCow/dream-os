@@ -100,8 +100,11 @@ internal object DreamAccounts {
         save(ctx, ids.drop(1).associateWith { "" }, "${service.uppercase()} unlinked")
     }
 
-    /** A Real-Debrid access token refreshed by the resolver: kept, so the next start doesn't refresh again. */
-    fun refreshedRealDebrid(access: String, refresh: String?) {
+    /**
+     * A Real-Debrid access token refreshed by the resolver: kept, so the next start doesn't refresh again.
+     * Under [save]'s lock, so a refresh finishing during Disconnect can't bring the token back.
+     */
+    @Synchronized fun refreshedRealDebrid(access: String, refresh: String?) {
         val ctx = app ?: return
         if (!linked(ctx, "rd")) return
         val e = prefs(ctx).edit().putString("realdebridtoken", access)
@@ -155,13 +158,16 @@ object DreamFilters {
     /** Keys the resolver honors that Settings doesn't show. */
     private val EXTRA = setOf("hide.avc", "hide.3d", "hide.upscaled")
 
-    /** The filters as the resolver applies them. Missing values fall back to safe defaults for this stick. */
-    class Values internal constructor(private val v: Map<String, String>) {
+    /**
+     * The filters as the resolver applies them. Missing values fall back to safe defaults for this stick.
+     * [deviceCap]: the best this stick and TV can show ([DeviceVideo.capIndex]); never relaxed.
+     */
+    class Values internal constructor(private val v: Map<String, String>, val deviceCap: Int = 0) {
         private fun on(k: String, def: Boolean) = v[k].let { if (it.isNullOrEmpty()) def else it == "true" }
         /** A quality cap was ever chosen; without one the resolver ranks 1080p first. */
         val known = !v["quality.max"].isNullOrEmpty()
         /** 0 4K, 1 1080p, 2 720p, 3 SD: anything better is dropped. */
-        val cap = Q.indexOf(v["quality.max"]).coerceAtLeast(0)
+        val cap = maxOf(Q.indexOf(v["quality.max"]).coerceAtLeast(0), deviceCap)
         /** SD only goes when something better exists. */
         val hideSd = v["quality.min"].let { if (it.isNullOrEmpty()) true else it != "sd" }
         val hideCam = on("hide.cam", true)
@@ -203,7 +209,11 @@ object DreamFilters {
     /** Any thread; one prefs read, then cached until a value changes. */
     fun current(ctx: Context): Values {
         cached?.let { return it }
-        return Values(stored(ctx)).also { cached = it }
+        // Under the lock [put] takes: a read racing a change could otherwise cache the old values for good.
+        synchronized(this) {
+            cached?.let { return it }
+            return Values(stored(ctx), DeviceVideo.capIndex(ctx)).also { cached = it }
+        }
     }
 
     /** What Dream OS holds, by option key (for the settings UI). */
@@ -213,7 +223,34 @@ object DreamFilters {
     /** A value the user chose; non-filter keys are ignored. */
     fun put(ctx: Context, key: String, value: String) {
         if (key !in KEYS && key !in EXTRA) return
-        prefs(ctx).edit().putString(key, value).apply()
-        cached = null
+        synchronized(this) {
+            prefs(ctx).edit().putString(key, value).apply()
+            cached = null
+        }
     }
+}
+
+/**
+ * What this stick and TV can actually show: 4K only when the TV takes a 3840-wide mode AND a video decoder handles
+ * 3840x2160. The Fire TV Stick HD / Lite (AFTSS) outputs 1080p and its HEVC decoders stop at 1920x1088.
+ */
+object DeviceVideo {
+    @Volatile private var plays4k: Boolean? = null
+
+    fun plays4k(ctx: Context): Boolean = plays4k ?: (PlaybackPrefs.screenIs4k(ctx) && decodes4k()).also {
+        plays4k = it
+        Log.w("FireHome", "Device video: plays up to ${if (it) "4K" else "1080p"}")
+    }
+
+    /** [DreamFilters.Values.cap] scale: 0 4K, 1 1080p. */
+    fun capIndex(ctx: Context) = if (plays4k(ctx)) 0 else 1
+
+    private fun decodes4k(): Boolean = try {
+        android.media.MediaCodecList(android.media.MediaCodecList.REGULAR_CODECS).codecInfos.any { info ->
+            !info.isEncoder && info.supportedTypes.any { t ->
+                (t == "video/hevc" || t == "video/avc") &&
+                    info.getCapabilitiesForType(t).videoCapabilities?.isSizeSupported(3840, 2160) == true
+            }
+        }
+    } catch (e: Exception) { false }
 }

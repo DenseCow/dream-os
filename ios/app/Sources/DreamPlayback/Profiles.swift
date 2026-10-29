@@ -83,7 +83,10 @@ public final class Profiles: @unchecked Sendable {
         store(all().filter { $0.id != id })
         if currentId() == id { setCurrent(Self.first) }
         setPin(id, nil)
+        forgetKeys(id)
         DreamStore.shared.removeProfileData(id)
+        // Its Trakt sign-in goes now, not at the next profile switch.
+        Trakt.shared.forgetRemovedProfiles()
     }
 
     // MARK: First-run setup
@@ -94,10 +97,28 @@ public final class Profiles: @unchecked Sendable {
 
     // MARK: PIN
 
-    public func hasPin(_ id: String) -> Bool { SecureStore.get("pin." + id) != nil }
+    /// Whether each profile has a PIN / Face ID, read from the Keychain once (`current()` runs for every list a page
+    /// filters) and forgotten whenever either is set. Only readable answers are kept.
+    private let keyLock = NSLock()
+    private var pinKnown: [String: Bool] = [:]
+    private var faceKnown: [String: Bool] = [:]
+    /// Profiles whose PIN couldn't be read at the last try (the PIN pad then says so instead of "Wrong PIN").
+    private var unreadable = Set<String>()
+
+    private func forgetKeys(_ id: String) { keyLock.withLock { pinKnown[id] = nil; faceKnown[id] = nil } }
+
+    /// A Keychain that can't be read right now counts as locked: a locked profile never opens on an error.
+    public func hasPin(_ id: String) -> Bool {
+        if let k = keyLock.withLock({ pinKnown[id] }) { return k }
+        let l = SecureStore.lookup("pin." + id)
+        guard l.readable else { return true }
+        keyLock.withLock { pinKnown[id] = l.value != nil }
+        return l.value != nil
+    }
 
     /// Saves [pin] for profile [id] as "salt:sha256(salt+pin)", or removes the lock (and Face ID) when nil or "".
     public func setPin(_ id: String, _ pin: String?) {
+        defer { forgetKeys(id) }
         guard let pin, !pin.isEmpty else { SecureStore.set("pin." + id, nil); setFaceId(id, false); return }
         var salt = [UInt8](repeating: 0, count: 8)
         _ = SecRandomCopyBytes(kSecRandomDefault, salt.count, &salt)
@@ -112,7 +133,11 @@ public final class Profiles: @unchecked Sendable {
     /// True when [pin] unlocks profile [id] (or it has no PIN). After 5 wrong PINs in a row every further try waits a
     /// growing while (`pinWaitSeconds`); a try during the wait always fails.
     public func checkPin(_ id: String, _ pin: String) -> Bool {
-        guard let stored = SecureStore.get("pin." + id) else { return true }
+        let l = SecureStore.lookup("pin." + id)
+        // Unreadable: the profile stays locked and the pad asks again.
+        guard l.readable else { _ = keyLock.withLock { unreadable.insert(id) }; return false }
+        _ = keyLock.withLock { unreadable.remove(id) }
+        guard let stored = l.value else { return true }
         if pinWaitSeconds(id) > 0 { return false }
         let parts = stored.split(separator: ":", maxSplits: 1).map(String.init)
         guard parts.count == 2 else { return false }
@@ -138,6 +163,7 @@ public final class Profiles: @unchecked Sendable {
 
     /// The PIN pad's line after a wrong PIN.
     public func pinError(_ id: String) -> String {
+        if keyLock.withLock({ unreadable.contains(id) }) { return "Couldn't check the PIN. Try again." }
         let w = pinWaitSeconds(id)
         return w <= 0 ? "Wrong PIN. Try again." : w < 60 ? "Too many tries. Try again in \(w) seconds." : "Too many tries. Try again in \((w + 59) / 60) minutes."
     }
@@ -165,11 +191,19 @@ public final class Profiles: @unchecked Sendable {
     /// is never stored any other way.
     private static func faceKey(_ id: String) -> String { "faceid." + id }
 
-    public func faceIdOn(_ id: String) -> Bool { SecureStore.get(Self.faceKey(id)) != nil }
+    /// Unreadable reads as off: the PIN is asked instead.
+    public func faceIdOn(_ id: String) -> Bool {
+        if let k = keyLock.withLock({ faceKnown[id] }) { return k }
+        let l = SecureStore.lookup(Self.faceKey(id))
+        guard l.readable else { return false }
+        keyLock.withLock { faceKnown[id] = l.value != nil }
+        return l.value != nil
+    }
 
     /// Turns Unlock With Face ID on (remembering today's enrolled faces) or off for profile [id].
     public func setFaceId(_ id: String, _ on: Bool) {
         SecureStore.set(Self.faceKey(id), on ? (FaceIdCheck.enrolledNow() ?? "on") : nil)
+        forgetKeys(id)
     }
 
     /// True when Face ID may open profile [id] now: it has a PIN, the option is on, the phone can check, and no face or

@@ -35,8 +35,14 @@ actor AvailabilityChecker {
         var at: Date
     }
 
-    /// "availability2": the first store held "none" answers that were really failed checks (2026-10-28); they're gone.
-    private var cache: [String: Entry] = DreamStore.shared.get([String: Entry].self, "availability2") ?? [:]
+    /// "availability3": answers from before "HQ PreDVD" and friends counted as CAM (2026-10-29) are dropped and asked
+    /// again ("availability2" before it held failed checks as "none", 2026-10-28).
+    private var cache: [String: Entry] = AvailabilityChecker.storedAnswers()
+    private static let store = "availability3"
+    private static func storedAnswers() -> [String: Entry] {
+        for old in ["availability", "availability2"] { DreamStore.shared.set(nil as [String: Entry]?, old) }
+        return DreamStore.shared.get([String: Entry].self, store) ?? [:]
+    }
     private var showRefs: [String: ShowRef] = DreamStore.shared.get([String: ShowRef].self, "availabilityShows") ?? [:]
     private var running: [String: Task<Entry?, Never>] = [:]
     private var failedAt: [String: Date] = [:]
@@ -45,6 +51,25 @@ actor AvailabilityChecker {
     private var shows: [Int: (Date, Target?)] = [:]
 
     static let recentDays = 90, newShowDays = 365, episodeDays = 21
+
+    init() {
+        NotificationCenter.default.addObserver(forName: .dreamStreamFound, object: nil, queue: nil) { n in
+            guard let key = n.userInfo?["key"] as? String, let best = n.userInfo?["best"] as? String,
+                  let title = n.userInfo?["title"] as? Title else { return }
+            Task { await AvailabilityChecker.shared.found(key, best: best, title: title) }
+        }
+    }
+
+    /// Dream Core found a link for a real release: a pill that said otherwise (Not Available Yet, CAM Only) says
+    /// Available Now at once. Only titles that already have a pill answer: an older title never gains one.
+    func found(_ key: String, best: String, title: Title) {
+        guard let old = cache[key], old.status != .available else { return }
+        cache[key] = Entry(status: .available, best: best.isEmpty ? nil : best, note: nil, checkedAt: Date(), releaseAt: nil, date: old.date)
+        failedAt[key] = nil
+        heldAt[key] = nil
+        AvailabilityNews.nowAvailable(title, best: best.isEmpty ? nil : best)
+        save()
+    }
 
     struct Target: Sendable {
         let key: String
@@ -63,11 +88,25 @@ actor AvailabilityChecker {
         return cache[target.key].map(Self.state)
     }
 
+    /// What the card showed, with its best copy (any age, no network): a title page's first frame.
+    func peekDetail(_ t: Title) -> AvailabilityDetail? {
+        guard Self.mayHavePill(t) else { return nil }
+        if t.kind == .tv {
+            guard let ref = showRefs[String(t.id)], let key = ref.key else { return nil }
+            if let local = Self.localEntry(releaseAt: ref.releaseAt, date: ref.date) { return Self.detail(local) }
+            guard Self.recentEpisode(at: ref.releaseAt, date: ref.date) else { return nil }
+            return cache[key].map(Self.detail)
+        }
+        if let target = Self.cardTarget(t), let local = Self.localEntry(target) { return Self.detail(local) }
+        return cache["movie:\(t.id)"].map(Self.detail)
+    }
+
     /// The card / title page answer (fetches when stale). nil: no pill for this title.
     func detail(_ t: Title) async -> AvailabilityDetail? {
         // (Instant Play is NOT started here: every card's pill asks this, and it flooded the Play lane with look-aheads
         // for whole rows and search results, so a real Play failed. The title page starts it: TitleDetailsModel.load.)
         var target = Self.cardTarget(t)
+        if t.kind == .tv, let kept = keptShowAnswer(t) { return Self.detail(kept) }
         if target == nil && t.kind == .tv { target = await showTarget(t) }
         // STANDARDS §5: a movie counts as new for ~90 days after its digital OR theatrical release. A film in theaters
         // months ago but digital only recently (Spider-Man: Brand New Day: Jul 29 / Oct 6) keeps its pill.
@@ -240,6 +279,19 @@ actor AvailabilityChecker {
         return .some(Self.state(e))
     }
 
+    /// A show's answer the card already showed: its kept target (`showRefs`, kept between launches) and a fresh check,
+    /// without asking TMDB and TVmaze first. An hour-old target is looked up again in the background.
+    private func keptShowAnswer(_ t: Title) -> Entry? {
+        guard Self.mayHavePill(t), let ref = showRefs[String(t.id)], let key = ref.key else { return nil }
+        let e: Entry
+        if let local = Self.localEntry(releaseAt: ref.releaseAt, date: ref.date) { e = local }
+        else if Self.recentEpisode(at: ref.releaseAt, date: ref.date), let c = cache[key], fresh(c, key) { e = c }
+        else { return nil }
+        let known = shows[t.id].map { Date().timeIntervalSince($0.0) < 3600 } ?? false
+        if !known && Date().timeIntervalSince(ref.at) >= 3600 { Task(priority: .utility) { _ = await self.showTarget(t) } }
+        return e
+    }
+
     // MARK: targets
 
     static func cardTarget(_ t: Title) -> Target? {
@@ -264,7 +316,6 @@ actor AvailabilityChecker {
             guard p.count == 3 else { return nil }
             return Target(key: key, request: PlayRequest(title: t, season: p[1], episode: p[2]), releaseAt: ref.releaseAt, date: ref.date)
         }
-        let air = await AirTimes.info(t.id)
         let imdb = Tmdb.str(d["external_ids"] as? [String: Any], "imdb_id")
         let first = Tmdb.str(d, "first_air_date").count == 10 ? Tmdb.str(d, "first_air_date") : t.date
         var target: Target?
@@ -272,6 +323,16 @@ actor AvailabilityChecker {
             guard let o = o as? [String: Any] else { return nil }
             let date = Tmdb.str(o, "air_date"); guard date.count == 10 else { return nil }
             return (o["season_number"] as? Int ?? 0, o["episode_number"] as? Int ?? 0, date, nil)
+        }
+        // The exact air time only matters within a day of today or of the 21-day window's edge; otherwise TMDB's day
+        // does, and TVmaze (one call every 0.55 s, shared with New Episodes at launch) is asked in the background.
+        let days = [ep(d["last_episode_to_air"])?.2, ep(d["next_episode_to_air"])?.2].compactMap { $0 }.compactMap { DreamTime.daysFromToday($0) }
+        let air: AirTimes.Info?
+        if days.contains(where: { abs($0) <= 1 || abs($0 + Self.episodeDays) <= 1 }) {
+            air = await AirTimes.info(t.id)
+        } else {
+            air = await AirTimes.shared.cached(t.id)
+            if air == nil { Task.detached(priority: .utility) { _ = await AirTimes.info(t.id) } }
         }
         func req(_ s: Int, _ e: Int) -> PlayRequest { PlayRequest(title: t, imdbId: imdb.hasPrefix("tt") ? imdb : nil, season: s, episode: e) }
         if first <= DreamTime.ymdPlus(0) {
@@ -364,7 +425,7 @@ actor AvailabilityChecker {
 
     private func save() {
         if cache.count > 3000 { cache = Dictionary(uniqueKeysWithValues: cache.sorted { $0.value.checkedAt > $1.value.checkedAt }.prefix(2500).map { ($0.key, $0.value) }) }
-        DreamStore.shared.set(cache, "availability2")
+        DreamStore.shared.set(cache, Self.store)
     }
 
     private func saveShows() {
@@ -395,12 +456,14 @@ actor AvailabilityChecker {
         guard await Services.shared.sources.isActive() else { return nil }
         guard let all = await Services.shared.sources.quick(r) else { return nil }
         if all.isEmpty { return SourceSurvey(total: 0, quality: 0, cam: 0) }
-        let cams = all.filter { isCam($0.torrentName + " " + ($0.fileName ?? "")) }
-        let good = all.filter { c in !cams.contains { $0.id == c.id } }
+        // The pick's own lists (ReleaseWords): junk isn't a copy at all, and a CAM is never Available Now.
+        let real = all.filter { !ReleaseWords.isJunk($0.torrentName) }
+        let cams = real.filter { isCam($0) }
+        let good = real.filter { c in !cams.contains { $0.id == c.id } }
         func qi(_ q: String) -> Int { ["4K": 0, "1080p": 1, "720p": 2][q] ?? 3 }
         let top = good.min { (qi($0.quality), -$0.seeders) < (qi($1.quality), -$1.seeders) }
         let topCam = cams.min { (qi($0.quality), -$0.seeders) < (qi($1.quality), -$1.seeders) }
-        return SourceSurvey(total: all.count, quality: good.count, cam: cams.count,
+        return SourceSurvey(total: real.count, quality: good.count, cam: cams.count,
                             best: top.map { [$0.quality, source($0.torrentName)].compactMap { $0 }.joined(separator: " ") },
                             bestCam: topCam.map { camTag($0.torrentName) + " " + $0.quality })
     }
@@ -409,8 +472,10 @@ actor AvailabilityChecker {
         let u = t.uppercased()
         return words.contains { u.range(of: "(?<![A-Z0-9])\(NSRegularExpression.escapedPattern(for: $0))(?![A-Z0-9])", options: .regularExpression) != nil }
     }
-    static func isCam(_ t: String) -> Bool {
-        has(t, ["CAM", "HQCAM", "CAMRIP", "CAM-RIP", "HDCAM", "HDTS", "TS", "TELESYNC", "HDTC", "TC", "TELECINE", "DVDSCR", "SCREENER", "PDVD", "PREDVD", "HDTSRIP"])
+    /// A camera / screener copy by its names or the scraper's own label (the pick's rule, NativeResolver.scraped).
+    static func isCam(_ c: StreamCandidate) -> Bool {
+        ["CAM", "SCR", "TELESYNC", "TS"].contains((c.scraperQuality ?? "").uppercased()) ||
+            ReleaseWords.isCam(c.torrentName) || c.fileName.map(ReleaseWords.isCam) == true
     }
     private static func source(_ t: String) -> String? {
         if has(t, ["REMUX"]) { return "Remux" }
@@ -422,9 +487,7 @@ actor AvailabilityChecker {
         if has(t, ["DVDRIP"]) { return "DVDRip" }
         return nil
     }
-    private static func camTag(_ t: String) -> String {
-        ["HDCAM", "CAMRIP", "CAM", "HDTS", "TELESYNC", "TS", "HDTC", "TELECINE", "TC", "DVDSCR", "SCREENER", "SCR", "PDVD", "PREDVD"].first { has(t, [$0]) } ?? "CAM"
-    }
+    private static func camTag(_ t: String) -> String { ReleaseWords.camLabel(t) }
 
     /// The movie's US digital release day (TMDB release_dates type 4), else the earliest anywhere.
     private static func digitalDate(_ id: Int) async -> String? {
@@ -502,4 +565,6 @@ extension ContentCatalog {
     func availabilityKnown() async -> [String: Availability] { await AvailabilityChecker.shared.known() }
 
     func mayHavePill(_ title: Title) -> Bool { AvailabilityChecker.mayHavePill(title) }
+
+    func availabilityPeek(for title: Title) async -> AvailabilityDetail? { await AvailabilityChecker.shared.peekDetail(title) }
 }

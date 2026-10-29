@@ -59,7 +59,7 @@ object UpdatePage {
                     else -> "Checks for a New Version Once a Day"
                 }) { open(a, null, refresh) },
             if (av != null) PremiumSettings.Item("Install Version ${av.version}", DreamUpdate.sizeText(av.sizeBytes).ifEmpty { null },
-                R.drawable.ic_bolt, null, "Fire TV Asks You to Confirm") { open(a, INSTALL, refresh) } else null,
+                R.drawable.ic_bolt, null, "Your Fire Stick Asks You to Confirm") { open(a, INSTALL, refresh) } else null,
             PremiumSettings.Item("Check for Updates", null, LineIcon.CLOCK, null,
                 if (last > 0) "Last Checked ${whenText(a, last)}" else "Not Checked Yet") { open(a, CHECK, refresh) },
             PremiumSettings.Item("Automatic Updates", null, R.drawable.ic_bolt, auto, "Downloads New Versions, Then Asks Before Installing") {
@@ -104,6 +104,7 @@ object UpdatePage {
             c.animate().translationX(dp(64).toFloat()).alpha(0f).setDuration(280).setInterpolator(Ui.EXIT).start()
             v.animate().alpha(0f).setDuration(300).withEndAction { (v.parent as? ViewGroup)?.removeView(v) }.start()
             if (then != null) then() else if (back != null && back.isAttachedToWindow) back.requestFocus()
+            DreamNotices.screenFreed()
         }
         fun later() { DreamUpdate.snooze(a, r); close() }
         root = Root(a) { later() }
@@ -163,6 +164,7 @@ object UpdatePage {
         })
         (a.window.decorView as FrameLayout).addView(root, MATCH_PARENT, MATCH_PARENT)
         card = root
+        Ui.onDetach(root) { if (card === root) card = null } // Activity recreated with it open: it can open again
         // In from the right like the notices' banners: a soft spring, a touch of growth, then focus on Install Now.
         root.alpha = 0f
         root.animate().alpha(1f).setDuration(Ui.OVERLAY_IN).setInterpolator(Ui.EASE).start()
@@ -251,7 +253,7 @@ object UpdatePage {
             leftTitle = k.label("Updates", 30f, k.text, k.semibold, Ui.TRACK_TITLE, lines = 2)
             left.addView(leftTitle, LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT).apply { topMargin = dp(8) })
             leftNote = k.label("Dream OS looks for a new version once a day and never updates while you're watching. " +
-                "Fire TV asks you to confirm every update.", 16f, k.dim, k.font, lines = 0).apply { setLineSpacing(dp(4).toFloat(), 1f) }
+                "Your Fire Stick asks you to confirm every update.", 16f, k.dim, k.font, lines = 0).apply { setLineSpacing(dp(4).toFloat(), 1f) }
             left.addView(leftNote, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { topMargin = dp(12) })
             leftVersion = k.label("Dream OS ${DreamUpdate.currentVersion()}", 18f, k.text, k.medium, lines = 2)
             left.addView(leftVersion, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { topMargin = dp(24) })
@@ -261,6 +263,7 @@ object UpdatePage {
             Ui.unclip(row) // focused pills and rows lift past their rows: only the screen edge clips
             (a.window.decorView as FrameLayout).addView(root, MATCH_PARENT, MATCH_PARENT)
             page = root
+            Ui.onDetach(root) { if (page === root) page = null } // Activity recreated with it open: it can open again
             DreamUpdate.addListener(listener)
             root.alpha = 0f
             root.animate().alpha(1f).setDuration(Ui.OVERLAY_IN).setInterpolator(Ui.EASE).start()
@@ -292,16 +295,16 @@ object UpdatePage {
             page = null
             DreamUpdate.removeListener(listener)
             ui.main.removeCallbacks(tick)
-            panel.top?.let { it.alive = false; it.onHide() }
             panel.release()
             root.animate().alpha(0f).setDuration(Ui.OVERLAY_OUT).setInterpolator(Ui.EXIT).withEndAction { (root.parent as? ViewGroup)?.removeView(root) }.start()
             if (back != null && back.isAttachedToWindow) back.requestFocus()
             onClose?.invoke()
+            DreamNotices.screenFreed()
         }
 
         fun leftForMain() {
             leftTitle.text = "Updates"
-            leftNote.text = "Dream OS looks for a new version once a day and never updates while you're watching. Fire TV asks you to confirm every update."
+            leftNote.text = "Dream OS looks for a new version once a day and never updates while you're watching. Your Fire Stick asks you to confirm every update."
             leftVersion.text = "Dream OS ${DreamUpdate.currentVersion()}"
         }
 
@@ -342,8 +345,8 @@ object UpdatePage {
             val err = checkMsg ?: DreamUpdate.lastError(a)
             when {
                 checking -> main.row("status", "Checking for Updates…", "Version $cur", mark = SetupUi.Mark.BUSY, static = true)
-                handedOff && av != null -> main.row("status", "Fire TV Is Asking to Confirm",
-                    "Choose Install on Fire TV's screen. Dream OS restarts on its own when it's done.", mark = SetupUi.Mark.BUSY, static = true)
+                handedOff && av != null -> main.row("status", "Your Fire Stick Is Asking to Confirm",
+                    "Choose Install on the Fire Stick's screen. Dream OS restarts on its own when it's done.", mark = SetupUi.Mark.BUSY, static = true)
                 installing && av != null -> main.row("status", "Installing Version ${av.version}", installMsg ?: "Getting Ready…", mark = SetupUi.Mark.BUSY, static = true)
                 av != null -> main.row("status", "Version ${av.version} Is Available",
                     if (installFailed && installMsg != null) installMsg else releasedText(a, av) + if (DreamUpdate.ready(a)) "  ·  Downloaded" else "",
@@ -360,10 +363,10 @@ object UpdatePage {
             } else main.hide("progress")
             if (needPermission && !DreamUpdate.canInstall(a)) {
                 main.row("perm", DreamUpdate.MSG_PERMISSION,
-                    "Fire TV asks once. On the next screen, turn on Dream OS under Install Unknown Apps, then come back here.",
+                    "Your Fire Stick asks once. On the next screen, turn on Dream OS under Install Unknown Apps, then come back here.",
                     "Open Settings", SetupUi.Mark.WARN, chevron = true, top = 12) {
                     if (!DreamUpdate.openInstallSettings(a)) {
-                        installMsg = "Open Fire TV Settings  ›  My Fire TV  ›  Developer Options  ›  Install Unknown Apps, then turn on Dream OS."
+                        installMsg = "Open Settings  ›  My Fire TV  ›  Developer Options  ›  Install Unknown Apps, then turn on Dream OS."
                         installFailed = true
                         paint()
                     }
@@ -477,7 +480,7 @@ object UpdatePage {
             s.onShow = {
                 leftTitle.text = "What's New"
                 leftNote.text = "Dream OS ${r.version}" + releasedText(a, r).let { if (it.isEmpty()) "" else "  ·  $it" }
-                leftVersion.text = "You Have Version ${DreamUpdate.currentVersion()}"
+                leftVersion.text = "You have version ${DreamUpdate.currentVersion()}"
             }
             return s
         }

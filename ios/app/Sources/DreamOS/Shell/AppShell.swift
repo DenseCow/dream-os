@@ -26,6 +26,8 @@ struct AppShell: View {
             ForEach(ShellModel.Tab.allCases) { t in
                 if model.visited.contains(t) {
                     stack(t)
+                        // Hidden tabs stay alive (they keep their place) but rest: no hero advancing, no rainbow clock.
+                        .environment(\.pageActive, model.tab == t)
                         .opacity(model.tab == t ? 1 : 0)
                         .allowsHitTesting(model.tab == t)
                         .accessibilityHidden(model.tab != t)
@@ -60,6 +62,8 @@ struct AppShell: View {
             Text(model.playMessage ?? "")
         }
         .task { await model.refreshMyList() }
+        // A title page's My List button saves through the service: card menus, Home's row and the My List tab follow.
+        .onReceive(NotificationCenter.default.publisher(for: .dreamMyListChanged)) { _ in Task { await model.refreshMyList() } }
         .dynamicTypeSize(.xSmall ... .xxLarge)
         .preferredColorScheme(.dark)
         .tint(Palette.text)

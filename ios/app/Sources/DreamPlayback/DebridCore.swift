@@ -161,26 +161,72 @@ public enum DebridAccounts {
         func token(_ service: String) -> String? {
             switch service { case "ad": allDebrid; case "pm": premiumize; case "tb": torBox; case "rd": realDebrid; default: nil }
         }
+        /// What the ledger and the accounts fingerprint know a linked account by: Real-Debrid's device client id (its
+        /// access token changes on every refresh, which orphaned the ledger's test torrents), else the token.
+        func ledgerId(_ service: String) -> String? {
+            guard let t = token(service) else { return nil }
+            return service == "rd" && !realDebridClientId.isEmpty ? realDebridClientId : t
+        }
     }
 
     private static let lock = NSLock()
     nonisolated(unsafe) private static var cached: Accounts?
     nonisolated(unsafe) private static var cachedAt: Int64 = 0
+    /// Bumped by `invalidate`: a read that started before a link or unlink never caches what it read.
+    nonisolated(unsafe) private static var generation = 0
+    /// Keychain writes of the account fields: a token refresh can't write the token back during Disconnect.
+    private static let writeLock = NSLock()
 
     private static func secureKey(_ id: String) -> String { "debrid." + id }
 
     static func get() -> Accounts {
         let now = Mono.now()
-        if let c = lock.withLock({ cached.flatMap { now - cachedAt < 60_000 ? $0 : nil } }) { return c }
+        let (hit, gen) = lock.withLock { (cached.flatMap { now - cachedAt < 60_000 ? $0 : nil }, generation) }
+        if let hit { return hit }
         var raw: [String: String] = [:]
-        for (_, list) in ids { for id in list { raw[id] = SecureStore.get(secureKey(id)) ?? "" } }
+        var readable = true
+        for (_, list) in ids {
+            for id in list {
+                let r = SecureStore.lookup(secureKey(id))
+                raw[id] = r.value ?? ""
+                readable = readable && r.readable
+            }
+        }
         let a = Accounts(raw: raw)
-        lock.withLock { cached = a; cachedAt = now }
+        // An unreadable Keychain (locked since the phone started) is asked again next time, never remembered as "none".
+        if readable { lock.withLock { if generation == gen { cached = a; cachedAt = now } } }
+        checkTrail(a, readable: readable)
         return a
     }
 
+    // The services linked on this iPhone, without any token (DreamStore "debrid.trail"), so a Keychain that lost them
+    // shows up in the log instead of looking like the viewer signed out.
+    private static let trailKey = "debrid.trail"
+    nonisolated(unsafe) private static var trailChecked = false
+
+    private static func checkTrail(_ a: Accounts, readable: Bool) {
+        guard readable, !lock.withLock({ trailChecked }) else { return }
+        lock.withLock { trailChecked = true }
+        let trail = DreamStore.shared.get([String].self, trailKey) ?? []
+        let lost = trail.filter { !hasToken(a, $0) }
+        if !lost.isEmpty {
+            plog.error("Dream OS accounts: \(lost.map { name($0) }.joined(separator: ", "), privacy: .public) were linked on this iPhone but the Keychain no longer has them (an install signed by another Apple ID, or the Keychain was reset); nothing in Dream signed them out")
+        }
+        saveTrail()
+    }
+
+    /// The service's token is saved (switched on or off).
+    private static func hasToken(_ a: Accounts, _ service: String) -> Bool {
+        guard let id = ids.first(where: { $0.0 == service })?.1[1] else { return false }
+        return !(a.raw[id] ?? "").isEmpty
+    }
+
+    private static func saveTrail() {
+        DreamStore.shared.set(defaultOrder.filter { linked($0) }, trailKey)
+    }
+
     /// Forget the cached read (an account was just linked or unlinked).
-    static func invalidate() { lock.withLock { cached = nil; cachedAt = 0 } }
+    static func invalidate() { lock.withLock { cached = nil; cachedAt = 0; generation += 1 } }
 
     /// A debrid account is linked and switched on (without one nothing can play).
     public static var anyLinked: Bool { Self.get().any }
@@ -243,8 +289,10 @@ public enum DebridAccounts {
     /// An approved sign-in (`DebridLink.Poll.done`'s settings): saved at once; linking turns the service on.
     public static func link(_ service: String, settings: [String: String]) {
         guard let list = ids.first(where: { $0.0 == service })?.1 else { return }
-        for id in list { SecureStore.set(secureKey(id), settings[id] ?? "") }
-        SecureStore.set(secureKey(list[0]), "true")
+        writeLock.withLock {
+            for id in list { SecureStore.set(secureKey(id), settings[id] ?? "") }
+            SecureStore.set(secureKey(list[0]), "true")
+        }
         changed("\(service.uppercased()) linked")
         Task.detached { await DebridExpiry.accountsChanged() }
     }
@@ -252,23 +300,29 @@ public enum DebridAccounts {
     /// Signs [service] out. The "<name>.enable" switch is left as it is.
     public static func unlink(_ service: String) {
         guard let list = ids.first(where: { $0.0 == service })?.1 else { return }
-        for id in list.dropFirst() { SecureStore.set(secureKey(id), nil) }
+        writeLock.withLock { for id in list.dropFirst() { SecureStore.set(secureKey(id), nil) } }
         AccountHealth.forget(service)
         changed("\(service.uppercased()) unlinked")
     }
 
     /// A Real-Debrid access token refreshed by the resolver: kept, so the next start doesn't refresh again.
     static func refreshedRealDebrid(access: String, refresh: String?) {
-        guard linked("rd") else { return }
-        SecureStore.set(secureKey("realdebridtoken"), access)
-        if let refresh, !refresh.isEmpty { SecureStore.set(secureKey("realdebridrefresh"), refresh) }
-        invalidate()
+        let saved: Bool = writeLock.withLock {
+            guard linked("rd") else { return false }
+            SecureStore.set(secureKey("realdebridtoken"), access)
+            if let refresh, !refresh.isEmpty { SecureStore.set(secureKey("realdebridrefresh"), refresh) }
+            return true
+        }
+        if saved { invalidate() }
     }
 
     private static func changed(_ what: String) {
         invalidate()
+        saveTrail()
         plog.info("Dream OS accounts: \(what, privacy: .public)")
-        NotificationCenter.default.post(name: .dreamAccountsChanged, object: nil)
+        // Observers update screens: always delivered on the main thread, whoever linked or unlinked.
+        if Thread.isMainThread { NotificationCenter.default.post(name: .dreamAccountsChanged, object: nil) }
+        else { DispatchQueue.main.async { NotificationCenter.default.post(name: .dreamAccountsChanged, object: nil) } }
     }
 }
 
@@ -295,6 +349,8 @@ enum DebridHttp {
         c.httpShouldSetCookies = false
         c.httpCookieAcceptPolicy = .never
         c.timeoutIntervalForRequest = 15
+        // A request's timeout only counts silence; a server that trickles bytes is cut off here instead of never.
+        c.timeoutIntervalForResource = 60
         c.httpMaximumConnectionsPerHost = 6
         return URLSession(configuration: c)
     }()

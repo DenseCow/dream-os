@@ -72,6 +72,8 @@ final class ThumbDesk: @unchecked Sendable {
                     return (n, false)
                 }
             }
+            // A walk-only decoder with the walk done has nothing left: its mpv, decoder and connection go.
+            if role == .walk, walkLeft == 0 { return nil }
             cond.wait(until: Date().addingTimeInterval(1))
         }
         return nil
@@ -421,17 +423,7 @@ final class MPVThumbnailer: @unchecked Sendable {
         guard logged < 6, let m = ev.data?.assumingMemoryBound(to: mpv_event_log_message.self).pointee else { return }
         logged += 1
         let text = String(cString: m.text).trimmingCharacters(in: .whitespacesAndNewlines)
-        Log.player.info("Thumbs mpv[\(String(cString: m.prefix), privacy: .public)]: \(Self.redact(text), privacy: .public)")
-    }
-
-    /// Never the stream URL in the log: hosts only.
-    static func redact(_ s: String) -> String {
-        guard s.contains("http") else { return s }
-        var out = s
-        while let r = out.range(of: #"https?://[^\s'"]+"#, options: .regularExpression) {
-            out.replaceSubrange(r, with: "<\(URL(string: String(out[r]))?.host() ?? "link")>")
-        }
-        return out
+        Log.player.info("Thumbs mpv[\(String(cString: m.prefix), privacy: .public)]: \(MPVEngine.redact(text), privacy: .public)")
     }
 
     private func teardown() {

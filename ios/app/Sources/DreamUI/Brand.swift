@@ -67,8 +67,6 @@ public enum Rainbow {
         return 0.2126 * lin((c >> 16) & 0xFF) + 0.7152 * lin((c >> 8) & 0xFF) + 0.0722 * lin(c & 0xFF)
     }
 
-    static func mix(_ a: UInt32, _ b: UInt32, _ t: Double) -> Color { Color(hex: mixHex(a, b, t)) }
-
     /// Blends two 0xRRGGBB colors.
     public static func mixHex(_ a: UInt32, _ b: UInt32, _ t: Double) -> UInt32 {
         func ch(_ s: UInt32) -> UInt32 {
@@ -139,14 +137,24 @@ public struct DreamLabel: View {
     }
 }
 
-/// Play-type primary action: pearl at rest, the rainbow fade while pressed (Rainbow.Fade), ink following the hue.
+/// Play-type primary action: the rainbow fade (Rainbow.Fade) at all times (owner, 2026-10-27), ink following the hue.
 public struct PlayButtonStyle: ButtonStyle {
     var fullWidth: Bool
     public init(fullWidth: Bool = false) { self.fullWidth = fullWidth }
     public func makeBody(configuration: Configuration) -> some View {
+        PlayButtonFace(configuration: configuration, fullWidth: fullWidth)
+    }
+}
+
+/// The fade's clock stops in a tab that isn't showing (`pageActive`), so a hidden hero doesn't redraw 30 times a second.
+private struct PlayButtonFace: View {
+    let configuration: ButtonStyleConfiguration
+    let fullWidth: Bool
+    @Environment(\.pageActive) private var active
+
+    var body: some View {
         let pressed = configuration.isPressed
-        // Always the rainbow fade (owner, 2026-10-27), not only while a finger is on it.
-        TimelineView(.animation(minimumInterval: 1 / 30)) { ctx in
+        TimelineView(.animation(minimumInterval: 1 / 30, paused: !active)) { ctx in
             let hex = Rainbow.fadeHex(ctx.date)
             configuration.label
                 .font(.body.weight(.semibold))

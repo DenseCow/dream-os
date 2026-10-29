@@ -62,7 +62,7 @@ final class RowClaims: @unchecked Sendable {
     /// A chart (Top 10) keeps its order: shown as is, its titles kept out of the rows below.
     /// With [n], the first [n] left after the filters (a chart fetched long so it always fills, e.g. Top 10).
     func claim(_ row: String, _ list: [Title], _ n: Int? = nil) -> [Title] {
-        var l = animeOk(row) ? list : list.filter { !RowMix.isAnime($0) }
+        var l = animeOk(row) || !RowMix.animeApart ? list : list.filter { !RowMix.isAnime($0) }
         if let n { l = Array(l.prefix(n)) }
         if !RowPaging.foreign(row) { lock.withLock { for t in l where owner[t.key] == nil { owner[t.key] = row } } }
         return l
@@ -151,11 +151,13 @@ enum RowMix {
     private static var thisYear: Int { Calendar.current.component(.year, from: Date()) }
 
     /// Japanese animation, and Chinese or Korean animated series not for kids or families.
-    static func isAnime(_ t: Title) -> Bool {
-        guard t.genreIds.contains(16) else { return false }
-        if t.lang == "ja" { return true }
-        return t.kind == .tv && ["zh", "cn", "ko"].contains(t.lang) && !t.genreIds.contains(10762) && !t.genreIds.contains(10751)
-    }
+    static func isAnime(_ t: Title) -> Bool { AnimeDubs.isAnime(t) }
+
+    /// Keep Anime in Anime Sections (AnimePrefs). Off, no row, hero or TMDB query leaves anime out (NewReleases.withAnime).
+    static var animeApart: Bool { AnimePrefs.apart }
+
+    /// [t] is anime this profile keeps in the anime sections: left out of a general row, hero or chart.
+    static func animeHidden(_ t: Title) -> Bool { isAnime(t) && animeApart }
 
     private static let personal = ["Because You Watched", "Top Picks", "Continue Watching", "My List", "Recommended", "More Like"]
 
@@ -180,8 +182,9 @@ enum RowMix {
         for t in known { counts[t.lang, default: 0] += 1 }
         let top = counts.max { $0.value < $1.value }
         let own = (top.map { known.count >= 4 && $0.value * 2 >= known.count } ?? false) ? top?.key : nil
+        let keepAnime = anime || !animeApart
         let ok = list.filter { t in
-            !t.adult && t.posterPath != nil && !ctx.finished.contains(t.key) && (anime || !isAnime(t)) && !poorlyRated(t) &&
+            !t.adult && t.posterPath != nil && !ctx.finished.contains(t.key) && (keepAnime || !isAnime(t)) && !poorlyRated(t) &&
                 (t.lang.isEmpty || ctx.langs.contains(t.lang) || t.lang == own || widelySeen(t))
         }
         return artFirst ? ok.filter { $0.backdropPath != nil } + ok.filter { $0.backdropPath == nil } : ok

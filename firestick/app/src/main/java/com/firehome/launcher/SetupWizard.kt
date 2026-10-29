@@ -4,13 +4,11 @@ import android.animation.ValueAnimator
 import android.content.Context
 import android.content.pm.PackageManager
 import android.content.res.ColorStateList
-import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
 import android.graphics.RectF
 import android.graphics.drawable.BitmapDrawable
-import android.graphics.drawable.ColorDrawable
 import android.graphics.drawable.Drawable
 import android.graphics.drawable.GradientDrawable
 import android.graphics.drawable.LayerDrawable
@@ -34,22 +32,22 @@ import android.widget.FrameLayout
 import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.TextView
-import java.io.File
 
 /**
- * First-run setup ("Run setup again" in Settings): one idea per screen, in Dream Cinema's look
- * (PremiumKit pills and glass, Ui tokens, the theme colors).
+ * First-run setup ("Run Setup Again" in Settings), redesigned 2026-10-29 for someone who has never heard of
+ * TMDB, debrid or scrapers and is holding a remote.
  *
- * Steps: Welcome, Before You Start, Your Time Zone, Connect Your Accounts, Scrapers, Playback
- * Preferences, the final check, Unlock Features, Profile, Who's Watching, Your Look & Screen Fit, Home
- * Button, Content (TMDB, weather, Your Apps), Dream OS + Apple, AirPods, iPhone, Voice Search, Extras, Done.
- * Every choice is saved the moment it's made, so any step can simply be continued past; everything
- * here also lives in Settings.
+ * Four chapters after Welcome: Get Ready (what you'll need, time zone), Connect (TMDB key, debrid service,
+ * scrapers, the real check), Your Fire TV (unlock, Home button, screen fit, voice search, AirPods, iPhone) and
+ * Make It Yours (profile, who's watching, picture and sound, apps, extras), then Done. Every choice is saved the
+ * moment it's made; everything here also lives in Settings.
  *
- * Layout: the backdrop is full-bleed; the content is inset by Screen fit. Most steps are split:
- * the title and explanation on the left, the controls on the right with the buttons under them, so
- * Down always ends on Continue. Only the current step's views exist. Steps cross-fade and slide with
- * a short stagger (transform + alpha only; every animation ends, nothing loops).
+ * Every step has one shape, learned once ([Frame]): the chapter rail across the top ([ChapterRail]), the step's
+ * emblem with "Step 2 of 4" and a plain title, one or two sentences, the one thing to do, then the buttons pinned
+ * to the bottom of the column: one primary forward action, quiet secondary ones beside it. A sub-page (typing a
+ * key, signing in) takes the whole column under the rail and returns or moves on by itself when it's done.
+ * Only the current step's views exist. Steps slide and fade with a short stagger (transform and alpha only;
+ * every animation ends, nothing loops).
  *
  * The host forwards BACK to [handleBack] (false = close the wizard), resumes and AirPods changes to
  * [refreshAirPods], the Alexa hand-off to [alexaListening] / [alexaHeard] / [alexaCancelled], and
@@ -68,7 +66,6 @@ class SetupWizard(
         fun connectAirPods(): Boolean
         fun openBluetoothSettings()
         fun remoteUrl(): String?
-        fun qrBitmap(url: String): Bitmap
         /** Launchable apps (the home screen's list). */
         fun apps(): List<AppEntry>
         fun openAccessibilitySettings()
@@ -76,31 +73,12 @@ class SetupWizard(
         fun finish()
     }
 
-    /**
-     * A page built on a [SetupPanel] for a required step (the Accounts and Scrapers pages, shared with Settings).
-     * The wizard draws the title, subtitle and buttons; [content] goes in the right-hand column.
-     */
-    interface SlotPage {
-        val title: String
-        val subtitle: String?
-        /** Right-hand column content (rows, progress, codes). Up to ~460 x 330 dp. */
-        val content: View
-        /** First focus on the page; null = the wizard's Continue button. */
-        val focus: View?
-        val primaryLabel: String get() = "Continue"
-        /** Optional quiet second button ("Not Now"); it moves on like Continue. */
-        val secondaryLabel: String? get() = null
-        /** true = handled inside the page (e.g. it closed its own sub-view). */
-        fun handleBack(): Boolean = false
-        /** The page is leaving the screen (stop timers, drop bitmaps). */
-        fun release() {}
-    }
+    /** A step whose body is a [SetupPanel] (pages shared with Settings): Back steps back inside it first. */
+    private class Slot(val panel: SetupPanel, val focus: () -> View?, val release: () -> Unit)
 
     private class Built(val view: View, val focus: View, val anims: List<View>)
 
     private val k = PremiumKit(ctx)
-    /** The rainbow border of each round chip ([tapChip]), set by whoever gives it the Dream focus look. */
-    private val chipGlow = java.util.WeakHashMap<View, CinemaGlow>()
     private val Int.dp get() = Ui.dp(ctx, this)
     private val profileId = Profiles.current(ctx).id
     private var name: String
@@ -111,10 +89,12 @@ class SetupWizard(
     private var cur = WELCOME
     private var page: Built? = null
     private var gen = 0
-    private var slot: SlotPage? = null
+    /** The step on screen was reached going forward (a passed check moves on by itself only then). */
+    private var forward = true
+    private var slot: Slot? = null
     private var nameField: EditText? = null
-    private var keyField: EditText? = null
-    private var cancelKeyEdit: (() -> Unit)? = null
+    /** Closes what the step opened in place (the time zone list); Back runs it first. */
+    private var cancelInPlace: (() -> Unit)? = null
     /** Live status for the step on screen: re-checked when Dream OS resumes, and when AirPods change. Updates in place. */
     private var onResumeCheck: (() -> Unit)? = null
     private var onAirPodsCheck: (() -> Unit)? = null
@@ -124,7 +104,7 @@ class SetupWizard(
     private var voiceTested = false
 
     private val stage = FrameLayout(ctx)
-    private val dots = LinearLayout(ctx).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER }
+    private val rail = ChapterRail(ctx, k).apply { alpha = 0f }
     private var marks: FrameLayout? = null
 
     /**
@@ -136,14 +116,13 @@ class SetupWizard(
     /**
      * The wizard's root. The D-pad only ever moves within the step on screen: never into a page
      * that's fading out, never onto the home screen under the wizard, and at an edge focus simply
-     * stays. Up from the buttons always reaches a slot page's rows.
+     * stays. Up from the buttons always reaches a panel step's rows.
      */
     private inner class Root : FrameLayout(ctx) {
         override fun hasOverlappingRendering() = false
 
         // Home's shell (and with it the shared glow clock) is paused under setup: the clock keeps running for
-        // the wizard's own glows and rainbow buttons while it shows (only views on screen are re-tinted, and it
-        // drops to a few steps a second when the remote rests).
+        // the wizard's own glows and rainbow buttons while it shows.
         override fun onAttachedToWindow() { super.onAttachedToWindow(); CinemaStyle.keep(true) }
         override fun onDetachedFromWindow() { CinemaStyle.keep(false); super.onDetachedFromWindow() }
 
@@ -151,9 +130,9 @@ class SetupWizard(
             val pv = page?.view as? ViewGroup
             if (focused == null || pv == null || !inside(focused, pv)) return super.focusSearch(focused, direction)
             FocusFinder.getInstance().findNextFocus(pv, focused, direction)?.let { return it }
-            if (direction == View.FOCUS_UP && isButton(focused)) slot?.content?.let { c -> firstFocusable(c)?.let { return it } }
-            // Left / Right from a row in a scrolling list (nothing beside it): straight to Continue, so a long
-            // list never has to be scrolled to its end to reach the step's buttons.
+            if (direction == View.FOCUS_UP && isButton(focused)) slot?.panel?.let { c -> firstFocusable(c)?.let { return it } }
+            // Left / Right from a row in a scrolling list (nothing beside it): straight to the primary button, so a
+            // long list never has to be scrolled to its end to reach it.
             if ((direction == View.FOCUS_LEFT || direction == View.FOCUS_RIGHT) && inScroll(focused, pv))
                 pv.findViewWithTag<View>(MAIN)?.takeIf { it.isShown && it.isFocusable }?.let { return it }
             return focused
@@ -182,13 +161,12 @@ class SetupWizard(
         return null
     }
 
-    /** Where focus belongs on the step on screen: the slot's own pick, else the step's start, else Continue. */
+    /** Where focus belongs on the step on screen: the panel's own pick, else the step's start, else the primary button. */
     private fun pageTarget(): View? {
         val b = page ?: return null
-        // A slot page's focus; null means the wizard's Continue button ([SlotPage.focus]).
-        slot?.let { s -> s.focus?.takeIf { it.isAttachedToWindow && it.isShown }?.let { return it } }
+        slot?.let { s -> s.focus()?.takeIf { it.isAttachedToWindow && it.isShown }?.let { return it } }
         b.focus.takeIf { it.isAttachedToWindow && it.isShown && it.isFocusable }?.let { return it }
-        return b.view.findViewWithTag<View>(MAIN) ?: firstFocusable(b.view)
+        return b.view.findViewWithTag<View>(MAIN)?.takeIf { it.isShown } ?: firstFocusable(b.view)
     }
 
     /**
@@ -204,6 +182,7 @@ class SetupWizard(
         Log.w(TAG, "setup: no focus on a key press, back to the step")
         return t.requestFocus()
     }
+    private val openedAt = android.os.SystemClock.uptimeMillis()
     /** The first step's main control; give it to [ModalHost.show] as the focus. */
     val initialFocus: View
 
@@ -216,10 +195,15 @@ class SetupWizard(
         view.isClickable = true // swallow touches meant for the app underneath
         view.background = backdrop()
         view.addView(stage, MATCH_PARENT, MATCH_PARENT)
-        view.addView(dots, FrameLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT, Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL))
+        view.addView(rail, FrameLayout.LayoutParams(colW(), WRAP_CONTENT, Gravity.TOP or Gravity.CENTER_HORIZONTAL))
         applyFit(ScreenFit.get(ctx))
+        // A first-run setup cut short (a restart, a force stop) picks up after the last step it finished.
+        if (!canCancel && !Profiles.isSetUp(ctx)) SetupGate.savedStep(ctx)?.toIntOrNull()?.let { done ->
+            val list = stepList()
+            val i = list.indexOf(done)
+            if (i >= 0 && i + 1 < list.size) { cur = list[i + 1]; Log.w(TAG, "setup: resuming at step $cur") }
+        }
         steps = stepList()
-        buildDots()
         val b = build(cur)
         page = b
         stage.addView(b.view, FrameLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT))
@@ -227,16 +211,16 @@ class SetupWizard(
         enter(b, 24.dp.toFloat(), delay = 160)
         initialFocus = b.focus
         updateProgress()
-        // Focused pills, chips and rows lift past their rows and groups on every step: only the screen edge clips.
+        // Focused pills, tiles and rows lift past their rows and groups on every step: only the screen edge clips.
         Ui.unclip(view)
     }
 
     // ---- public hooks ----
 
-    /** Goes back a step. Returns false when the wizard should close (first step, and cancelling is allowed). */
+    /** Goes back: inside a sub-page first, then a step. Returns false when the wizard should close (first step, cancel allowed). */
     fun handleBack(): Boolean {
-        cancelKeyEdit?.let { it(); return true }
-        if (slot?.handleBack() == true) return true
+        cancelInPlace?.let { it(); return true }
+        if (slot?.panel?.pop() == true) return true
         val i = steps.indexOf(cur)
         if (i <= 0) return !canCancel
         go(steps[i - 1], forward = false)
@@ -253,13 +237,11 @@ class SetupWizard(
         try { onResumeCheck?.invoke(); onAirPodsCheck?.invoke() } catch (e: Exception) { Log.w(TAG, "setup resume: $e") }
     }
 
-    /** Apps were added or removed: steps that depend on an app (Apple TV) may come or go. */
+    /** Apps were added or removed: nothing in the step list depends on an app any more; the progress is redrawn. */
     fun onPackagesChanged() {
-        // The step on screen stays in the list so its dot stays lit.
         val s = stepList().let { if (cur in it) it else (it + cur).sorted() }
         if (s == steps) return
         steps = s
-        buildDots()
         updateProgress()
     }
 
@@ -287,9 +269,9 @@ class SetupWizard(
         return true
     }
 
-    /** Text typed on the phone remote: fills the step's text field, if it has one. */
+    /** Text typed on the phone remote: fills the step's name box, if it has one (key and address entry use [SetupText]). */
     fun phoneText(text: String): Boolean {
-        val f = keyField ?: nameField ?: return false
+        val f = nameField ?: return false
         f.setText(text)
         f.setSelection(f.text.length)
         f.requestFocus()
@@ -298,48 +280,49 @@ class SetupWizard(
 
     // ---- steps & navigation ----
 
-    /**
-     * Welcome, then what Dream OS needs to play (time zone, accounts, scrapers, a real check), then the
-     * personal and optional steps. The required ones hold Continue until they're met ([blocker]).
-     */
-    /**
-     * Owner's order (2026-10-28, same as the iPhone): what you'll need, the time zone, then every account step back to
-     * back (TMDB key, debrid, scrapers, the check that they work together), then the steps that have nothing to do
-     * with accounts.
-     */
-    private fun stepList(): List<Int> = listOfNotNull(
-        WELCOME, NEED, INTRO, ZONE, TMDB, ACCOUNTS, SCRAPERS, CHECK, PLAYBACK, UNLOCK,
-        PROFILE, WHO, LOOK,
-        // The unlock turns the Home button on; its own step stays only for when it's still off.
-        if (homeActive() && cur != HOME) null else HOME,
-        CONTENT, APPLE, AIRPODS, IPHONE, VOICE, MORE, DONE,
-    )
+    /** Welcome, the four chapters in order (the Home button step only while it's still off), then Done. */
+    private fun stepList(): List<Int> = listOf(WELCOME) +
+        CHAPTERS.flatMap { it.second }.filter { it != HOME || !homeActive() || cur == HOME } + DONE
+
+    private fun chapterOf(step: Int) = CHAPTERS.indexOfFirst { step in it.second }
+
+    /** The steps of [step]'s chapter that are in the flow now. */
+    private fun chapterSteps(step: Int): List<Int> = CHAPTERS.getOrNull(chapterOf(step))?.second?.filter { it in steps } ?: emptyList()
+
+    /** "Step 2 of 4" within the chapter. */
+    private fun stepLabel(): String {
+        val inCh = chapterSteps(cur)
+        val i = inCh.indexOf(cur)
+        return if (i < 0) "" else "Step ${i + 1} of ${inCh.size}"
+    }
 
     /** Why a required step can't be left yet (shown on the page), or null. */
     private fun blocker(step: Int): String? = when (step) {
         ACCOUNTS -> SetupGate.accountsBlocker(ctx, accountPages?.isChecking() == true)
         SCRAPERS -> if (SetupGate.scrapersReady(ctx)) null else "Add a scraper repository and turn on at least one provider to continue."
-        CHECK -> if (SetupGate.checkPassed(ctx)) null else "Run the check to continue."
+        CHECK -> if (SetupGate.checkPassed(ctx)) null else "The check needs to pass to continue."
         TMDB -> if (Tmdb.hasKey(ctx)) null else "Add your TMDB key to continue."
         else -> null
     }
 
     private fun next(from: Int) {
         if (from != cur) return // a click from a page that is already fading away
+        // The Select that opened setup (Settings › Run Setup Again) lands on Start Setup as it appears: ignored.
+        if (from == WELCOME && android.os.SystemClock.uptimeMillis() - openedAt < 700) return
         blocker(from)?.let { why -> showBlocker(why); return }
         if (from == ZONE) SetupGate.setZoneConfirmed(ctx)
-        if (from == INTRO) SetupIntro.accept(ctx)
+        if (from == NEED) SetupIntro.accept(ctx)
         if (from == PROFILE && !commitProfile()) return
         if (from == DONE) {
+            SetupGate.clearStep(ctx)
             Profiles.markSetUp(ctx)
             celebrate { host.finish() }
             return
         }
         SetupGate.saveStep(ctx, from.toString()) // an interrupted setup picks up after the last finished step
-        val s = stepList()
-        if (s != steps) { steps = s; buildDots() }
+        steps = stepList()
         val i = steps.indexOf(from)
-        val to = if (i >= 0 && i + 1 < steps.size) steps[i + 1] else steps.firstOrNull { it > from } ?: DONE
+        val to = if (i >= 0 && i + 1 < steps.size) steps[i + 1] else DONE
         go(to, forward = true)
     }
 
@@ -351,6 +334,7 @@ class SetupWizard(
         leave()
         val old = page
         cur = to
+        this.forward = forward
         gen++
         val b = build(to)
         page = b
@@ -371,8 +355,7 @@ class SetupWizard(
         stage.postOnAnimation {
             stage.postOnAnimation {
                 if (page !== b || g != gen) return@postOnAnimation
-                // No offscreen layers: a full-screen layer for the old page and one per part of the new page were
-                // allocated and filled mid-fade (the long frames). Each draws its few views with the fade's alpha.
+                // No offscreen layers: each part draws its few views with the fade's alpha.
                 if (old != null && old.view.parent === stage) {
                     old.view.forceHasOverlappingRendering(false)
                     old.view.animate().translationX(-dx * 0.6f).alpha(0f).setStartDelay(0).setDuration(Ui.OVERLAY_OUT).setInterpolator(Ui.EXIT)
@@ -381,7 +364,7 @@ class SetupWizard(
                 enter(b, dx, delay = 110)
             }
         }
-        // Resolved when it runs: a slot page may only have its rows by then.
+        // Resolved when it runs: a panel step may only have its rows by then.
         b.view.post { if (page === b) (pageTarget() ?: b.focus).requestFocus() }
         updateProgress()
     }
@@ -395,15 +378,14 @@ class SetupWizard(
         voice = null
         blockNote = null
         nameField = null
-        keyField = null
-        cancelKeyEdit = null
+        cancelInPlace = null
         slot?.let { try { it.release() } catch (e: Exception) {} }
         slot = null
         marks?.let { view.removeView(it) }
         marks = null
     }
 
-    /** Slides and fades a page's parts in one after another (Ui page motion; every part lands by ~0.6 s). */
+    /** Slides and fades a page's parts in one after another (every part lands by ~0.5 s). */
     private fun enter(b: Built, dx: Float, delay: Long) {
         for ((i, c) in b.anims.withIndex()) {
             c.animate().cancel()
@@ -414,9 +396,6 @@ class SetupWizard(
                 .setDuration(Ui.OVERLAY_IN).setInterpolator(Ui.EASE).start()
         }
     }
-
-    /** New content arriving in a step that's already on screen: a short, soft rise (no swap, no flash). */
-    private fun reveal(views: List<View>) = Ui.rise(views, fromDp = 6, step = Ui.STAGGER, duration = Ui.PAGE)
 
     // ---- in-place updates (no relayout or redraw when nothing changed) ----
 
@@ -430,94 +409,84 @@ class SetupWizard(
     private fun build(s: Int): Built = try {
         when (s) {
             WELCOME -> welcome()
-            INTRO -> introStep()
             NEED -> needStep()
-            TMDB -> tmdbStep()
-            PLAYBACK -> playbackStep()
-            WHO -> whoStep()
             ZONE -> zoneStep()
+            TMDB -> tmdbStep()
             ACCOUNTS -> accountsStep()
             SCRAPERS -> scrapersStep()
             CHECK -> checkStep()
             UNLOCK -> unlockStep()
-            PROFILE -> profile()
-            LOOK -> look()
             HOME -> homeStep()
-            CONTENT -> content()
-            APPLE -> appleStep()
+            LOOK -> fitStep()
+            VOICE -> voiceStep()
             AIRPODS -> airPodsStep()
             IPHONE -> iPhoneStep()
-            VOICE -> voiceStep()
+            PROFILE -> profile()
+            WHO -> whoStep()
+            PLAYBACK -> playbackStep()
+            CONTENT -> content()
             MORE -> moreStep()
             else -> doneStep()
         }
     } catch (e: Exception) {
         // Never strand the viewer: a step that can't be built becomes a plain page that moves on.
         Log.w(TAG, "setup step $s failed", e)
-        val p = Split(glyph(R.drawable.ic_info), "Let's Keep Going", "This part can be set up later in Settings.")
-        p.built(p.buttons("Continue") { next(s) })
+        val f = Frame(IconArt(ctx, R.drawable.ic_info), "Let's Keep Going", "This part can be set up later in Settings.")
+        f.built(f.buttons("Continue") { next(s) })
     }
 
-    private fun buildDots() {
-        dots.removeAllViews()
-        repeat(steps.size) {
-            dots.addView(View(ctx).apply { background = oval(k.text); alpha = 0.2f },
-                LinearLayout.LayoutParams(6.dp, 6.dp).apply { marginStart = 5.dp; marginEnd = 5.dp })
-        }
-    }
-
+    /** The rail shows the chapter on screen and how far into it this step is; Welcome and Done have no rail. */
     private fun updateProgress() {
-        val at = steps.indexOf(cur)
-        for (i in 0 until dots.childCount) {
-            val d = dots.getChildAt(i)
-            val now = i == at
-            d.animate().alpha(if (now) 1f else if (i < at) 0.5f else 0.2f)
-                .scaleX(if (now) 1.35f else 1f).scaleY(if (now) 1.35f else 1f).setDuration(300).setInterpolator(Ui.SETTLE).start()
+        val c = chapterOf(cur)
+        val prog = FloatArray(CHAPTERS.size) { i ->
+            when {
+                c < 0 -> if (cur == DONE) 1f else 0f
+                i < c -> 1f
+                i > c -> 0f
+                else -> chapterSteps(cur).let { s -> (s.indexOf(cur) + 1f) / s.size.coerceAtLeast(1) }
+            }
         }
+        rail.set(CHAPTERS.map { it.first }, c, prog)
+        rail.animate().alpha(if (c >= 0) 1f else 0f).setDuration(Ui.OVERLAY_IN).setInterpolator(Ui.EASE).start()
     }
 
-    /** Content inset: Screen fit plus the design margins; the backdrop stays full-bleed. */
+    /** The column's width: [COL_W] where it fits, else the room inside Screen Fit and the side margins. */
+    private fun colW(): Int {
+        val ins = ScreenFit.insets(ctx, ScreenFit.get(ctx))
+        val room = ctx.resources.displayMetrics.widthPixels - 2 * (ins[0] + SIDE.dp)
+        return minOf(COL_W.dp, room)
+    }
+
+    /** Content inset: Screen Fit plus the design margins; the backdrop stays full-bleed. */
     private fun applyFit(percent: Int) {
         val ins = ScreenFit.insets(ctx, percent)
         stage.setPadding(ins[0] + SIDE.dp, ins[1] + TOP.dp, ins[0] + SIDE.dp, ins[1] + BOTTOM.dp)
-        (dots.layoutParams as? FrameLayout.LayoutParams)?.let { it.bottomMargin = ins[1] + 18.dp; dots.layoutParams = it }
+        (rail.layoutParams as? FrameLayout.LayoutParams)?.let { it.topMargin = ins[1] + TOP.dp; it.width = colW(); rail.layoutParams = it }
+        (page?.view as? FrameLayout)?.getChildAt(0)?.let { c ->
+            (c.layoutParams as? FrameLayout.LayoutParams)?.let { if (it.width > 0) { it.width = colW(); c.layoutParams = it } }
+        }
         marks?.let { placeMarks(it, percent) }
     }
 
-    // ---- 1. welcome ----
+    // ---- Welcome ----
 
     private fun welcome(): Built {
         val col = column()
-        val logo = FrameLayout(ctx).apply {
-            addView(View(ctx).apply {
-                background = GradientDrawable().apply {
-                    gradientType = GradientDrawable.RADIAL_GRADIENT
-                    gradientRadius = 70.dp.toFloat()
-                    colors = intArrayOf(Color.argb(30, 255, 255, 255), Color.argb(8, 255, 255, 255), Color.TRANSPARENT) // neutral: the logo brings the color
-                }
-            }, FrameLayout.LayoutParams(150.dp, 104.dp, Gravity.CENTER))
-            addView(ImageView(ctx).apply {
-                setImageResource(R.drawable.dream_logo) // same cached drawable as the menu logo
-                adjustViewBounds = true
-                scaleType = ImageView.ScaleType.FIT_CENTER
-            }, FrameLayout.LayoutParams(WRAP_CONTENT, 84.dp, Gravity.CENTER))
+        val logo = ImageView(ctx).apply {
+            setImageResource(R.drawable.dream_logo) // same cached drawable as the menu logo
+            adjustViewBounds = true
+            scaleType = ImageView.ScaleType.FIT_CENTER
         }
-        // What Dream OS is (the logo and two lines), what it does (DreamWelcome.kt's feature grid, full width), then the buttons.
-        val intro = vBox()
-        val title = titleText("Welcome to Dream OS", center = false)
-        val sub = subText("Dream OS turns your Fire TV into your own streaming service: every movie and show in one beautiful place, ready to play in seconds. Setup takes about 15 minutes, and every step shows you how.", center = false)
-        intro.addView(title, lp(top = 0))
-        intro.addView(sub, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { topMargin = 6.dp })
-        val top = LinearLayout(ctx).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-            addView(logo, LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT))
-            addView(intro, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f).apply { marginStart = 20.dp })
-        }
-        col.addView(top, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
-        val features = WelcomeFeatures.grid(ctx, k)
-        col.addView(features, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { topMargin = 18.dp })
-        val main = pill("Get Started", primary = true) { next(WELCOME) }
+        // One centered column: the logo, the welcome and one sentence (the focal point), what's inside as a quiet
+        // strip of named glyphs, then the buttons.
+        val title = titleText("Welcome to Dream OS", center = true)
+        val sub = subText("Your movies and shows in one place, ready to play in seconds. Setup takes about 15 minutes, and each step shows you how.", center = true)
+        col.addView(logo, LinearLayout.LayoutParams(WRAP_CONTENT, 64.dp))
+        col.addView(title, lp(top = 20))
+        col.addView(sub, lp(top = 12))
+        val features = WelcomeFeatures.strip(ctx, k)
+        col.addView(features, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { topMargin = 32.dp })
+        val main = pill("Start Setup", primary = true) { next(WELCOME) }.apply { tag = MAIN; minWidth = 200.dp }
         // Moving from another Dream OS stick: BackupTransfer.kt brings everything over, then Dream OS restarts.
         lateinit var restore: View
         restore = pill("Restore From Backup", primary = false) {
@@ -527,148 +496,437 @@ class SetupWizard(
         }
         val buttons = hRow().apply {
             addView(main, LinearLayout.LayoutParams(WRAP_CONTENT, 46.dp))
-            addView(restore, LinearLayout.LayoutParams(WRAP_CONTENT, 46.dp).apply { marginStart = 14.dp })
+            addView(restore, LinearLayout.LayoutParams(WRAP_CONTENT, 46.dp).apply { marginStart = 16.dp })
         }
-        col.addView(buttons, LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT).apply { topMargin = 22.dp })
+        col.addView(buttons, LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT).apply { topMargin = 36.dp })
         Log.w(TAG, "Setup: step Welcome")
         return Built(center(col).apply { (getChildAt(0).layoutParams as FrameLayout.LayoutParams).width = MATCH_PARENT },
             main, listOf(logo, title, sub, features, buttons))
     }
 
-    // ---- 2. profile ----
+    // ---- Get Ready ----
 
-    private fun profile(): Built {
-        val avatar = k.label(emoji, 44f, Color.WHITE).apply {
-            gravity = Gravity.CENTER
-            background = oval(color)
-        }
-        val p = Split(avatar, "Create Your Profile", "A name and a picture. Each profile keeps its own apps, list and look.", iconDp = 88)
-        // PhoneTyping.kt: scan to type the name on your phone (the text lands in the name box via phoneText).
-        p.leftAdd(PhoneTyping.view(ctx, k, 96), 20)
-        val emojis = hRow()
-        val colors = hRow()
-        // Each chip's resting disc, recolored in place when the choice changes (the focus look stays put).
-        val emojiRest = ArrayList<GradientDrawable>()
-        fun paint() {
-            for ((i, d) in emojiRest.withIndex()) emojiBg(d, Profiles.EMOJIS[i] == emoji)
-            // The chosen color: a drawn white check over the swatch (never a text "✓").
-            for (i in 0 until colors.childCount) colors.getChildAt(i).foreground = if (Profiles.COLORS[i] == color) CheckInk(Color.WHITE, weight = 0.11f) else null
-            avatar.text = emoji
-            (avatar.background as GradientDrawable).setColor(color)
-        }
-        for (e in Profiles.EMOJIS) {
-            val rest = GradientDrawable().apply { shape = GradientDrawable.OVAL }
-            emojiRest += rest
-            emojis.addView(tapChip(e, 20f, Ui.LIFT_ICON) { emoji = e; paint() }.apply {
-                // Dream focus: the pearl disc inside the rainbow border (the emoji brings its own color).
-                chipGlow[this] = PearlFocus.apply(this, 17, rest = rest, haloDp = 8)
-            }, LinearLayout.LayoutParams(34.dp, 34.dp).apply { marginStart = 2.dp; marginEnd = 2.dp })
-        }
-        for (c in Profiles.COLORS) {
-            colors.addView(tapChip("", 13f, Ui.LIFT_ICON) { color = c; paint() }.apply {
-                typeface = k.bold
-                setTextColor(Color.WHITE)
-                // A swatch shows its color: focus is the rainbow border and the lift, never a pearl face over it.
-                chipGlow[this] = PearlFocus.apply(this, 13, fill = oval(c), haloDp = 8)
-            }, LinearLayout.LayoutParams(26.dp, 26.dp).apply { marginStart = 7.dp; marginEnd = 7.dp })
-        }
-        paint()
-        val field = textField("Your Name", name, InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_CAP_WORDS, 20) {
-            hideKeyboard()
-            emojis.getChildAt(maxOf(0, Profiles.EMOJIS.indexOf(emoji))).requestFocus()
-        }
-        nameField = field
-        p.add(field, 0)
-        p.add(emojis, 16)
-        p.add(colors, 12)
-        val pin = row("Lock With a PIN", "Ask for a 4-digit PIN when this profile is chosen", icon = R.drawable.ic_shield,
-            toggle = Profiles.hasPin(ctx, profileId)) { r ->
-            if (Profiles.hasPin(ctx, profileId)) { Profiles.setPin(ctx, profileId, null); r.sw?.set(false) }
-            else pins.setNew(profileId) { r.sw?.set(Profiles.hasPin(ctx, profileId)) }
-        }
-        p.add(pin.view, 16)
-        val main = p.buttons("Continue", "Skip") { next(PROFILE) }
-        // Start in the name box when it still needs filling in, otherwise on the chosen picture.
-        return p.built(if (name.isBlank()) field else emojis.getChildAt(maxOf(0, Profiles.EMOJIS.indexOf(emoji))) ?: main)
+    /**
+     * Here's What You'll Need (What You'll Need and Before You Start in one): the three things the Connect chapter
+     * asks for, in that order, and "I Understand" for the responsibility line. Where Your Information Goes swaps
+     * the cards for the list of services, in place.
+     */
+    private fun needStep(): Built {
+        val me = cur
+        val f = Frame(SetupArt(ctx, SetupArt.Kind.INTRO), "Here's What You'll Need",
+            "Dream OS plays from accounts you connect yourself. It doesn't include any movies, shows or sources, and you're responsible for what you add.")
+        val needs = vBox()
+        val cards = hRow().apply { gravity = Gravity.TOP }
+        for ((i, c) in listOf(
+            Triple("A TMDB Key", "Posters, details and search", "Free  ·  About 5 Minutes"),
+            Triple("A Debrid Service", "Streams what you watch in full quality", "About \$3 to \$12 a Month"),
+            Triple("A Scraper Repository", "Free add-ons that find the streams", "Free  ·  About 2 Minutes"),
+        ).withIndex()) cards.addView(needCard(i + 1, c.first, c.second, c.third), LinearLayout.LayoutParams(0, MATCH_PARENT, 1f).apply { if (i > 0) marginStart = 16.dp })
+        needs.addView(cards, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
+        needs.addView(k.label("Trakt, Rotten Tomatoes scores and the rest are optional. Add them later in Settings.",
+            15f, k.dim, k.font, lines = 0), lp(top = 18))
+        val privacy = vBox().apply { visibility = View.GONE }
+        privacy.addView(SetupIntro.list(ctx, k).apply { setPadding(0, 0, 0, 0) }, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
+        privacy.addView(k.label("Dream OS has no ads, tracking or analytics.", 15f, k.dim, k.font, lines = 0), lp(top = 18))
+        f.add(needs, 0)
+        f.add(privacy, 0)
+        lateinit var where: TextView
+        val main = f.buttons("I Understand", listOf("Where Your Information Goes" to {
+            val showPrivacy = privacy.visibility != View.VISIBLE
+            setShown(privacy, showPrivacy)
+            setShown(needs, !showPrivacy)
+            where.text = if (showPrivacy) "What You'll Need" else "Where Your Information Goes"
+            reveal(listOf(if (showPrivacy) privacy else needs))
+        })) { next(me) }
+        where = f.secondary[0]
+        Log.w(TAG, "Setup: step What You'll Need")
+        return f.built(main)
     }
 
-    /** Saves name / picture / color into the profile. False (and a nudge) while the name is blank. */
-    private fun commitProfile(): Boolean {
-        val f = nameField ?: return true
-        val n = f.text.toString().trim().ifEmpty { Profiles.current(ctx).name }
-        if (n.isEmpty()) {
-            f.hint = "Type Your Name First"
-            f.setHintTextColor(ERROR)
-            shake(f)
-            f.requestFocus()
-            return false
-        }
-        name = n
-        val list = Profiles.all(ctx)
-        list.firstOrNull { it.id == profileId }?.let { it.name = n; it.emoji = emoji; it.color = color }
-        Profiles.save(ctx, list)
-        return true
+    /** One of the three things to have ready: its order, name, what it does and what it costs. Not focusable. */
+    private fun needCard(n: Int, title: String, line: String, meta: String) = vBox().apply {
+        background = Ui.rounded(ctx, Ui.alpha(Color.WHITE, 0.05f), Ui.R_LG, 1f, Ui.alpha(Color.WHITE, 0.08f))
+        setPadding(18.dp, 16.dp, 16.dp, 16.dp)
+        val top = hRow().apply { gravity = Gravity.CENTER_VERTICAL }
+        top.addView(SetupArt.monogram(ctx, "$n", 26), LinearLayout.LayoutParams(26.dp, 26.dp))
+        top.addView(k.label(title, 17.5f, k.text, k.semibold, lines = 0).apply { hyphenationFrequency = android.text.Layout.HYPHENATION_FREQUENCY_NONE },
+            LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f).apply { marginStart = 12.dp })
+        addView(top, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
+        addView(k.label(line, 14.5f, k.dim, k.font, lines = 0).apply { setLineSpacing(2.dp.toFloat(), 1f) }, lp(top = 10))
+        addView(k.label(meta, 14f, Ui.alpha(Color.WHITE, 0.80f), k.medium, lines = 0), lp(top = 8))
     }
 
-    // ---- 3. look & screen fit ----
-
-    private fun look(): Built {
-        val p = Split(glyph(R.drawable.ic_flame), "Your Look & Screen Fit", Theme.FUTURE_NOTE)
-        p.note("Screen Fit keeps menus clear of the TV's edges. Adjust it until the four corner marks just fit.")
-        // Dream Cinema is the one look (custom and downloadable themes come in a future update): shown, not picked.
-        p.add(lookCard(Theme.NAME, Theme.CINEMA), 0, LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT))
-        var fit = ScreenFit.get(ctx)
-        val fitRow = stepper("Screen Fit", "Keeps menus clear of the TV's edges", R.drawable.ic_tv, { if (fit == 0) "Full" else "$fit%" }) { by ->
-            fit = (fit + by).coerceIn(0, ScreenFit.MAX)
-            ScreenFit.set(ctx, fit)
-            applyFit(fit)
+    /**
+     * Check Your Time Zone: the zone Dream OS uses and the time there, big. Usually right, so Continue has the
+     * focus; Change Time Zone opens the list in place, and picking one saves it and moves on.
+     */
+    private fun zoneStep(): Built {
+        val me = cur
+        val f = Frame(SetupArt(ctx, SetupArt.Kind.CLOCK), "Check Your Time Zone",
+            "Dream OS uses it to show when new episodes and movies come out.")
+        val now = k.label("", 26f, k.text, k.semibold, lines = 0)
+        val how = k.label("", 15.5f, k.dim, k.font, lines = 0)
+        fun paintNow() {
+            setTextIfNew(now, "${DreamTime.label(ctx, DreamTime.zone(ctx))}  ·  ${DreamTime.formatTime(ctx, System.currentTimeMillis())}")
+            setTextIfNew(how, if (DreamTime.isAutomatic(ctx)) "Set automatically from your Fire Stick." else "Chosen by you.")
         }
-        p.add(fitRow.view, 20)
-        // Corner marks at the edge of the safe area while Screen Fit has the focus.
-        val m = FrameLayout(ctx).apply { alpha = 0f; isClickable = false }
-        for (g in listOf(Gravity.TOP or Gravity.START, Gravity.TOP or Gravity.END, Gravity.BOTTOM or Gravity.START, Gravity.BOTTOM or Gravity.END)) {
-            m.addView(FrameLayout(ctx).apply {
-                addView(View(ctx).apply { background = Ui.rounded(ctx, k.accent, Ui.R_PILL) }, FrameLayout.LayoutParams(56.dp, 4.dp, g))
-                addView(View(ctx).apply { background = Ui.rounded(ctx, k.accent, Ui.R_PILL) }, FrameLayout.LayoutParams(4.dp, 56.dp, g))
-            }, FrameLayout.LayoutParams(56.dp, 56.dp, g))
+        paintNow()
+        f.add(now, 0)
+        f.add(how, 8)
+        var picker: TimeSettings.Picker? = null
+        fun closeList() {
+            picker?.let { it.release(); f.body.removeView(it.view) }
+            picker = null
+            cancelInPlace = null
+            f.listPage(false)
+            setShown(now, true); setShown(how, true)
+            f.main?.requestFocus()
         }
-        view.addView(m, MATCH_PARENT, MATCH_PARENT)
-        marks = m
-        placeMarks(m, fit)
-        val baseFocus = fitRow.view.onFocusChangeListener
-        fitRow.view.setOnFocusChangeListener { v, has ->
-            baseFocus?.onFocusChange(v, has)
-            m.animate().alpha(if (has) 1f else 0f).setDuration(if (has) 220 else 160).setInterpolator(Ui.SETTLE).start()
-        }
-        p.buttons("Continue") { next(LOOK) }
-        return p.built(fitRow.view)
+        val main = f.buttons("Continue", listOf("Change Time Zone" to {
+            if (picker == null) {
+                // The list is a page of its own: the sentence and the buttons step aside so it has the whole column
+                // (a long list of zones is the one list here that scrolls). Back closes it.
+                setShown(now, false); setShown(how, false)
+                f.listPage(true)
+                // The pick shows: the check moves, then the list closes on the new zone and time, and setup moves
+                // on a moment later, like the other steps that advance by themselves.
+                val p = TimeSettings.picker(ctx, heightDp = 300) {
+                    paintNow()
+                    val g = gen
+                    view.postDelayed({ if (g == gen && cur == me) closeList() }, 320)
+                    view.postDelayed({ if (g == gen && cur == me && picker == null) next(me) }, 1_800)
+                }
+                picker = p
+                p.view.layoutParams = LinearLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT)
+                f.body.addView(p.view)
+                cancelInPlace = { closeList() }
+                // Fit the list to the room the column has now, then focus it.
+                f.body.post {
+                    if (cur != me || picker !== p) return@post
+                    (p.view as? ViewGroup)?.getChildAt(0)?.let { c -> c.layoutParams = c.layoutParams.apply { height = f.body.height } }
+                    p.focus.requestFocus()
+                }
+            }
+        })) { next(me) }
+        // The clock keeps the same minute as the list (which refreshes every minute).
+        val tick = object : Runnable { override fun run() { if (cur != me) return; paintNow(); view.postDelayed(this, 15_000) } }
+        view.postDelayed(tick, 15_000)
+        onLeave = { picker?.release(); view.removeCallbacks(tick) }
+        return f.built(main)
     }
 
-    private fun placeMarks(m: FrameLayout, percent: Int) {
-        val ins = ScreenFit.insets(ctx, percent)
-        for (i in 0 until m.childCount) {
-            val c = m.getChildAt(i)
-            (c.layoutParams as FrameLayout.LayoutParams).let { it.setMargins(ins[0] + 10.dp, ins[1] + 10.dp, ins[0] + 10.dp, ins[1] + 10.dp); c.layoutParams = it }
+    // ---- Connect ----
+
+    /** The panel step on screen: refreshes its buttons when a sub-page closes or something changes. */
+    private var panelRefresh: (() -> Unit)? = null
+
+    /**
+     * A step whose body is a [SetupPanel] (pages shared with Settings). While a sub-page is open (typing a key,
+     * signing in) it has the whole column under the rail and the step's buttons step aside; when it closes, the
+     * step repaints ([refresh]) and focus lands on the likely next press ([focusAfter]).
+     */
+    private fun panelFrame(art: View, title: String, sub: String?, panel: SetupPanel, first: SetupScreen,
+                           focusAfter: () -> View?, onRelease: () -> Unit = {}): Frame {
+        val me = cur
+        val f = Frame(art, title, sub)
+        panel.push(first, animate = false)
+        f.add(panel, 0, LinearLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT))
+        panel.onDepth = { d ->
+            if (cur == me) {
+                f.subPage(d > 1)
+                if (d <= 1) {
+                    panelRefresh?.invoke()
+                    // After the panel's own focus pass (it runs on the next frame): the step's likely next press.
+                    view.post { view.post { if (cur == me && panel.depth <= 1) focusAfter()?.takeIf { it.isShown }?.requestFocus() } }
+                }
+            }
         }
+        slot = Slot(panel, { if (panel.depth <= 1) focusAfter() else null }) {
+            // The rows fade out with the step (they went blank at once while the rest of it faded).
+            onRelease(); panel.onDepth = null; panel.release(keepViews = true)
+        }
+        onLeave = { panelRefresh = null }
+        return f
     }
 
-    /** The current look: a tiny Dream Cinema home screen, its name with the pick check, and "Current Look". */
-    private fun lookCard(label: String, look: Map<String, Int>) = LinearLayout(ctx).apply {
-        orientation = LinearLayout.VERTICAL
-        gravity = Gravity.START
-        val prev = LookPreview(look)
-        addView(prev.view, LinearLayout.LayoutParams(240.dp, 134.dp))
-        addView(LinearLayout(ctx).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-            // The drawn neutral pick check (never a text "✓").
-            addView(View(ctx).apply { background = StatusGlyph(BrandRow.Mark.PICK) }, LinearLayout.LayoutParams(16.dp, 16.dp).apply { marginEnd = 8.dp })
-            addView(k.label(label, Ui.T_LABEL, k.text, k.medium))
-            addView(k.label("Current Look", Ui.T_CAPTION, Ui.alpha(k.dim, 0.9f), k.font).apply { setPadding(12.dp, 0, 0, 0) })
-        }, LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT).apply { topMargin = 12.dp })
+    private fun stageUi() = SetupUi(ctx, k).apply { roomy = true }
+
+    /**
+     * Connect Movie & Show Info: the viewer's own free TMDB key (required; Dream OS ships no keys). Until it's
+     * added, the steps to get one with the QR code to TMDB's API page, and Enter My Key opens the entry (the key is
+     * checked, and the page comes back by itself). Ratings (OMDb) are offered once the key is in, as a quiet
+     * extra; setup never offers the built-in OMDb key.
+     */
+    private fun tmdbStep(): Built {
+        val me = cur
+        val ui = stageUi()
+        val panel = SetupPanel(ui)
+        val parts = SetupParts(ctx, k)
+        val keys = KeyPages(ctx, ui, panel, { onResumeCheck?.invoke() }, builtIn = false)
+        val first = SetupScreen(ui, null, null)
+        fun paintFirst() {
+            if (Tmdb.hasKey(ctx)) {
+                first.hide("steps")
+                first.view("added", 0) { parts.result(true, "Your TMDB Key Is Added") }
+                first.view("addedNote", 12) { parts.note("Posters, details and search are ready.", 16f).apply { setPadding(58.dp, 0, 0, 0) } }
+            } else {
+                first.hide("added"); first.hide("addedNote")
+                first.view("steps", 0) {
+                    phoneSteps(listOf(
+                        "Point your phone's camera at the code to open TMDB.",
+                        "Sign up for free, then open the API page.",
+                        "Copy the key labeled API Key. It's 32 letters and numbers.",
+                        "Choose Enter My Key below, and type it here or on your phone.",
+                    ), "https://www.themoviedb.org/settings/api", "themoviedb.org")
+                }
+            }
+        }
+        paintFirst()
+        first.onShow = { paintFirst() }
+        lateinit var f: Frame
+        f = panelFrame(SetupArt(ctx, SetupArt.Kind.ACCOUNTS), "Connect Movie & Show Info",
+            "Posters, details and search come from TMDB, a free movie website. Dream OS needs your own free key, made on your phone.",
+            panel, first, focusAfter = { f.main })
+        val ratings = "Add Rotten Tomatoes Scores"
+        val main = f.buttons("Enter My Key", listOf(
+            "Help" to { panel.push(SetupScreen(ui, "Help With TMDB", null).also { s ->
+                SetupGuide.helpRows(ScreenRows(s), "tmdb", parts, panel, ui, "Get Your Free Key From TMDB", "Keys That Don't Work",
+                    { SetupGuide.TMDB_STEPS }, SetupGuide.TMDB_TROUBLE, SetupGuide.TMDB_INTRO, top = 0)
+            }) },
+            ratings to { panel.push(keys.overview(KeyPages.Kind.OMDB)) },
+        )) { if (Tmdb.hasKey(ctx)) next(me) else panel.push(keys.entry(KeyPages.Kind.TMDB)) }
+        panelRefresh = {
+            val has = Tmdb.hasKey(ctx)
+            setTextIfNew(main, if (has) "Continue" else "Enter My Key")
+            setShown(f.secondary[1], has && !Ratings.omdbEnabled(ctx))
+            paintFirst()
+        }
+        panelRefresh?.invoke()
+        onResumeCheck = { panelRefresh?.invoke() }
+        Log.w(TAG, "Setup: step Movie & Show Info (${if (blocker(me) == null) "key added" else "no key yet"})")
+        return f.built(main)
     }
 
-    // ---- 4. home button ----
+    /**
+     * Steps that need a phone: the QR code big on the left, the numbered steps in plain words beside it, and the
+     * website's name under the code for anyone typing it instead.
+     */
+    private fun phoneSteps(lines: List<String>, url: String, site: String): View {
+        val wrap = hRow().apply { gravity = Gravity.TOP }
+        val code = vBox().apply { gravity = Gravity.CENTER_HORIZONTAL }
+        SetupUi(ctx, k).qr(url, QR_DP)?.let { code.addView(it, LinearLayout.LayoutParams(QR_DP.dp, QR_DP.dp)) }
+        code.addView(k.label(site, 15f, Ui.alpha(Color.WHITE, 0.82f), k.medium, lines = 0).apply { gravity = Gravity.CENTER }, lp(top = 10))
+        wrap.addView(code, LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT))
+        wrap.addView(numbered(lines), LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f).apply { marginStart = 40.dp })
+        return wrap
+    }
+
+    /** Numbered steps: a round number badge and the whole sentence beside it, never cut. */
+    private fun numbered(lines: List<String>, gap: Int = 14) = numberedSteps(ctx, k, lines, gapDp = gap)
+
+    /** The Accounts pages on screen (their live checks decide [blocker] for ACCOUNTS). */
+    private var accountPages: AccountsPages? = null
+    /** The "what's still missing" line on a required step, or null. */
+    private var blockNote: TextView? = null
+
+    private fun showBlocker(why: String) {
+        Log.w(TAG, "Setup: held at step $cur: $why")
+        val n = blockNote ?: return
+        setTextIfNew(n, why)
+        n.visibility = View.VISIBLE
+        shake(n)
+    }
+
+    /**
+     * Connect a Debrid Service: the four services as tiles (choose the one you have). A sign-in that works comes
+     * back by itself and focus lands on Continue. Help Me Choose and Trakt are quiet buttons.
+     */
+    private fun accountsStep(): Built {
+        val me = cur
+        val ui = stageUi()
+        val panel = SetupPanel(ui)
+        val pages = AccountsPages(ctx, ui, panel, inSetup = true) { onResumeCheck?.invoke() }
+        accountPages = pages
+        val first = pages.setupOverview()
+        lateinit var f: Frame
+        f = panelFrame(SetupArt(ctx, SetupArt.Kind.ACCOUNTS), "Connect a Debrid Service",
+            "A debrid service is a paid account that streams movies and shows to Dream OS in full quality. Choose the one you have.",
+            panel, first, focusAfter = { if (accountsReady()) f.main else first.focus() }) { if (accountPages === pages) accountPages = null }
+        val main = f.buttons("Continue", listOf(
+            "Help Me Choose" to { panel.push(pages.help()) },
+            "Connect Trakt" to { panel.push(pages.trakt()) },
+        )) { next(me) }
+        f.reserveNote()
+        panelRefresh = { f.setNote(blocker(me)) }
+        panelRefresh?.invoke()
+        onResumeCheck = { panelRefresh?.invoke() }
+        Log.w(TAG, "Setup: step Accounts (${if (blocker(me) == null) "ready" else "waiting"})")
+        return f.built(if (accountsReady()) main else first.focus() ?: main)
+    }
+
+    /**
+     * A service already passed its last check (the live re-check may still be running): Continue is the likely
+     * press. Never a not-connected tile, where Select would start a sign-in nobody asked for.
+     */
+    private fun accountsReady() = SetupGate.anyVerified(ctx) && Tmdb.hasKey(ctx)
+
+    /**
+     * Add Your Scrapers: what an address looks like until there is one, then each repository and its providers.
+     * Add Repository opens the entry; once it's added the recommended providers go on by themselves and the page
+     * comes back on its own. Manage Scrapers is the whole Settings page; Help has the steps and tips.
+     */
+    private fun scrapersStep(): Built {
+        val me = cur
+        val ui = stageUi()
+        val panel = SetupPanel(ui)
+        val pages = ScraperPages(ctx, ui, panel, inSetup = true) { onResumeCheck?.invoke() }
+        val listener: () -> Unit = { view.post { onResumeCheck?.invoke() } }
+        Scrapers.addListener(listener)
+        fun hasRepo() = try { Scrapers.status(ctx).repos.isNotEmpty() } catch (e: Exception) { false }
+        lateinit var f: Frame
+        f = panelFrame(SetupArt(ctx, SetupArt.Kind.SCRAPERS), "Add Your Scrapers",
+            "Scrapers are free add-ons that find streams for your debrid service. You add them once, by typing the address of a repository. Dream OS doesn't include any.",
+            panel, pages.summary(), focusAfter = { f.main }) { Scrapers.removeListener(listener) }
+        val main = f.buttons("Add Repository", listOf(
+            "Manage Scrapers" to { panel.push(pages.overview()) },
+            "Help" to { panel.push(pages.help()) },
+        )) { if (hasRepo()) next(me) else panel.push(pages.addRepo()) }
+        f.reserveNote()
+        panelRefresh = {
+            val repo = hasRepo()
+            setTextIfNew(main, if (repo) "Continue" else "Add Repository")
+            setShown(f.secondary[0], repo)
+            f.setNote(if (repo) blocker(me) else null)
+        }
+        panelRefresh?.invoke()
+        onResumeCheck = { panelRefresh?.invoke() }
+        return f.built(main)
+    }
+
+    /**
+     * Making Sure It All Works: one real search with the viewer's debrid service and scrapers, run as the step
+     * opens. When it passes and the speed test needs no choice, setup moves on by itself after the result shows.
+     */
+    /** The final check's test runs on its own thread; [checkDone] is the check step on screen (null when it isn't). */
+    private var checkRunning = false
+    private var checkDone: ((Scrapers.TestResult) -> Unit)? = null
+
+    private fun checkStep(): Built {
+        val me = cur
+        val art = SetupArt(ctx, SetupArt.Kind.CHECK)
+        val f = Frame(art, "Making Sure It All Works",
+            "Dream OS runs one real search with your debrid service and scrapers, so you know everything plays before you start.")
+        // The result line is the step's focal point; everything under it is quieter.
+        val line = k.label("", 24f, k.text, k.semibold, lines = 0)
+        val detail = k.label("", 15.5f, k.dim, k.font, lines = 0).apply { setLineSpacing(3.dp.toFloat(), 1f) }
+        f.add(line, 0)
+        f.add(detail, 8)
+        val help = FrameLayout(ctx).apply { visibility = View.GONE }
+        f.add(help, 16)
+        var running = false
+        lateinit var main: TextView
+        fun moveOn(delay: Long) {
+            if (!forward) return // coming back to a passed check never pushes the viewer forward again
+            val g = gen
+            view.postDelayed({ if (g == gen && cur == me) next(me) }, delay)
+        }
+        // After the check passes: a short speed test, with "Use 1080p" when it's too slow for Maximum Quality.
+        val speed = SpeedCard(ctx, k) { main.requestFocus(); moveOn(1600) }
+        // Nothing to choose: the result shows, then setup moves on. A slower connection: focus on its "Use 1080p".
+        speed.onResult = { needsChoice -> if (!needsChoice) moveOn(2600) else speed.getChildAt(2)?.requestFocus() }
+        f.add(speed, 20)
+        onLeave = { speed.release(); checkDone = null }
+        fun run() {
+            if (running) return
+            running = true
+            art.checkState = SetupArt.CheckState.RUNNING
+            setTextIfNew(line, "Checking…")
+            setTextIfNew(detail, SetupGuide.CHECK_STEPS[0].see.orEmpty())
+            setShown(help, false)
+            setTextIfNew(main, "Checking…")
+            // One test at a time across visits: coming back while one still runs waits for its result.
+            checkDone = { r ->
+                running = false
+                art.checkState = if (r.ok) SetupArt.CheckState.OK else SetupArt.CheckState.FAIL
+                setTextIfNew(line, if (r.ok) "Found ${r.found} Sources  ·  ${r.ready} Ready to Play" else "Not Quite Ready")
+                setTextIfNew(detail, r.message)
+                help.removeAllViews()
+                if (!r.ok) help.addView(SetupGuide.whatToTry(ctx, k, SetupGuide.checkHelp(r.message)))
+                setShown(help, !r.ok)
+                setTextIfNew(main, if (r.ok) "Continue" else "Check Again")
+                Log.w(TAG, "Setup: final check ${if (r.ok) "passed" else "failed"}: ${r.found} found, ${r.ready} ready in ${r.ms} ms")
+                if (r.ok) speed.run() else main.requestFocus()
+            }
+            if (checkRunning) return
+            checkRunning = true
+            val g = gen
+            Thread {
+                val r = try {
+                    Scrapers.test(ctx.applicationContext) { msg -> view.post { if (gen == g) setTextIfNew(detail, msg) } }
+                } catch (e: Exception) {
+                    Scrapers.TestResult(false, 0, 0, 0, "Something went wrong. Try again.")
+                }
+                view.post {
+                    checkRunning = false
+                    SetupGate.setCheckPassed(ctx, r.ok)
+                    checkDone?.invoke(r)
+                }
+            }.start()
+        }
+        main = f.buttons("Continue") { if (SetupGate.checkPassed(ctx)) next(me) else run() }
+        if (SetupGate.checkPassed(ctx)) {
+            art.checkState = SetupArt.CheckState.OK
+            setTextIfNew(line, "Ready to Watch")
+            setTextIfNew(detail, "Your services found streams the last time Dream OS checked.")
+            view.post { if (cur == me) speed.run() }
+        } else view.post { if (cur == me) run() }
+        return f.built(main)
+    }
+
+    // ---- Your Fire TV ----
+
+    /**
+     * Unlock Dream OS Features (DreamUnlock.kt): recommended, never required. The body shows what it turns on;
+     * Unlock Now, Show Me How and Not Now are the step's buttons. Once everything is unlocked the step shows it
+     * briefly and moves on by itself.
+     */
+    private fun unlockStep(): Built {
+        val me = cur
+        val ui = stageUi()
+        val panel = SetupPanel(ui)
+        lateinit var f: Frame
+        val pages = UnlockPages(ctx, ui, panel, onChange = { panelRefresh?.invoke() },
+            afterTurnOff = { if (cur == me) f.main?.requestFocus() }, setup = true)
+        f = panelFrame(SetupArt(ctx, SetupArt.Kind.UNLOCK), "Unlock Dream OS Features",
+            "Your Fire Stick keeps a few settings locked to other apps. A one-time unlock, about a minute, lets the Home button, startup and voice search open Dream OS.",
+            // Just unlocked with ADB Debugging still on: turning it off is the next press (panelRefresh says the same).
+            panel, pages.overview(), focusAfter = { if (DreamUnlock.allOn(ctx) && pages.canTurnOff()) f.secondary[2] else f.main })
+        val main = f.buttons("Unlock Now", listOf(
+            "Show Me How" to { pages.howTo() },
+            "Not Now" to { next(me) },
+            "Turn Off ADB Debugging" to { pages.turnOffAdb() },
+        )) { if (DreamUnlock.allOn(ctx)) next(me) else pages.begin() }
+        var wasAll = DreamUnlock.allOn(ctx)
+        panelRefresh = {
+            val all = DreamUnlock.allOn(ctx)
+            val off = pages.canTurnOff()
+            setTextIfNew(main, if (all) "Continue" else "Unlock Now")
+            setShown(f.secondary[0], !all)
+            setShown(f.secondary[1], !all)
+            setShown(f.secondary[2], off)
+            if (all && !wasAll && cur == me) {
+                val g = gen
+                // Just unlocked: turning ADB Debugging back off is the recommended next press; with nothing left to
+                // do, the green marks show for a moment and setup moves on.
+                if (off) view.post { if (g == gen && cur == me) f.secondary[2].requestFocus() }
+                else view.postDelayed({ if (g == gen && cur == me && panel.depth <= 1) next(me) }, 2200)
+            }
+            wasAll = all
+        }
+        panelRefresh?.invoke()
+        onResumeCheck = { panelRefresh?.invoke() }
+        return f.built(main)
+    }
 
     private fun homeActive() = HomeRedirectService.current() != null
     private fun assistantActive() = try {
@@ -677,49 +935,33 @@ class SetupWizard(
     private fun canFix() = ctx.checkSelfPermission(android.Manifest.permission.WRITE_SECURE_SETTINGS) == PackageManager.PERMISSION_GRANTED
 
     private fun homeStep(): Built {
-        val p = Split(glyph(R.drawable.ic_home), "Make Dream OS Your Home",
+        val f = Frame(IconArt(ctx, R.drawable.ic_home), "Make Dream OS Your Home",
             "So the Home button always brings you here, and voice search lands in Dream Search.")
-        val chip = statusChip("", GOOD)
-        p.leftAdd(chip, 18)
-        val note = p.note("")
-        val home = row("Home Button", "Home opens Dream OS from any app", icon = R.drawable.ic_home, value = "", focusable = false)
-        val instant = row("Instant Home", "No waiting after you press Home", icon = R.drawable.ic_bolt, value = "", focusable = false)
+        val home = row("Home Button", "Home opens Dream OS from any app", icon = R.drawable.ic_home, value = "", focusable = false, compact = true)
+        val instant = row("Instant Home", "No waiting after you press Home", icon = R.drawable.ic_bolt, value = "", focusable = false, compact = true)
         val action = row("Turn On", null, icon = R.drawable.ic_settings, chevron = true) { r -> fixHome(r) }
-        p.add(home.view, 0)
-        p.add(instant.view, 6)
-        p.add(action.view, 6)
-        val main = p.buttons("Continue") { next(HOME) }
-        val b = p.built(main)
+        f.add(home.view, 0)
+        f.add(instant.view, 4)
+        f.add(action.view, 14)
+        f.reserveNote()
+        val note = f.note.apply { setTextColor(k.dim); visibility = View.VISIBLE }
+        val main = f.buttons("Continue") { next(HOME) }
+        val b = f.built(main)
         // Everything updates in place; only what changed is touched.
         fun show() {
             val h = homeActive()
             val a = assistantActive()
             setStatus(home, h)
             setStatus(instant, a)
-            val fix = canFix()
             val actionLabel: String? = when {
-                h && a -> {
-                    setChip(chip, "Dream OS Is Your Home", GOOD)
-                    setTextIfNew(note, "Everything's on. Nothing else to do here.")
-                    null
-                }
-                fix -> {
-                    setChip(chip, "Almost There", WARN)
+                h && a -> { setTextIfNew(note, "Everything's on. Nothing else to do here."); null }
+                canFix() -> {
                     setTextIfNew(note, "Dream OS can turn these back on by itself.")
                     if (action.title.text.toString() == "Turning On…") "Turning On…" else "Turn On"
                 }
-                !h -> {
-                    setChip(chip, "Home Button Is Off", WARN)
-                    setTextIfNew(note, "In Accessibility, choose Dream OS and turn it on, then come back here.")
-                    "Open Accessibility Settings"
-                }
-                else -> {
-                    setChip(chip, "Home Button Is On", GOOD)
-                    setTextIfNew(note, "Instant Home needs a one-time setup from a computer. Everything else works without it.")
-                    null
-                }
+                !h -> { setTextIfNew(note, "In Accessibility, choose Dream OS and turn it on, then come back here."); "Open Accessibility Settings" }
+                else -> { setTextIfNew(note, "Instant Home needs a one-time setup from a computer. Everything else works without it."); null }
             }
-            setShown(note, true)
             val hadFocus = action.view.isFocused
             if (actionLabel != null) setTextIfNew(action.title, actionLabel)
             setShown(action.view, actionLabel != null)
@@ -760,462 +1002,123 @@ class SetupWizard(
         setColorIfNew(r.value, if (on) GREEN else WARN_C)
     }
 
-    // ---- 5. content ----
-
-    private fun content(): Built {
-        val p = Split(glyph(R.drawable.ic_live), "Your Home Screen",
-            "Pick the apps for your home screen. The weather comes from your approximate location.", tags = listOf("Optional"))
-        val weather = row("Weather", "Based on your internet connection", icon = R.drawable.ic_bolt, value = "Finding You…", focusable = false)
-        p.add(weather.view, 0)
-        val g = gen
-        Weather.load(ctx) { now ->
-            if (g != gen) return@load
-            weather.value?.text = if (now == null) "Unavailable Right Now" else "${now.tempF}° ${now.place}".trim()
-        }
-        p.add(p.kicker("YOUR APPS"), 18)
-        val grid = appGrid()
-        p.add(grid.first, 8)
-        val main = p.buttons("Continue") { next(CONTENT) }
-        return p.built(grid.second ?: main)
-    }
-
     /**
-     * Connect Movie & Show Info (owner, 2026-10-28, the iPhone's TMDB step): the viewer's own free TMDB key is
-     * required (Dream OS ships no keys), with Show Me How and If Something Goes Wrong; OMDb for ratings is optional.
+     * Fit the Picture to Your TV: the four corner marks show the whole time this step is up. Most TVs need no
+     * change, so Continue has the focus; Screen Fit is one row above it.
      */
-    private fun tmdbStep(): Built {
-        val ui = SetupUi(ctx, k)
-        val panel = SetupPanel(ui)
-        val me = cur
-        val keys = KeyPages(ctx, ui, panel) { onResumeCheck?.invoke() }
-        val s = SetupScreen(ui, null, null)
-        val rows = ScreenRows(s)
-        fun paint() {
-            s.view("k:tmdb", 0) { SetupParts(ctx, k).section("Your TMDB Key", true) }
-            keys.addRows(s, rows, KeyPages.Kind.TMDB, 10)
-            s.view("k:omdb", 24) { SetupParts(ctx, k).section("Ratings", false) }
-            s.view("n:omdb", 8) { SetupParts(ctx, k).note("A free OMDb key adds Rotten Tomatoes and IMDb scores to every title. You can add it now or later in Settings.", 14f) }
-            keys.addRows(s, rows, KeyPages.Kind.OMDB, 10)
+    private fun fitStep(): Built {
+        val f = Frame(IconArt(ctx, R.drawable.ic_tv), "Fit the Picture to Your TV",
+            "Look for the four corner marks. If any are cut off, choose Screen Fit, then press Left or Right until all four show.")
+        var fit = ScreenFit.get(ctx)
+        val fitRow = stepper("Screen Fit", "Keeps menus clear of the TV's edges", R.drawable.ic_tv, { if (fit == 0) "Full" else "$fit%" }) { by ->
+            fit = (fit + by).coerceIn(0, ScreenFit.MAX)
+            ScreenFit.set(ctx, fit)
+            applyFit(fit)
         }
-        paint()
-        s.onShow = { paint(); onResumeCheck?.invoke() }
-        s.onResume = { paint(); onResumeCheck?.invoke() }
-        val b = panelStep(SetupArt.Kind.ACCOUNTS, "Connect Movie & Show Info",
-            if (Tmdb.hasKey(ctx)) "TMDB is a free movie and TV website. Every poster, detail and search in Dream OS comes from it. Your TMDB key is added, so you can continue."
-            else "TMDB is a free movie and TV website. Every poster, detail and search in Dream OS comes from it, so Dream OS needs your own free TMDB key before it can show anything.",
-            panel, s, continueFirst = { Tmdb.hasKey(ctx) }, tags = listOf("Required", "Free", "About 5 Minutes")) {}
-        Log.w(TAG, "Setup: step Movie & Show Info (${if (blocker(me) == null) "key added" else "no key yet"})")
-        return b
+        f.add(fitRow.view, 0, LinearLayout.LayoutParams(480.dp, WRAP_CONTENT))
+        val m = FrameLayout(ctx).apply { isClickable = false }
+        for (g in listOf(Gravity.TOP or Gravity.START, Gravity.TOP or Gravity.END, Gravity.BOTTOM or Gravity.START, Gravity.BOTTOM or Gravity.END)) {
+            m.addView(FrameLayout(ctx).apply {
+                addView(View(ctx).apply { background = Ui.rounded(ctx, PearlFocus.PEARL, Ui.R_PILL) }, FrameLayout.LayoutParams(56.dp, 4.dp, g))
+                addView(View(ctx).apply { background = Ui.rounded(ctx, PearlFocus.PEARL, Ui.R_PILL) }, FrameLayout.LayoutParams(4.dp, 56.dp, g))
+            }, FrameLayout.LayoutParams(56.dp, 56.dp, g))
+        }
+        view.addView(m, MATCH_PARENT, MATCH_PARENT)
+        marks = m
+        placeMarks(m, fit)
+        val main = f.buttons("Continue") { next(LOOK) }
+        return f.built(main)
     }
 
-    /**
-     * An API key (TMDB by default, or OMDb for ratings): the row turns into a text field (the phone remote
-     * can type into it too). The new key is checked with one request and the old one kept if it fails.
-     */
-    private fun editKey(
-        p: Split, r: Row,
-        hintText: String = "Paste or Type Your TMDB Key",
-        tipText: String = "Tip: type it from your phone with the phone remote.",
-        current: () -> String = { Tmdb.key(ctx) },
-        has: () -> Boolean = { Tmdb.hasKey(ctx) },
-        save: (String) -> Unit = { Tmdb.setKey(ctx, it) },
-        check: () -> Boolean = { Tmdb.trending(ctx).isNotEmpty() },
-    ) {
-        val parent = r.view.parent as? ViewGroup ?: return
-        val idx = parent.indexOfChild(r.view)
-        val old = current()
-        val field = textField(hintText, if (has()) old else "", InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_VISIBLE_PASSWORD, 64) {}
-        val tip = k.label(tipText, Ui.T_CAPTION, k.dim, k.font, lines = 2)
-        r.view.visibility = View.GONE
-        parent.addView(field, idx + 1, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
-        parent.addView(tip, idx + 2, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { topMargin = 6.dp })
-        keyField = field
-        fun close() {
-            hideKeyboard()
-            parent.removeView(field)
-            parent.removeView(tip)
-            keyField = null
-            cancelKeyEdit = null
-            r.view.visibility = View.VISIBLE
-            r.view.requestFocus()
-        }
-        cancelKeyEdit = { close() }
-        field.setOnEditorActionListener { _, _, _ ->
-            val key = field.text.toString().trim()
-            close()
-            if (key.isEmpty() || key == old) return@setOnEditorActionListener true
-            r.value?.text = "Checking…"
-            r.value?.setTextColor(k.dim)
-            save(key)
-            val g = gen
-            Net.background({ check() }) { ok ->
-                if (ok != true) save(old) // keep the key that worked
-                if (g != gen) return@background
-                r.value?.text = if (ok == true) "Connected" else "Key Didn't Work"
-                r.value?.setTextColor(if (ok == true) GREEN else ERROR)
-            }
-            true
-        }
-        field.post { field.requestFocus() }
-    }
-
-    /** Up to 12 apps as tiles; chosen ones are on the home screen's Your Apps row. Returns (grid, first tile). */
-    private fun appGrid(): Pair<View, View?> {
-        val all = try { host.apps() } catch (e: Exception) { emptyList() }
-        val favs = Apps.favorites(ctx)
-        val streaming = Tmdb.SERVICES.map { it.pkg }.toSet()
-        val ordered = all.sortedWith(compareBy<AppEntry>({ if (it.pkg in favs) 0 else if (it.pkg in streaming || !it.system) 1 else 2 },
-            { favs.indexOf(it.pkg).let { i -> if (i < 0) Int.MAX_VALUE else i } }, { it.label.lowercase() })).take(12)
-        val box = LinearLayout(ctx).apply { orientation = LinearLayout.VERTICAL }
-        if (ordered.isEmpty()) {
-            box.addView(k.label("Your apps show up here once they're installed.", Ui.T_LABEL, k.dim, k.font, lines = 2))
-            return box to null
-        }
-        var first: View? = null
-        for (chunk in ordered.chunked(6)) {
-            val line = hRow().apply { gravity = Gravity.START }
-            for (app in chunk) {
-                val tile = appTile(app)
-                if (first == null) first = tile
-                line.addView(tile, LinearLayout.LayoutParams(70.dp, WRAP_CONTENT).apply { marginEnd = 6.dp })
-            }
-            box.addView(line, LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT).apply { if (box.childCount > 0) topMargin = 8.dp })
-        }
-        return box to first
-    }
-
-    private fun appTile(app: AppEntry) = LinearLayout(ctx).apply {
-        orientation = LinearLayout.VERTICAL
-        gravity = Gravity.CENTER_HORIZONTAL
-        isFocusable = true
-        isClickable = true
-        // The tile takes the tile's focus (duplicate state, wired before it's added): the pearl face inside the
-        // rainbow border when focused; at rest neutral glass, a brighter one with a hairline once it's picked.
-        val tileBox = FrameLayout(ctx).apply { isDuplicateParentStateEnabled = true }
-        val rest = Ui.rounded(ctx, Color.TRANSPARENT, Ui.R_MD)
-        val glow = PearlFocus.apply(tileBox, Ui.R_MD, rest = rest)
-        val icon = ImageView(ctx).apply { setImageDrawable(try { app.icon } catch (e: Exception) { null }); scaleType = ImageView.ScaleType.FIT_CENTER }
-        tileBox.addView(icon, FrameLayout.LayoutParams(36.dp, 36.dp, Gravity.CENTER))
-        // Picked: a pearl disc with an ink check, turning ink with a pearl check on the focused pearl face.
-        val check = View(ctx).apply {
-            isDuplicateParentStateEnabled = true
-            foreground = CheckInk(PearlFocus.INK, PearlFocus.PEARL, weight = 0.13f) // drawn, never a text "✓"
-            background = StateListDrawable().apply {
-                addState(intArrayOf(android.R.attr.state_focused), oval(PearlFocus.INK))
-                addState(IntArray(0), oval(PearlFocus.PEARL))
-            }
-        }
-        tileBox.addView(check, FrameLayout.LayoutParams(16.dp, 16.dp, Gravity.TOP or Gravity.END).apply { topMargin = 3.dp; marginEnd = 3.dp })
-        addView(tileBox, LinearLayout.LayoutParams(56.dp, 56.dp))
-        addView(k.label(app.label, 11f, k.dim, k.font).apply { gravity = Gravity.CENTER }, LinearLayout.LayoutParams(68.dp, WRAP_CONTENT).apply { topMargin = 5.dp })
-        fun paint() {
-            val on = app.pkg in Apps.favorites(ctx)
-            check.visibility = if (on) View.VISIBLE else View.INVISIBLE
-            rest.setColor(Ui.alpha(Color.WHITE, if (on) 0.16f else 0.06f))
-            rest.setStroke(maxOf(1, 1.dp), Ui.alpha(Color.WHITE, if (on) 0.5f else 0.08f))
-        }
-        paint()
-        setOnFocusChangeListener { _, has -> PearlFocus.focus(glow, has); Ui.lift(this, has, Ui.LIFT_ICON) }
-        setOnClickListener {
-            val favs = Apps.favorites(ctx)
-            if (!favs.remove(app.pkg)) favs.add(app.pkg)
-            Apps.saveFavorites(ctx, favs)
-            paint()
-            refreshDrawableState()
+    private fun placeMarks(m: FrameLayout, percent: Int) {
+        val ins = ScreenFit.insets(ctx, percent)
+        for (i in 0 until m.childCount) {
+            val c = m.getChildAt(i)
+            (c.layoutParams as FrameLayout.LayoutParams).let { it.setMargins(ins[0] + 10.dp, ins[1] + 10.dp, ins[0] + 10.dp, ins[1] + 10.dp); c.layoutParams = it }
         }
     }
 
-    // ---- Dream OS's required steps: time zone, accounts, scrapers, the final check ----
-
-    /** The Accounts pages on screen (their live checks decide [blocker] for ACCOUNTS). */
-    private var accountPages: AccountsPages? = null
-    /** The "what's still missing" line on a required step, or null. */
-    private var blockNote: TextView? = null
-
-    private fun showBlocker(why: String) {
-        Log.w(TAG, "Setup: held at step $cur: $why")
-        val n = blockNote ?: return
-        setTextIfNew(n, why)
-        setShown(n, true)
-        shake(n)
-    }
-
-    /** The quiet "what's missing" line under a required step's controls; refreshed in place. */
-    private fun addBlockNote(p: Split, step: Int): TextView {
-        val n = k.label("", Ui.T_CAPTION, Ui.alpha(k.dim, 0.95f), k.font, lines = 0).apply { visibility = View.GONE }
-        p.add(n, 12, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
-        blockNote = n
-        val refresh = { if (cur == step) { val why = blocker(step); if (why == null) setShown(n, false) else if (n.visibility == View.VISIBLE) setTextIfNew(n, why) } }
-        onResumeCheck = refresh
-        return n
-    }
-
-    private fun zoneStep(): Built {
-        val me = cur
-        val p = Split(SetupArt(ctx, SetupArt.Kind.CLOCK), "Your Time Zone",
-            "Dream OS uses this to show when new episodes and movies come out.", iconDp = 112)
-        val now = k.label("", 22f, k.text, k.semibold, lines = 2)
-        fun paintNow() = setTextIfNew(now, "${DreamTime.label(ctx, DreamTime.zone(ctx))}  ·  ${DreamTime.formatTime(ctx, System.currentTimeMillis())}")
-        paintNow()
-        p.add(now, 0)
-        var main: View? = null
-        // Picking a zone (or choosing the one already picked) moves straight on to Continue: no scrolling to the end.
-        val picker = TimeSettings.picker(ctx, heightDp = 300) { paintNow(); if (cur == me) main?.requestFocus() }
-        p.add(picker.view, 12, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
-        // The header clock keeps the same minute as the list (which refreshes every minute).
-        val tick = object : Runnable { override fun run() { if (cur != me) return; paintNow(); view.postDelayed(this, 15_000) } }
-        view.postDelayed(tick, 15_000)
-        onLeave = { picker.release(); view.removeCallbacks(tick) }
-        main = p.buttons("Continue") { next(me) }
-        return p.built(main!!)
-    }
-
-    /**
-     * A required step built on a [SetupPanel] (the Accounts and Scrapers pages, shared with Settings):
-     * the panel in the right-hand column, Back steps back inside it, Continue held by [blocker].
-     */
-    /** [continueFirst]: focus starts on Continue (nothing on the page needs doing, e.g. everything unlocked). */
-    private fun panelStep(art: SetupArt.Kind, title: String, sub: String, panel: SetupPanel, first: SetupScreen,
-                          continueFirst: () -> Boolean = { false }, tags: List<String> = emptyList(), onRelease: () -> Unit): Built {
-        val me = cur
-        panel.layoutParams = LinearLayout.LayoutParams(MATCH_PARENT, 330.dp)
-        panel.push(first, animate = false)
-        slot = object : SlotPage {
-            override val title = title
-            override val subtitle: String? = sub
-            override val content: View = panel
-            override val focus: View? get() = if (continueFirst()) null else SetupScreen.firstFocusable(first.body)
-            override fun handleBack() = panel.pop()
-            override fun release() { onRelease(); panel.release() }
+    private fun voiceStep(): Built {
+        val f = Frame(IconArt(ctx, R.drawable.ic_search), "Search With Your Voice",
+            "Hold the microphone button on your remote, say a movie or show, then let go. The results open in Dream Search.")
+        val card = LinearLayout(ctx).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            background = Ui.rounded(ctx, Ui.alpha(Color.WHITE, 0.05f), Ui.R_XL, 1f, Ui.alpha(Color.WHITE, 0.08f))
+            setPadding(28.dp, 24.dp, 28.dp, 24.dp)
         }
-        val p = Split(SetupArt(ctx, art), title, sub, iconDp = 112, tags = tags)
-        p.add(panel, 0)
-        addBlockNote(p, me)
-        val main = p.buttons("Continue") { next(me) }
-        return p.built(if (continueFirst()) main else SetupScreen.firstFocusable(first.body) ?: main)
-    }
-
-    private fun accountsStep(): Built {
-        val ui = SetupUi(ctx, k)
-        val panel = SetupPanel(ui)
-        val me = cur
-        val pages = AccountsPages(ctx, ui, panel, inSetup = true) { onResumeCheck?.invoke() }
-        accountPages = pages
-        return panelStep(SetupArt.Kind.ACCOUNTS, "Connect Your Accounts",
-            "A debrid service is a paid online account that streams movies and shows to Dream OS in full quality, with no waiting. Dream OS needs one to play anything. Most cost about \$3 to \$12 a month.",
-            panel, pages.overview(), tags = listOf("Required", "Paid", "About 5 Minutes")) { if (accountPages === pages) accountPages = null }
-            .also { Log.w(TAG, "Setup: step Accounts (${if (blocker(me) == null) "ready" else "waiting"})") }
-    }
-
-    private fun scrapersStep(): Built {
-        val ui = SetupUi(ctx, k)
-        val panel = SetupPanel(ui)
-        val pages = ScraperPages(ctx, ui, panel) { onResumeCheck?.invoke() }
-        val listener: () -> Unit = { view.post { onResumeCheck?.invoke() } }
-        Scrapers.addListener(listener)
-        return panelStep(SetupArt.Kind.SCRAPERS, "Set Up Scrapers",
-            "Scrapers are free add-ons that search the web for streams of what you pick, so your debrid service can play them. They come in a repository: a web address you add here. Dream OS doesn't include any.",
-            panel, pages.overview(), tags = listOf("Required", "Free", "About 2 Minutes")) { Scrapers.removeListener(listener) }
-    }
-
-    // ---- Before You Start, Playback Preferences, Who's Watching (pages in DreamSetupMore.kt) ----
-
-    private fun introStep(): Built {
-        val me = cur
-        val p = Split(SetupArt(ctx, SetupArt.Kind.INTRO), "Before You Start",
-            "Dream OS doesn't include or host any movies, shows or sources. You connect your own accounts and add your own scraper repositories, and you're responsible for what you add.",
-            iconDp = 112, tags = listOf("Required"))
-        p.add(p.kicker("YOUR PRIVACY"), 0)
-        p.add(k.label("Where your information goes:", 16f, k.text, k.medium), 10)
-        p.add(SetupIntro.list(ctx, k), 12)
-        p.add(k.label("A few free services provide extras such as subtitles and weather. Dream OS has no ads, tracking or analytics.",
-            Ui.T_CAPTION, Ui.alpha(k.dim, 0.95f), k.font, lines = 0).apply { setLineSpacing(3.dp.toFloat(), 1f) }, 14)
-        val main = p.buttons("I Understand") { next(me) }
-        Log.w(TAG, "Setup: step Before You Start")
-        return p.built(main)
-    }
-
-    /**
-     * What You'll Need (owner, 2026-10-28; the iPhone's list): what's required, what gives the full viewing
-     * experience, what each piece does and what it costs, before the steps ask for them.
-     */
-    private fun needStep(): Built {
-        val me = cur
-        val p = Split(SetupArt(ctx, SetupArt.Kind.ACCOUNTS), "What You'll Need",
-            "Each step explains what it needs and shows you how. You make the keys and accounts on their own websites from your phone. Anything optional can be added later in Settings.",
-            iconDp = 112)
-        p.add(p.kicker("REQUIRED"), 0)
-        p.add(SetupIntro.needs(ctx, k, listOf(
-            Triple("A TMDB Key", "Every poster, detail and search. About 5 minutes", "Free"),
-            Triple("A Debrid Service", "Streams what you watch. About \$3 to \$12 a month", "Paid"),
-            Triple("A Scraper Repository", "Add-ons that find streams for your debrid service", "Free"),
-        )), 10)
-        p.add(p.kicker("FOR THE FULL VIEWING EXPERIENCE"), 18)
-        p.add(SetupIntro.needs(ctx, k, listOf(
-            Triple("Premiumize", "The fastest Play, about \$12 a month. TorBox works the same way", "Recommended"),
-            Triple("An OMDb Key", "Rotten Tomatoes and IMDb scores", if (Ratings.omdbEnabled(ctx)) "Included" else "Free"),
-            Triple("Trakt", "Your history and watchlist on every device", "Free"),
-            Triple("A Profile for Everyone", "Their own rows, picks and Kids limits", ""),
-        )), 10)
-        val main = p.buttons("Continue") { next(me) }
-        Log.w(TAG, "Setup: step What You'll Need")
-        return p.built(main)
-    }
-
-    private fun playbackStep(): Built {
-        val ui = SetupUi(ctx, k)
-        val panel = SetupPanel(ui)
-        return panelStep(SetupArt.Kind.PLAYBACK, "Playback Preferences",
-            "Choose picture quality, languages, subtitles and sound. The defaults suit most TVs.",
-            panel, PlaybackPages(ctx, ui, panel).overview(), tags = listOf("Optional")) {}
-    }
-
-    private fun whoStep(): Built {
-        val ui = SetupUi(ctx, k)
-        val panel = SetupPanel(ui)
-        return panelStep(SetupArt.Kind.PROFILES, "Who's Watching?",
-            "Add a profile for everyone at home. A Kids profile only shows movies and shows up to the rating you choose.",
-            panel, ProfilesPages(ctx, ui, panel, pins).overview(), tags = listOf("Optional")) {}
-    }
-
-    private fun checkStep(): Built {
-        val me = cur
-        val art = SetupArt(ctx, SetupArt.Kind.CHECK)
-        val p = Split(art, "Getting You Ready",
-            "Dream OS runs one real search with your debrid service and scrapers, so you know everything works before you start watching.",
-            iconDp = 112, tags = listOf("Required", "About 30 Seconds"))
-        val line = k.label("", 22f, k.text, k.semibold, lines = 2)
-        val detail = k.label("", Ui.T_CAPTION, Ui.alpha(k.dim, 0.95f), k.font, lines = 0)
-        p.add(line, 0)
-        p.add(detail, 8, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
-        // While it runs: what it does (the iPhone's Show Me How for the check). After a miss: What to Try.
-        val explain = k.label(SetupGuide.CHECK_STEPS[0].see.orEmpty(), Ui.T_CAPTION, Ui.alpha(k.dim, 0.8f), k.font, lines = 0).apply {
-            setLineSpacing(3.dp.toFloat(), 1f)
-            visibility = View.GONE
-        }
-        p.add(explain, 10, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
-        val help = FrameLayout(ctx).apply { visibility = View.GONE }
-        p.add(help, 12, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
-        addBlockNote(p, me)
-        var running = false
-        lateinit var main: View
-        // After the check passes: a short speed test, with "Use 1080p" when it's too slow for Maximum Quality.
-        val speed = SpeedCard(ctx, k) { main.requestFocus() }
-        p.add(speed, 16, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
-        onLeave = { speed.release() }
-        fun run() {
-            if (running) return
-            running = true
-            val g = gen
-            art.checkState = SetupArt.CheckState.RUNNING
-            setTextIfNew(line, "Checking…")
-            setTextIfNew(detail, "")
-            setShown(blockNote, false)
-            setShown(help, false)
-            setShown(explain, true)
-            Thread {
-                val r = try {
-                    Scrapers.test(ctx.applicationContext) { msg -> view.post { if (gen == g) setTextIfNew(detail, msg) } }
-                } catch (e: Exception) {
-                    Scrapers.TestResult(false, 0, 0, 0, "Something went wrong. Try again.")
+        val badge = FrameLayout(ctx)
+        val badgeIcon = ImageView(ctx).apply { setImageResource(R.drawable.ic_search); setColorFilter(PearlFocus.INK) }
+        // Heard: a drawn white check on the green disc (never a text "✓").
+        val badgeCheck = View(ctx).apply { background = CheckInk(Color.WHITE, weight = 0.075f); visibility = View.GONE }
+        badge.addView(badgeIcon, FrameLayout.LayoutParams(28.dp, 28.dp, Gravity.CENTER))
+        badge.addView(badgeCheck, FrameLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT))
+        val texts = vBox()
+        val headline = k.label("", Ui.T_HEADLINE, k.text, k.semibold, lines = 0)
+        val detail = k.label("", 15.5f, k.dim, k.font, lines = 0).apply { setLineSpacing(3.dp.toFloat(), 1f) }
+        texts.addView(k.label("Try It Now", 15f, Ui.alpha(Color.WHITE, 0.66f), k.semibold))
+        texts.addView(headline, lp(top = 6))
+        texts.addView(detail, lp(top = 6))
+        card.addView(badge, LinearLayout.LayoutParams(64.dp, 64.dp))
+        card.addView(texts, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f).apply { marginStart = 24.dp })
+        f.add(card, 0)
+        f.add(k.label("Some remotes' microphones don't work with this Fire Stick. If nothing happens, try another remote.",
+            14.5f, k.dim, k.font, lines = 0), 16)
+        val main = f.buttons("Continue") { next(VOICE) }
+        val listenBg = oval(PearlFocus.PEARL)
+        val heardBg = oval(GREEN_DEEP)
+        var shownGood: Boolean? = null
+        // In place: the badge only changes when the outcome does, the text only when it differs.
+        fun show(state: Int, q: String?) {
+            val good = state == V_HEARD
+            if (good != shownGood) {
+                badge.background = if (good) heardBg else listenBg
+                badgeIcon.visibility = if (good) View.GONE else View.VISIBLE
+                badgeCheck.visibility = if (good) View.VISIBLE else View.GONE
+                // The check pops in once, when a search first comes through.
+                if (good && shownGood == false) {
+                    badge.scaleX = 0.6f; badge.scaleY = 0.6f
+                    badge.animate().scaleX(1f).scaleY(1f).setDuration(320).setInterpolator(Ui.SPRING).start()
                 }
-                view.post {
-                    if (gen != g) return@post
-                    running = false
-                    SetupGate.setCheckPassed(ctx, r.ok)
-                    art.checkState = if (r.ok) SetupArt.CheckState.OK else SetupArt.CheckState.FAIL
-                    setTextIfNew(line, if (r.ok) "Found ${r.found} Sources  ·  ${r.ready} Ready to Play" else "Not Quite Ready")
-                    setTextIfNew(detail, r.message)
-                    setShown(explain, false)
-                    help.removeAllViews()
-                    if (!r.ok) help.addView(SetupGuide.whatToTry(ctx, k, SetupGuide.checkHelp(r.message)))
-                    setShown(help, !r.ok)
-                    (main as? TextView)?.text = if (r.ok) "Continue" else "Try Again"
-                    Log.w(TAG, "Setup: final check ${if (r.ok) "passed" else "failed"}: ${r.found} found, ${r.ready} ready in ${r.ms} ms")
-                    if (r.ok) speed.run()
-                }
-            }.start()
+                shownGood = good
+            }
+            val (h, d) = when (state) {
+                V_LISTENING -> "Listening…" to "Say a title, then let go of the button."
+                V_HEARD -> "Voice Search Works" to (if (q.isNullOrBlank()) "Your search came through." else "You said “$q”.")
+                V_MISSED -> "Let's Try Again" to "That didn't sound like a search. Say the name of a movie or show."
+                else -> if (!homeActive()) "Turn On the Home Button First" to "Voice search needs it. Unlock Dream OS Features turns it on."
+                    else "Hold the Microphone Button" to "Then say something like “The Office.”"
+            }
+            setTextIfNew(headline, h)
+            setTextIfNew(detail, d)
         }
-        main = p.buttons(if (SetupGate.checkPassed(ctx)) "Continue" else "Check Now") {
-            if (SetupGate.checkPassed(ctx)) next(me) else run()
-        }
-        if (SetupGate.checkPassed(ctx)) {
-            art.checkState = SetupArt.CheckState.OK
-            setTextIfNew(line, "Ready to Watch")
-            view.post { if (cur == me) speed.run() }
-        } else view.post { if (cur == me) run() }
-        return p.built(main)
+        voiceState = if (voiceTested) V_HEARD else V_IDLE
+        show(voiceState, null)
+        voice = { s, q -> show(s, q) }
+        onResumeCheck = { if (voiceState == V_IDLE) show(V_IDLE, null) }
+        return f.built(main)
     }
-
-    /**
-     * Unlock Dream OS Features (DreamUnlock.kt): recommended, never required. Skipping keeps Dream OS
-     * working as an app; the same page lives in Settings to finish later.
-     */
-    private fun unlockStep(): Built {
-        val ui = SetupUi(ctx, k)
-        val panel = SetupPanel(ui)
-        val me = cur
-        val pages = UnlockPages(ctx, ui, panel, onChange = { onResumeCheck?.invoke() },
-            afterTurnOff = { if (cur == me) page?.view?.findViewWithTag<View>(MAIN)?.requestFocus() })
-        val b = panelStep(SetupArt.Kind.UNLOCK, "Unlock Dream OS Features",
-            "A one-time step so Dream OS can fully take over your Fire TV: the Home button, startup, voice search and more.",
-            panel, pages.overview(), continueFirst = { DreamUnlock.allOn(ctx) }, tags = listOf("Recommended")) {}
-        (blockNote)?.let { n ->
-            onResumeCheck = { if (cur == me) setTextIfNew(n, if (DreamUnlock.allOn(ctx)) "" else "You can skip this and unlock later in Settings.") }
-            n.visibility = View.VISIBLE
-            onResumeCheck?.invoke()
-        }
-        return b
-    }
-
-    // ---- 8. apple ----
-
-    private fun appleTvInstalled() = try { Apps.launchIntent(ctx, APPLE_TV) != null } catch (e: Exception) { false }
-
-    private fun appleStep(): Built {
-        val p = Split(glyph(R.drawable.ic_phone), "Dream OS + Apple",
-            "Optional. Dream OS works beautifully with your AirPods and iPhone. Here's what's included.")
-        p.add(p.kicker("WORKS GREAT"), 0)
-        p.add(info("AirPods", "TV sound, auto-connect and the AirPods menu", true), 8)
-        p.add(info("AirPods to iPhone and Back", "One press in the AirPods menu", true), 4)
-        p.add(info("iPhone", "A remote in your browser, with no app to install", true), 4)
-        p.add(info("Typing From Your iPhone", "Search and sign in without the on-screen keyboard", true), 4)
-        val main = p.buttons("Continue") { next(APPLE) }
-        return p.built(main)
-    }
-
-    /** A plain, unfocusable fact row with a drawn status mark (a check, or a quiet ring when not available). */
-    private fun info(title: String, caption: String, ok: Boolean) =
-        row(title, caption, value = " ", focusable = false, compact = true).also {
-            it.value?.text = ""
-            it.value?.background = StatusGlyph(if (ok) BrandRow.Mark.OK else BrandRow.Mark.OFF)
-            it.value?.minWidth = 22.dp
-            it.value?.minHeight = 22.dp
-            it.value?.textSize = 16f
-        }.view
-
-    // ---- 9. airpods ----
 
     private fun airPodsStep(): Built {
         // Illustration and connection ring (AirPodsArt.kt): one slow turn on arrival and on connect, otherwise still.
-        val art = AirPodsArt(ctx, k.select)
+        // Its natural size (the parts are 140 dp tall), and no glow: squeezed into 200x100 the parts spilled out and the
+        // glow filled the box as a gray rectangle.
+        val art = AirPodsArt(ctx, k.select).apply { background = null }
         val ring = ConnectionRing(ctx, k)
-        val ringLabel = k.label("", Ui.T_LABEL, k.dim, k.semibold).apply { gravity = Gravity.CENTER }
-        val hero = LinearLayout(ctx).apply {
-            orientation = LinearLayout.VERTICAL
+        val ringLabel = k.label("", 15f, k.dim, k.semibold).apply { gravity = Gravity.CENTER }
+        val hero = vBox().apply {
             gravity = Gravity.CENTER_HORIZONTAL
-            addView(art, LinearLayout.LayoutParams(300.dp, 150.dp))
-            addView(ring, LinearLayout.LayoutParams(84.dp, 84.dp).apply { topMargin = 12.dp })
-            addView(ringLabel, LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT).apply { topMargin = 8.dp })
+            addView(art, LinearLayout.LayoutParams(296.dp, 148.dp))
+            addView(ring, LinearLayout.LayoutParams(48.dp, 48.dp).apply { topMargin = 20.dp })
+            addView(ringLabel, LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT).apply { topMargin = 6.dp })
         }
-        val p = Split(null, "Dream OS Works With AirPods Right Out of the Box", null, hero = hero)
-        val sub = p.subtitle!!
-        p.note("Pair them once. Dream OS connects them each time it starts, keeps the sound smooth while you watch, " +
-            "and moves them to your iPhone and back from the AirPods menu on the home screen.")
+        val f = Frame(IconArt(ctx, R.drawable.ic_headphones), "Dream OS Works With AirPods", "")
+        val sub = f.subtitle
+        val split = hRow().apply { gravity = Gravity.TOP }
         val body = vBox()
-        p.add(body, 16)
-        val optKicker = p.kicker("OPTIONS")
-        p.add(optKicker, 16)
+        split.addView(body, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
+        split.addView(hero, LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT).apply { marginStart = 32.dp })
+        f.add(split, 0)
         val auto = row("Connect Automatically", "Each time Dream OS starts", icon = R.drawable.ic_headphones,
             toggle = AirPodsLink.autoConnect(ctx)) { r -> AirPodsLink.setAutoConnect(ctx, !AirPodsLink.autoConnect(ctx)); r.sw?.set(AirPodsLink.autoConnect(ctx)) }
         val sleep = row("Sleep When Put Away", "Sets a 10-minute sleep timer", icon = R.drawable.ic_moon,
@@ -1224,9 +1127,7 @@ class SetupWizard(
             Theme.set(ctx, Theme.AIRPODS_SLEEP, if (on) 1 else 0)
             r.sw?.set(on)
         }
-        p.add(auto.view, 8)
-        p.add(sleep.view, 6)
-        val main = p.buttons("Continue") { next(AIRPODS) }
+        val main = f.buttons("Continue") { next(AIRPODS) }
         var state: String? = null
         var wasConnected: Boolean? = null
         var action: View? = null
@@ -1259,16 +1160,18 @@ class SetupWizard(
             connecting = t
             r.view.postDelayed(t, 9000)
         }
-        val stepRows = listOf(
+        val stepRows = numbered(listOf(
             "Open Bluetooth Settings, then Other Bluetooth Devices.",
             "Open the AirPods case and hold its button until the light flashes white.",
-            "Choose your AirPods, then return here.",
-        ).mapIndexed { i, t -> row(t, null, number = i + 1, focusable = false, compact = true) }
+            "Choose your AirPods, then come back here.",
+        ), gap = 10)
         val btRow = row("Open Bluetooth Settings", null, icon = R.drawable.ic_settings, chevron = true) { host.openBluetoothSettings() }
         body.addView(connectedRow.view)
         body.addView(pairedRow.view)
-        for ((i, r) in stepRows.withIndex()) body.addView(r.view, rowLp(i > 0, 4))
-        body.addView(btRow.view, rowLp(true))
+        body.addView(stepRows, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
+        body.addView(btRow.view, rowLp(true, 12))
+        body.addView(auto.view, rowLp(true, 10))
+        body.addView(sleep.view, rowLp(true, 6))
         fun fill() {
             val paired = host.pairedAirPods()
             val connected = paired != null && host.airPodsConnected()
@@ -1283,18 +1186,16 @@ class SetupWizard(
             if (connected && wasConnected == false) art.turn()
             wasConnected = connected
             val focused = body.findFocus()
-            setShown(sub, true)
             // Options matter once AirPods are paired; until then the pairing steps get the room.
-            setShown(optKicker, paired != null)
             setShown(auto.view, paired != null)
             setShown(sleep.view, paired != null)
             setShown(connectedRow.view, connected)
             setShown(pairedRow.view, paired != null && !connected)
-            for (r in stepRows) setShown(r.view, paired == null)
+            setShown(stepRows, paired == null)
             setShown(btRow.view, paired == null)
             when {
                 connected -> {
-                    setTextIfNew(sub, "TV sound plays in your AirPods.")
+                    setTextIfNew(sub, "TV sound plays in your AirPods. Dream OS connects them each time it starts.")
                     setTextIfNew(connectedRow.title, paired!!)
                     action = null
                 }
@@ -1305,10 +1206,11 @@ class SetupWizard(
                     action = pairedRow.view
                 }
                 else -> {
-                    setTextIfNew(sub, "Pair them once in Bluetooth settings. After that, Dream OS connects them for you.")
+                    setTextIfNew(sub, "Pair them once. After that, Dream OS connects them for you and moves them to your iPhone and back.")
                     action = btRow.view
                 }
             }
+            setShown(sub, true)
             // Focus only moves when the focused row was just hidden.
             if (!first && focused != null && focused.visibility != View.VISIBLE) (action ?: main).requestFocus()
         }
@@ -1317,35 +1219,39 @@ class SetupWizard(
         // The first turn starts once the page has slid in.
         art.postDelayed({ if (art.isAttachedToWindow) art.turn() }, 420)
         onLeave = { art.stop(); ring.stop() }
-        return p.built(action ?: main)
+        // Pairing AirPods is optional: Continue has the focus unless there's a pair to connect.
+        return f.built(if (action === pairedRow.view) pairedRow.view else main)
     }
-
-    // ---- 10. iphone ----
 
     private fun iPhoneStep(): Built {
         val url = host.remoteUrl()
-        val p = Split(glyph(R.drawable.ic_phone), "Your iPhone Is a Remote",
+        val f = Frame(IconArt(ctx, R.drawable.ic_phone), "Your iPhone Is a Remote",
             if (url == null) "Connect the TV to Wi-Fi, then find this in Settings, under Devices."
-            else "Point your iPhone's camera at the code. A remote opens in your browser, with no app to install.")
-        p.leftAdd(k.label("Remote and Typing · Open Apps\n" + "AirPods to iPhone or TV · Photo Wallpaper",
-            Ui.T_LABEL, k.text, k.medium, lines = 0).apply { setLineSpacing(6.dp.toFloat(), 1f) }, 18)
+            else "A remote opens in your phone's browser, with no app to install: typing, opening apps, AirPods and photo wallpaper.")
         if (url != null) {
             val qr = FrameLayout(ctx).apply {
                 background = Ui.rounded(ctx, Color.WHITE, Ui.R_LG)
-                setPadding(12.dp, 12.dp, 12.dp, 12.dp)
+                setPadding(10.dp, 10.dp, 10.dp, 10.dp)
                 addView(ImageView(ctx).apply {
                     tag = QR
-                    setImageBitmap(host.qrBitmap(url))
-                    // Crisp modules: no smoothing when the small bitmap is scaled up.
-                    (drawable as? BitmapDrawable)?.let { it.isFilterBitmap = false; it.setAntiAlias(false) }
+                    setImageDrawable(Qr.drawable(ctx, url))
                 }, MATCH_PARENT, MATCH_PARENT)
             }
-            p.add(qr, 0, LinearLayout.LayoutParams(196.dp, 196.dp))
-            p.add(k.label(url.substringBefore("/?"), Ui.T_CAPTION, k.dim, k.font), 10)
-            p.add(k.label("Works on Android too. Your phone needs the same Wi-Fi as the TV.", Ui.T_CAPTION, k.dim, k.font, lines = 2), 4)
+            val code = vBox().apply { gravity = Gravity.CENTER_HORIZONTAL }
+            code.addView(qr, LinearLayout.LayoutParams(QR_DP.dp, QR_DP.dp))
+            code.addView(k.label(url.substringBefore("/?").removePrefix("http://"), 15f, Ui.alpha(Color.WHITE, 0.82f), k.medium, lines = 0)
+                .apply { gravity = Gravity.CENTER }, lp(top = 10))
+            val wrap = hRow().apply { gravity = Gravity.TOP }
+            wrap.addView(code, LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT))
+            wrap.addView(numbered(listOf(
+                "Point your iPhone's camera at the code.",
+                "Tap the link that appears.",
+                "Your phone needs the same Wi-Fi as the TV. Android phones work too.",
+            )), LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f).apply { marginStart = 40.dp })
+            f.add(wrap, 0)
         }
-        val main = p.buttons("Continue") { next(IPHONE) }
-        return p.built(main)
+        val main = f.buttons("Continue") { next(IPHONE) }
+        return f.built(main)
     }
 
     /** Drops the QR bitmap as soon as its page has faded away. */
@@ -1356,71 +1262,233 @@ class SetupWizard(
         bmp?.recycle()
     }
 
-    // ---- 11. voice ----
+    // ---- Make It Yours ----
 
-    private fun voiceStep(): Built {
-        val p = Split(glyph(R.drawable.ic_search), "Search With Your Voice",
-            "Hold the microphone button on your remote, say a movie or show, then let go. The results open in Dream Search.")
-        p.note("Some remotes' microphones don't work with this Fire TV. If nothing happens, try another remote.")
-        val card = LinearLayout(ctx).apply {
-            orientation = LinearLayout.VERTICAL
+    private fun profile(): Built {
+        val avatar = k.label(emoji, 30f, Color.WHITE).apply {
             gravity = Gravity.CENTER
-            background = k.sheet(Ui.R_XL)
-            setPadding(24.dp, 22.dp, 24.dp, 22.dp)
+            background = oval(color)
         }
-        val badge = FrameLayout(ctx)
-        val badgeIcon = ImageView(ctx).apply { setImageResource(R.drawable.ic_search); setColorFilter(PearlFocus.INK) }
-        // Heard: a drawn white check on the green disc (never a text "✓").
-        val badgeCheck = View(ctx).apply { background = CheckInk(Color.WHITE, weight = 0.075f); visibility = View.GONE }
-        badge.addView(badgeIcon, FrameLayout.LayoutParams(28.dp, 28.dp, Gravity.CENTER))
-        badge.addView(badgeCheck, FrameLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT))
-        val headline = k.label("", Ui.T_HEADLINE, k.text, k.semibold).apply { gravity = Gravity.CENTER }
-        val detail = k.label("", Ui.T_LABEL, k.dim, k.font, lines = 3).apply { gravity = Gravity.CENTER; setLineSpacing(3.dp.toFloat(), 1f) }
-        card.addView(k.kicker("TRY IT"))
-        card.addView(badge, LinearLayout.LayoutParams(64.dp, 64.dp).apply { topMargin = 14.dp })
-        card.addView(headline, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { topMargin = 14.dp })
-        card.addView(detail, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { topMargin = 6.dp })
-        p.add(card, 0, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
-        val main = p.buttons("Continue", null) { next(VOICE) }
-        val listenBg = oval(PearlFocus.PEARL) // listening: the pearl disc with an ink glyph, like the step emblems
-        val heardBg = oval(GREEN_DEEP)
-        var shownGood: Boolean? = null
-        // In place: the badge only changes when the outcome does, the text only when it differs.
-        fun show(state: Int, q: String?) {
-            val good = state == V_HEARD
-            if (good != shownGood) {
-                badge.background = if (good) heardBg else listenBg
-                badgeIcon.visibility = if (good) View.GONE else View.VISIBLE
-                badgeCheck.visibility = if (good) View.VISIBLE else View.GONE
-                // The check pops in once, when a search first comes through.
-                if (good && shownGood == false) {
-                    badge.scaleX = 0.6f; badge.scaleY = 0.6f
-                    badge.animate().scaleX(1f).scaleY(1f).setDuration(320).setInterpolator(Ui.SPRING).start()
-                }
-                shownGood = good
-            }
-            val (h, d) = when (state) {
-                V_LISTENING -> "Listening…" to "Say a title, then let go of the button."
-                V_HEARD -> "Voice Search Works" to (if (q.isNullOrBlank()) "Your search came through." else "You said “$q”.")
-                V_MISSED -> "Let's Try Again" to "That didn't sound like a search. Say the name of a movie or show."
-                else -> if (!homeActive()) "Turn On the Home Button First" to "Voice search needs it. Go back a few steps to turn it on."
-                    else "Hold the Microphone Button" to "Then say something like “The Office.”"
-            }
-            setTextIfNew(headline, h)
-            setTextIfNew(detail, d)
+        val f = Frame(avatar, "Create Your Profile", "Your name and a picture. Each profile keeps its own list, history and look. Add a PIN in Who's Watching or in Settings.")
+        fun paint() {
+            avatar.text = emoji
+            (avatar.background as GradientDrawable).setColor(color)
         }
-        voiceState = if (voiceTested) V_HEARD else V_IDLE
-        show(voiceState, null)
-        voice = { s, q -> show(s, q) }
-        onResumeCheck = { if (voiceState == V_IDLE) show(V_IDLE, null) }
-        return p.built(main)
+        // Picture and color as two rows that Left / Right step through (the emblem shows the result): big targets
+        // on one column, never a cluster of small chips.
+        fun cycle(i: Int, by: Int, n: Int) = ((i + by) % n + n) % n
+        val picture = stepper("Picture", null, null, { emoji }) { by ->
+            emoji = Profiles.EMOJIS[cycle(maxOf(0, Profiles.EMOJIS.indexOf(emoji)), by, Profiles.EMOJIS.size)]
+            paint()
+        }
+        lateinit var colorRow: Row
+        fun paintColor() {
+            colorRow.value?.setCompoundDrawablesRelative(oval(color).apply { setBounds(0, 0, 18.dp, 18.dp) }, null, null, null)
+            colorRow.value?.compoundDrawablePadding = 12.dp
+        }
+        colorRow = stepper("Color", null, null, { COLOR_NAMES.getOrElse(Profiles.COLORS.indexOf(color)) { "Custom" } }) { by ->
+            color = Profiles.COLORS[cycle(maxOf(0, Profiles.COLORS.indexOf(color)), by, Profiles.COLORS.size)]
+            paint()
+            paintColor()
+        }
+        paintColor()
+        paint()
+        lateinit var main: TextView
+        val field = textField("Your Name", name, InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_CAP_WORDS, 20) {
+            hideKeyboard()
+            main.requestFocus()
+        }
+        nameField = field
+        val controls = vBox()
+        controls.addView(field, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
+        controls.addView(picture.view, rowLp(true, 12))
+        controls.addView(colorRow.view, rowLp(true, 6))
+        val split = hRow().apply { gravity = Gravity.TOP }
+        split.addView(controls, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
+        // PhoneTyping.kt: scan to type the name on your phone (the text lands in the name box via phoneText).
+        split.addView(PhoneTyping.view(ctx, k, 104), LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT).apply { marginStart = 40.dp })
+        f.add(split, 0)
+        main = f.buttons("Continue") { next(PROFILE) }
+        // Start in the name box when it still needs filling in; otherwise everything is set, so Continue.
+        return f.built(if (name.isBlank()) field else main)
     }
 
-    // ---- 12. extras ----
+    /** Saves name / picture / color into the profile. False (and a nudge) while the name is blank. */
+    private fun commitProfile(): Boolean {
+        val f = nameField ?: return true
+        // An empty box keeps the name the wizard started with: blank on a fresh install (never the placeholder "Me").
+        val n = f.text.toString().trim().ifEmpty { name }
+        if (n.isEmpty()) {
+            f.hint = "Type Your Name First"
+            f.setHintTextColor(ERROR)
+            shake(f)
+            f.requestFocus()
+            return false
+        }
+        name = n
+        val list = Profiles.all(ctx)
+        list.firstOrNull { it.id == profileId }?.let { it.name = n; it.emoji = emoji; it.color = color }
+        Profiles.save(ctx, list)
+        return true
+    }
 
+    private fun whoStep(): Built {
+        val me = cur
+        val ui = stageUi()
+        val panel = SetupPanel(ui)
+        lateinit var f: Frame
+        f = panelFrame(SetupArt(ctx, SetupArt.Kind.PROFILES), "Who Else Watches?",
+            "Add a profile for everyone at home, or continue if it's just you. A Kids profile only shows titles up to the rating you choose.",
+            panel, ProfilesPages(ctx, ui, panel, pins, compact = true).overview(), focusAfter = { f.main })
+        val main = f.buttons("Continue") { next(me) }
+        return f.built(main)
+    }
+
+    /**
+     * Picture and Sound: the defaults as three plain facts (they suit most TVs), so Continue has the focus.
+     * Change Settings opens the whole Playback page as a sub-page.
+     */
+    private fun playbackStep(): Built {
+        val me = cur
+        val ui = stageUi()
+        val panel = SetupPanel(ui)
+        val first = SetupScreen(ui, null, null)
+        val facts = hRow().apply { gravity = Gravity.TOP }
+        fun fact(label: String) = vBox().also { c ->
+            c.addView(k.label(label, 15f, k.dim, k.medium, lines = 0))
+            c.addView(k.label("", 22f, k.text, k.semibold, lines = 0), lp(top = 6))
+            facts.addView(c, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
+        }
+        val q = fact("Maximum Quality")
+        val a = fact("Audio Language")
+        val s = fact("Subtitles")
+        fun paint() {
+            PlaybackPrefs.ensureDefaults(ctx.applicationContext)
+            val app = ctx.applicationContext
+            setTextIfNew(q.getChildAt(1) as TextView, PlaybackPrefs.qualityLabel(PlaybackPrefs.quality(app)))
+            setTextIfNew(a.getChildAt(1) as TextView, PlaybackPrefs.audioLabel(app))
+            setTextIfNew(s.getChildAt(1) as TextView,
+                if (PlaybackPrefs.subsOn(app)) PlaybackPrefs.subLabel(PlaybackPrefs.subLang(app) ?: "English") else "Off")
+        }
+        first.add(facts, 0)
+        first.add(k.label(if (DeviceVideo.plays4k(ctx)) "Your Fire Stick and TV can play 4K." else "Your Fire Stick and TV play up to 1080p.",
+            15f, k.dim, k.font, lines = 0), 24)
+        paint()
+        first.onShow = { paint() }
+        lateinit var f: Frame
+        f = panelFrame(SetupArt(ctx, SetupArt.Kind.PLAYBACK), "Picture and Sound",
+            "These defaults suit most TVs. Change them now, or anytime in Settings.", panel, first, focusAfter = { f.main })
+        val main = f.buttons("Continue", listOf("Change Settings" to { panel.push(PlaybackPages(ctx, ui, panel).hub()) })) { next(me) }
+        return f.built(main)
+    }
+
+    private fun content(): Built {
+        val f = Frame(IconArt(ctx, R.drawable.ic_apps), "Choose Your Home Screen Apps",
+            "Pick the apps for the Your Apps row on your home screen. Change them anytime.")
+        val grid = appGrid()
+        f.add(grid.first, 0)
+        val main = f.buttons("Continue") { next(CONTENT) }
+        // The weather on Home comes from the approximate location: shown quietly at the end of the buttons.
+        val weather = f.footerNote().apply { text = "Finding your weather…" }
+        val g = gen
+        Weather.load(ctx) { now ->
+            if (g != gen) return@load
+            weather.text = if (now == null) "Weather isn't available right now." else "Weather on Home: ${now.tempF}° ${now.place}".trim()
+        }
+        // Apps already chosen: Continue is the likely press; none yet, the first app.
+        return f.built(if (Apps.favorites(ctx).isEmpty()) grid.second ?: main else main)
+    }
+
+    /** Up to 12 apps as tiles; chosen ones are on the home screen's Your Apps row. Returns (grid, first tile). */
+    private fun appGrid(): Pair<View, View?> {
+        val all = try { host.apps() } catch (e: Exception) { emptyList() }
+        val favs = Apps.favorites(ctx)
+        val streaming = Tmdb.SERVICES.map { it.pkg }.toSet()
+        val ordered = all.sortedWith(compareBy<AppEntry>({ if (it.pkg in favs) 0 else if (it.pkg in streaming || !it.system) 1 else 2 },
+            { favs.indexOf(it.pkg).let { i -> if (i < 0) Int.MAX_VALUE else i } }, { it.label.lowercase() })).take(12)
+        val box = vBox()
+        if (ordered.isEmpty()) {
+            box.addView(k.label("Your apps show up here once they're installed.", 15.5f, k.dim, k.font, lines = 0))
+            return box to null
+        }
+        var first: View? = null
+        for (chunk in ordered.chunked(6)) {
+            val line = hRow().apply { gravity = Gravity.START }
+            for (app in chunk) {
+                val tile = appTile(app)
+                if (first == null) first = tile
+                line.addView(tile, LinearLayout.LayoutParams(108.dp, WRAP_CONTENT).apply { marginEnd = 8.dp })
+            }
+            box.addView(line, LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT).apply { if (box.childCount > 0) topMargin = 14.dp })
+        }
+        return box to first
+    }
+
+    private fun appTile(app: AppEntry) = LinearLayout(ctx).apply {
+        orientation = LinearLayout.VERTICAL
+        gravity = Gravity.CENTER_HORIZONTAL
+        isFocusable = true
+        isClickable = true
+        // The pearl face inside the rainbow border when focused; at rest neutral glass, a brighter one with a
+        // hairline once it's picked.
+        val tileBox = FrameLayout(ctx).apply { isDuplicateParentStateEnabled = true }
+        val rest = Ui.rounded(ctx, Color.TRANSPARENT, Ui.R_MD)
+        val glow = PearlFocus.apply(tileBox, Ui.R_MD, rest = rest)
+        val icon = ImageView(ctx).apply { setImageDrawable(try { app.icon } catch (e: Exception) { null }); scaleType = ImageView.ScaleType.FIT_CENTER }
+        tileBox.addView(icon, FrameLayout.LayoutParams(32.dp, 32.dp, Gravity.CENTER))
+        // Picked: a pearl disc with an ink check, turning ink with a pearl check on the focused pearl face.
+        val check = View(ctx).apply {
+            isDuplicateParentStateEnabled = true
+            foreground = CheckInk(PearlFocus.INK, PearlFocus.PEARL, weight = 0.13f) // drawn, never a text "✓"
+            background = StateListDrawable().apply {
+                addState(intArrayOf(android.R.attr.state_focused), oval(PearlFocus.INK))
+                addState(IntArray(0), oval(PearlFocus.PEARL))
+            }
+        }
+        tileBox.addView(check, FrameLayout.LayoutParams(16.dp, 16.dp, Gravity.TOP or Gravity.END).apply { topMargin = 3.dp; marginEnd = 3.dp })
+        addView(tileBox, LinearLayout.LayoutParams(50.dp, 50.dp))
+        // The app's whole name, wrapped under the icon (never cut to "Prime Vi…").
+        addView(k.label(app.label, 12.5f, k.dim, k.font, lines = 0).apply {
+            gravity = Gravity.CENTER
+            hyphenationFrequency = android.text.Layout.HYPHENATION_FREQUENCY_NONE
+        }, LinearLayout.LayoutParams(108.dp, WRAP_CONTENT).apply { topMargin = 6.dp })
+        fun paint() {
+            val on = app.pkg in Apps.favorites(ctx)
+            check.visibility = if (on) View.VISIBLE else View.INVISIBLE
+            rest.setColor(Ui.alpha(Color.WHITE, if (on) 0.16f else 0.06f))
+            rest.setStroke(maxOf(1, 1.dp), Ui.alpha(Color.WHITE, if (on) 0.5f else 0.08f))
+        }
+        paint()
+        setOnFocusChangeListener { _, has -> PearlFocus.focus(glow, has); Ui.lift(this, has, Ui.LIFT_ICON) }
+        setOnClickListener {
+            val favs = Apps.favorites(ctx)
+            if (!favs.remove(app.pkg)) favs.add(app.pkg)
+            Apps.saveFavorites(ctx, favs)
+            paint()
+            refreshDrawableState()
+        }
+    }
+
+    /** A Few Extras: the options in two columns (all optional, the defaults already on), so Continue has the focus. */
     private fun moreStep(): Built {
-        val p = Split(glyph(R.drawable.ic_settings), "A Few Extras", "Small touches. All optional, all in Settings.")
-        p.note("The sleep timer is in Settings too, whenever you want to fall asleep to something.")
+        val f = Frame(IconArt(ctx, R.drawable.ic_settings), "A Few Extras",
+            "Small touches, already set the way most people like them. They're all in Settings too, with the sleep timer.")
+        val options = ArrayList<View>()
+        // Anime first (owner): the same settings as Settings › Home & Apps and Settings › Playback.
+        options += row("Keep Anime in Anime Sections", "Anime shows only on the Anime page and its rows", icon = R.drawable.ic_movie,
+            toggle = RowMix.animeApart(ctx)) { r ->
+            val on = !RowMix.animeApart(ctx)
+            Theme.set(ctx, Theme.ANIME_APART, if (on) 1 else 0)
+            r.sw?.set(on)
+        }.view
+        if (AnimeDubs.want(ctx) != "ja") {
+            options += row(AnimeDubs.settingLabel(ctx), "Plays the ${AnimeDubs.langName(AnimeDubs.want(ctx))} dub when a copy has one",
+                icon = R.drawable.ic_play, toggle = AnimeDubs.preferDubs(ctx)) { r ->
+                val on = !AnimeDubs.preferDubs(ctx)
+                AnimeDubs.setPreferDubs(ctx, on)
+                r.sw?.set(on)
+            }.view
+        }
         val saver = stepper("Screensaver", null, R.drawable.ic_moon, {
             val m = Theme.SAVER_MINUTES[Theme.get(ctx, Theme.SAVER).coerceIn(0, Theme.SAVER_MINUTES.size - 1)]
             if (m == 0) "Off" else "After $m Min"
@@ -1428,65 +1496,70 @@ class SetupWizard(
             val n = Theme.SAVER_MINUTES.size
             Theme.set(ctx, Theme.SAVER, (Theme.get(ctx, Theme.SAVER) + by + n) % n)
         }
-        p.add(saver.view, 0)
+        options += saver.view
         if (AdBlock.supported()) {
             val st = AdBlock.status(ctx)
             val ad = row("Block Ads", if (st.on) "Using ${st.label}" else "Hides ads and trackers across the TV", icon = R.drawable.ic_shield, toggle = st.on) { r ->
-                val ok = if (AdBlock.status(ctx).on) AdBlock.disable(ctx) else AdBlock.enable(ctx, AdBlock.PROVIDERS.first().host)
-                val now = AdBlock.status(ctx)
-                r.sw?.set(now.on)
-                r.caption?.text = when {
-                    !ok -> "Not available on this TV"
-                    now.on -> "Using ${now.label}. Change it in Settings."
-                    else -> "Hides ads and trackers across the TV"
+                if (AdBlock.running) return@row
+                if (AdBlock.status(ctx).on) {
+                    val ok = AdBlock.disable(ctx)
+                    r.sw?.set(AdBlock.status(ctx).on)
+                    r.caption?.text = if (ok) "Hides ads and trackers across the TV" else "Not available on this Fire Stick"
+                    return@row
+                }
+                // The same checked switch as Settings › Ad Blocking: a network that blocks secure DNS would
+                // otherwise take every app offline, the rest of setup included. It switches back if so.
+                AdBlock.running = true
+                r.sw?.set(true)
+                r.caption?.text = "Checking that websites still load…"
+                AdBlock.enableAndVerify(ctx, AdBlock.PROVIDERS.first().host, { p -> r.caption?.text = p }) { res ->
+                    AdBlock.running = false
+                    val now = AdBlock.status(ctx)
+                    r.sw?.set(now.on)
+                    r.caption?.text = if (now.on) "Using ${now.label}. Change it in Settings." else res.message
                 }
             }
-            p.add(ad.view, 6)
+            options += ad.view
         }
         for ((key, t, c) in listOf(
             Triple(Theme.NAV_SOUND, "Navigation Sounds", "Soft ticks as you move around"),
             Triple(Theme.INTRO_SOUND, "Intro Sound", "A gentle chime at startup"),
         )) {
-            val r = row(t, c, icon = R.drawable.ic_play, toggle = Theme.get(ctx, key) == 1) { r ->
+            options += row(t, c, icon = R.drawable.ic_play, toggle = Theme.get(ctx, key) == 1) { r ->
                 val on = Theme.get(ctx, key) == 0
                 Theme.set(ctx, key, if (on) 1 else 0)
                 r.sw?.set(on)
-            }
-            p.add(r.view, 6)
+            }.view
         }
         // DreamUpdate.kt: on by default.
-        val upd = row("Automatic Updates", "Keeps Dream OS up to date", icon = R.drawable.ic_bolt, toggle = DreamUpdate.autoEnabled(ctx)) { r ->
+        options += row("Automatic Updates", "Keeps Dream OS up to date", icon = R.drawable.ic_bolt, toggle = DreamUpdate.autoEnabled(ctx)) { r ->
             val on = !DreamUpdate.autoEnabled(ctx)
             DreamUpdate.setAuto(ctx, on)
             r.sw?.set(DreamUpdate.autoEnabled(ctx))
             Log.w(TAG, "Setup: automatic updates ${if (on) "on" else "off"}")
+        }.view
+        val grid = vBox()
+        for ((i, pair) in options.chunked(2).withIndex()) {
+            val line = hRow().apply { gravity = Gravity.TOP }
+            for ((j, o) in pair.withIndex()) line.addView(o, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f).apply { if (j > 0) marginStart = 20.dp })
+            if (pair.size == 1) line.addView(View(ctx), LinearLayout.LayoutParams(0, 1, 1f).apply { marginStart = 20.dp })
+            grid.addView(line, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { if (i > 0) topMargin = 10.dp })
         }
-        p.add(upd.view, 6)
-        p.buttons("Continue") { next(MORE) }
-        return p.built(saver.view)
+        f.add(grid, 0)
+        val main = f.buttons("Continue") { next(MORE) }
+        return f.built(main)
     }
 
-    // ---- 13. done ----
+    // ---- Done ----
 
     private fun doneStep(): Built {
         val col = column()
-        val avatar = k.label(emoji, 46f, Color.WHITE).apply { gravity = Gravity.CENTER; background = oval(color) }
-        val c0 = color
-        val halo = FrameLayout(ctx).apply {
-            addView(View(ctx).apply {
-                background = GradientDrawable().apply {
-                    gradientType = GradientDrawable.RADIAL_GRADIENT
-                    gradientRadius = 96.dp.toFloat()
-                    colors = intArrayOf(Ui.alpha(c0, 0.42f), Color.TRANSPARENT)
-                }
-            }, FrameLayout.LayoutParams(220.dp, 170.dp, Gravity.CENTER))
-            addView(avatar, FrameLayout.LayoutParams(100.dp, 100.dp, Gravity.CENTER))
-        }
-        col.addView(halo, LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT))
+        val avatar = k.label(emoji, 40f, Color.WHITE).apply { gravity = Gravity.CENTER; background = oval(color) }
+        col.addView(avatar, LinearLayout.LayoutParams(88.dp, 88.dp))
         val title = titleText(if (name.isBlank()) "You're All Set" else "You're All Set, $name", center = true)
         val sub = subText("Change anything anytime in Settings.", center = true)
-        col.addView(title, lp(top = 0))
-        col.addView(sub, lp(top = 8))
+        col.addView(title, lp(top = 20))
+        col.addView(sub, lp(top = 10))
         val items = listOfNotNull(
             "Profile" to true,
             (if (homeActive()) "Home Button On" else "Home Button Off") to homeActive(),
@@ -1498,24 +1571,23 @@ class SetupWizard(
             (if (host.remoteUrl() != null) "Phone Remote Ready" else "Phone Remote Needs Wi-Fi") to (host.remoteUrl() != null),
             (if (voiceTested) "Voice Search Tested" else "Voice Search") to voiceTested,
         )
-        val grid = LinearLayout(ctx).apply { orientation = LinearLayout.VERTICAL; gravity = Gravity.CENTER_HORIZONTAL }
-        for (chunk in items.chunked(4)) {
-            val line = hRow()
+        // What's set up as a plain three-column list: aligned columns read at a glance.
+        val grid = vBox()
+        for (chunk in items.chunked(3)) {
+            val line = hRow().apply { gravity = Gravity.TOP }
             for ((label, ok) in chunk) {
-                line.addView(k.label(label, Ui.T_CAPTION, if (ok) k.text else k.dim, k.medium).apply {
+                line.addView(k.label(label, 15.5f, if (ok) Ui.alpha(k.text, 0.92f) else k.dim, k.medium, lines = 0).apply {
                     // A drawn green check when done, a quiet ring when not (never a text "✓" / "–").
-                    setCompoundDrawablesRelative(StatusGlyph(if (ok) BrandRow.Mark.OK else BrandRow.Mark.OFF).apply { setBounds(0, 0, 14.dp, 14.dp) }, null, null, null)
-                    compoundDrawablePadding = 8.dp
-                    setPadding(14.dp, 7.dp, 14.dp, 7.dp)
-                    background = k.glass(Ui.R_PILL, 70)
-                }, LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT).apply { marginStart = 5.dp; marginEnd = 5.dp })
+                    setCompoundDrawablesRelative(StatusGlyph(if (ok) BrandRow.Mark.OK else BrandRow.Mark.OFF).apply { setBounds(0, 0, 18.dp, 18.dp) }, null, null, null)
+                    compoundDrawablePadding = 12.dp
+                }, LinearLayout.LayoutParams(240.dp, WRAP_CONTENT))
             }
-            grid.addView(line, LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT).apply { if (grid.childCount > 0) topMargin = 10.dp })
+            grid.addView(line, LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT).apply { if (grid.childCount > 0) topMargin = 16.dp })
         }
-        col.addView(grid, lp(top = 22))
-        val main = pill("Start Watching", primary = true) { next(DONE) }
-        col.addView(main, LinearLayout.LayoutParams(WRAP_CONTENT, 46.dp).apply { topMargin = 28.dp })
-        return Built(center(col), main, listOf(halo, title, sub, grid, main))
+        col.addView(grid, lp(top = 32))
+        val main = pill("Start Watching", primary = true) { next(DONE) }.apply { tag = MAIN; minWidth = 220.dp }
+        col.addView(main, LinearLayout.LayoutParams(WRAP_CONTENT, 46.dp).apply { topMargin = 36.dp })
+        return Built(center(col), main, listOf(avatar, title, sub, grid, main))
     }
 
     private var celebrating = false
@@ -1531,7 +1603,7 @@ class SetupWizard(
         Log.w(TAG, "Setup: finished, welcome animation")
         (stage as ViewGroup).descendantFocusability = ViewGroup.FOCUS_BLOCK_DESCENDANTS
         stage.animate().alpha(0f).setDuration(420).setInterpolator(Ui.EXIT).start()
-        dots.animate().alpha(0f).setDuration(300).start()
+        rail.animate().alpha(0f).setDuration(300).start()
         val layer = FrameLayout(ctx).apply { isClickable = true; isFocusable = true; isFocusableInTouchMode = true }
         val halo = View(ctx).apply {
             background = GradientDrawable().apply {
@@ -1599,130 +1671,111 @@ class SetupWizard(
         }, 5600)
     }
 
-    // ---- look preview ----
+    // ---- the step frame ----
 
     /**
-     * A tiny Dream Cinema home screen in [v]'s colors: the floating top bar (logo dot, tabs, the time), the
-     * hero's title and lines, and a row of cards whose first one wears the rainbow focus line.
+     * One step's frame: a column [colW] wide under the rail. The head (the step's emblem, "Step 2 of 4" and the
+     * title), the sentence, then the body, which takes the room that's left, then the footer: the primary button
+     * and any quiet secondary ones, always at the same place at the bottom. A step's content can grow or shrink
+     * inside the body; the head and the buttons never move.
      */
-    private inner class LookPreview(v: Map<String, Int>) {
-        val view = FrameLayout(ctx)
-        init {
-            fun c(key: String) = v[key] ?: Theme.get(ctx, key)
-            view.background = GradientDrawable(GradientDrawable.Orientation.TL_BR, intArrayOf(c(Theme.BG_TOP), c(Theme.BG_BOTTOM))).apply {
-                cornerRadius = Ui.R_LG.dp.toFloat()
-                setStroke(1.dp, Ui.alpha(Color.WHITE, 0.14f))
-            }
-            view.clipToOutline = true
-            view.outlineProvider = android.view.ViewOutlineProvider.BACKGROUND
-            // Top bar: the logo, three tabs (the first one current), the time.
-            view.addView(View(ctx).apply { background = Ui.rounded(ctx, Ui.alpha(c(Theme.TEXT), 0.9f), Ui.R_PILL) },
-                FrameLayout.LayoutParams(8.dp, 8.dp).apply { leftMargin = 12.dp; topMargin = 10.dp })
-            for (i in 0..2) view.addView(View(ctx).apply {
-                background = Ui.rounded(ctx, if (i == 0) c(Theme.SELECT) else Ui.alpha(c(Theme.TEXT), 0.28f), Ui.R_PILL)
-            }, FrameLayout.LayoutParams(22.dp, 5.dp, Gravity.TOP or Gravity.CENTER_HORIZONTAL).apply { topMargin = 12.dp; leftMargin = ((i - 1) * 56).dp })
-            view.addView(View(ctx).apply { background = Ui.rounded(ctx, Ui.alpha(c(Theme.TEXT), 0.5f), Ui.R_PILL) },
-                FrameLayout.LayoutParams(18.dp, 5.dp, Gravity.TOP or Gravity.END).apply { topMargin = 12.dp; rightMargin = 12.dp })
-            // The hero: a title and two lines of text.
-            view.addView(View(ctx).apply { background = Ui.rounded(ctx, c(Theme.TEXT), Ui.R_PILL) },
-                FrameLayout.LayoutParams(84.dp, 9.dp).apply { leftMargin = 14.dp; topMargin = 40.dp })
-            for (i in 0..1) view.addView(View(ctx).apply { background = Ui.rounded(ctx, Ui.alpha(c(Theme.TEXT_DIM), 0.6f), Ui.R_PILL) },
-                FrameLayout.LayoutParams(if (i == 0) 110.dp else 76.dp, 4.dp).apply { leftMargin = 14.dp; topMargin = (58 + i * 9).dp })
-            // A row of cards; the first one is focused (the rainbow, the only color).
-            for (i in 0..3) view.addView(View(ctx).apply {
-                background = Ui.rounded(ctx, c(Theme.TILE), Ui.R_XS)
-            }, FrameLayout.LayoutParams(48.dp, 30.dp).apply { leftMargin = (14 + i * 54).dp; topMargin = 88.dp })
-            view.addView(View(ctx).apply {
-                background = GradientDrawable(GradientDrawable.Orientation.LEFT_RIGHT, Rainbow.COLORS).apply { cornerRadius = 2.dp.toFloat() }
-            }, FrameLayout.LayoutParams(48.dp, 3.dp).apply { leftMargin = 14.dp; topMargin = 121.dp })
+    private inner class Frame(art: View?, title: String, sub: String?) {
+        val column = LinearLayout(ctx).apply { orientation = LinearLayout.VERTICAL; clipChildren = false; clipToPadding = false }
+        val root = FrameLayout(ctx).apply {
+            clipChildren = false
+            clipToPadding = false
+            addView(column, FrameLayout.LayoutParams(colW(), MATCH_PARENT, Gravity.TOP or Gravity.CENTER_HORIZONTAL).apply { topMargin = RAIL_ROOM.dp })
         }
-    }
-
-    // ---- layout ----
-
-    /**
-     * A split step: [icon], title and explanation on the left; controls on the right with the
-     * buttons under them.
-     */
-    private inner class Split(icon: View?, title: String, sub: String?, iconDp: Int = 52, hero: View? = null, tags: List<String> = emptyList()) {
-        val root = LinearLayout(ctx).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
-        val left = LinearLayout(ctx).apply { orientation = LinearLayout.VERTICAL }
-        val right = LinearLayout(ctx).apply { orientation = LinearLayout.VERTICAL }
-        val anims = ArrayList<View>()
-        val subtitle: TextView?
-        private val centered = hero != null
+        private val head = LinearLayout(ctx).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
+        val subtitle: TextView = subText(sub ?: "", center = false)
+        val body = LinearLayout(ctx).apply { orientation = LinearLayout.VERTICAL; clipChildren = false; clipToPadding = false }
+        private val footer = LinearLayout(ctx).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL; clipChildren = false; clipToPadding = false }
+        /** The "what's still missing" line just above the buttons; its line is kept even when empty, so nothing moves. */
+        val note: TextView = k.label("", 15f, Ui.alpha(Color.WHITE, 0.78f), k.medium, lines = 0).apply { visibility = View.GONE }
+        val secondary = ArrayList<TextView>()
+        var main: TextView? = null
+        private val anims = ArrayList<View>()
 
         init {
-            if (hero != null) {
-                // Hero mode: the illustration owns the left column; the title leads the controls.
-                left.gravity = Gravity.CENTER_HORIZONTAL
-                leftAdd(hero, 0)
-                add(titleText(title, center = false), 0)
-                subtitle = subText(sub ?: "", center = false)
-                add(subtitle, 8)
-            } else {
-                if (icon != null) leftAdd(icon, 0, LinearLayout.LayoutParams(iconDp.dp, iconDp.dp))
-                leftAdd(titleText(title, center = false), if (icon != null) 18 else 0)
-                // The step's facts ("Required", "Free", "About 5 Minutes"), the iPhone's step tags.
-                if (tags.isNotEmpty()) leftAdd(tagRow(tags), 10)
-                subtitle = subText(sub ?: "", center = false)
-                leftAdd(subtitle, 10)
-            }
-            root.addView(left, LinearLayout.LayoutParams(0, WRAP_CONTENT, 0.42f))
-            root.addView(right, LinearLayout.LayoutParams(0, WRAP_CONTENT, 0.58f).apply { marginStart = 52.dp })
+            if (art != null) head.addView(art, LinearLayout.LayoutParams(EMBLEM.dp, EMBLEM.dp).apply { marginEnd = 20.dp })
+            val texts = vBox()
+            texts.addView(k.label(stepLabel(), 15f, Ui.alpha(Color.WHITE, 0.66f), k.medium, lines = 0))
+            texts.addView(titleText(title, center = false), lp(top = 2))
+            head.addView(texts, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
+            column.addView(head, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
+            column.addView(subtitle, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { topMargin = 12.dp })
+            column.addView(body, LinearLayout.LayoutParams(MATCH_PARENT, 0, 1f).apply { topMargin = BODY_TOP.dp })
+            column.addView(note, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { topMargin = 10.dp })
+            column.addView(footer, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { topMargin = 14.dp })
+            anims += head; anims += subtitle; anims += body; anims += footer
         }
-
-        fun leftAdd(v: View, top: Int, lp: LinearLayout.LayoutParams? = null) {
-            val p = lp ?: (v.layoutParams as? LinearLayout.LayoutParams) ?: LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT)
-            p.topMargin = top.dp
-            left.addView(v, p)
-            anims += v
-        }
-
-        /** A short quiet paragraph under the explanation. */
-        fun note(t: String): TextView = k.label(t, Ui.T_CAPTION, Ui.alpha(k.dim, 0.9f), k.font, lines = 0).apply {
-            setLineSpacing(3.dp.toFloat(), 1f)
-            if (centered) gravity = Gravity.CENTER
-            if (t.isEmpty()) visibility = View.GONE
-            leftAdd(this, 14, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
-        }
-
-        fun kicker(t: String) = k.kicker(t).apply { setPadding(6.dp, 0, 0, 0) }
 
         fun add(v: View, top: Int, lp: LinearLayout.LayoutParams? = null) {
             val p = lp ?: (v.layoutParams as? LinearLayout.LayoutParams) ?: LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT)
             p.topMargin = top.dp
-            right.addView(v, p)
-            anims += v
+            body.addView(v, p)
         }
 
-        /** Primary pill (and an optional quiet one) under the controls; both move on. Returns the primary. */
-        fun buttons(primary: String, secondary: String? = null, onClick: () -> Unit): View {
-            val bar = LinearLayout(ctx).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
-            val main = pill(primary, primary = true) { onClick() }.apply { tag = MAIN; minWidth = 180.dp }
-            bar.addView(main, LinearLayout.LayoutParams(WRAP_CONTENT, 46.dp))
-            if (secondary != null) bar.addView(pill(secondary, primary = false) { onClick() }, LinearLayout.LayoutParams(WRAP_CONTENT, 46.dp).apply { marginStart = 14.dp })
-            add(bar, 20, LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT))
-            return main
+        /** The primary button and quiet secondary ones beside it. Exactly one forward action. Returns the primary. */
+        fun buttons(primary: String, secondaries: List<Pair<String, () -> Unit>> = emptyList(), onClick: () -> Unit): TextView {
+            val m = pill(primary, primary = true) { onClick() }.apply { tag = MAIN; minWidth = 200.dp }
+            footer.addView(m, LinearLayout.LayoutParams(WRAP_CONTENT, 46.dp))
+            for ((label, act) in secondaries) {
+                val s = pill(label, primary = false) { act() }
+                secondary += s
+                footer.addView(s, LinearLayout.LayoutParams(WRAP_CONTENT, 46.dp).apply { marginStart = 16.dp })
+            }
+            main = m
+            return m
         }
+
+        /** Quiet information at the end of the button row (it takes no height of its own). */
+        fun footerNote(): TextView = k.label("", 15f, k.dim, k.font, lines = 0).apply {
+            gravity = Gravity.END or Gravity.CENTER_VERTICAL
+            footer.addView(this, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f).apply { marginStart = 24.dp })
+        }
+
+        /** Keeps the note's line (one line of room) so a message arriving never pushes the body. */
+        fun reserveNote() {
+            note.visibility = View.INVISIBLE
+            note.minHeight = (note.lineHeight)
+            blockNote = note
+        }
+
+        /** The note's text, or the empty kept line for null. [quiet]: plain dim information instead of what's missing. */
+        fun setNote(t: String?, quiet: Boolean = false) {
+            setColorIfNew(note, if (quiet) k.dim else Ui.alpha(Color.WHITE, 0.78f))
+            if (t == null) { note.visibility = View.INVISIBLE; return }
+            setTextIfNew(note, t)
+            note.visibility = View.VISIBLE
+        }
+
+        /** A full-column list in this step: the sentence, the note and the buttons step aside; the head stays. */
+        fun listPage(on: Boolean) {
+            subtitle.visibility = if (on || subtitle.text.isEmpty()) View.GONE else View.VISIBLE
+            footer.visibility = if (on) View.GONE else View.VISIBLE
+            if (note.visibility == View.VISIBLE && on) note.visibility = View.GONE
+        }
+
+        /** A sub-page has the column: the head, the sentence and the buttons step aside until it closes. */
+        fun subPage(on: Boolean) {
+            if (on == inSub) return
+            inSub = on
+            val v = if (on) View.GONE else View.VISIBLE
+            head.visibility = v
+            subtitle.visibility = if (on || subtitle.text.isEmpty()) View.GONE else View.VISIBLE
+            footer.visibility = v
+            if (on) { noteWas = note.visibility; note.visibility = View.GONE } else note.visibility = noteWas
+            (body.layoutParams as LinearLayout.LayoutParams).topMargin = if (on) 0 else BODY_TOP.dp
+            body.requestLayout()
+        }
+        private var inSub = false
+        private var noteWas = View.GONE
 
         fun built(focus: View) = Built(root, focus, anims)
     }
 
     private fun column() = LinearLayout(ctx).apply { orientation = LinearLayout.VERTICAL; gravity = Gravity.CENTER_HORIZONTAL }
-
-    /** Small capsules: "Required" is the strong one. */
-    private fun tagRow(tags: List<String>) = LinearLayout(ctx).apply {
-        orientation = LinearLayout.HORIZONTAL
-        gravity = Gravity.CENTER_VERTICAL
-        for ((i, t) in tags.withIndex()) {
-            val strong = t == "Required"
-            addView(k.label(t, 12f, if (strong) Color.WHITE else k.dim, k.semibold, 0.02f).apply {
-                setPadding(11.dp, 4.dp, 11.dp, 5.dp)
-                background = Ui.rounded(ctx, Ui.alpha(Color.WHITE, if (strong) 0.14f else 0.06f), Ui.R_PILL, 1f, Ui.alpha(Color.WHITE, if (strong) 0.30f else 0.14f))
-            }, LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT).apply { if (i > 0) marginStart = 8.dp })
-        }
-    }
 
     private fun center(col: View) = FrameLayout(ctx).apply { addView(col, FrameLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT, Gravity.CENTER)) }
 
@@ -1734,13 +1787,20 @@ class SetupWizard(
 
     private fun rowLp(gap: Boolean, gapDp: Int = 6) = LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { if (gap) topMargin = gapDp.dp }
 
-    private fun titleText(t: String, center: Boolean) = k.label(t, if (center) Ui.T_DISPLAY else 30f, k.text, k.semibold, Ui.TRACK_TITLE, lines = 2).apply {
+    /** New content arriving in a step that's already on screen: a short, soft rise (no swap, no flash). */
+    private fun reveal(views: List<View>) = Ui.rise(views, fromDp = 6, step = Ui.STAGGER, duration = Ui.PAGE)
+
+    // Titles and explanations wrap in full (never "…") and break only between words.
+    private fun titleText(t: String, center: Boolean) = k.label(t, if (center) Ui.T_DISPLAY else TITLE_SP, k.text, k.semibold, Ui.TRACK_TITLE, lines = 0).apply {
+        hyphenationFrequency = android.text.Layout.HYPHENATION_FREQUENCY_NONE
+        setLineSpacing(2.dp.toFloat(), 1f)
         if (center) gravity = Gravity.CENTER
     }
 
-    private fun subText(t: String, center: Boolean) = k.label(t, 16f, k.dim, k.font, lines = 0).apply {
-        setLineSpacing(4.dp.toFloat(), 1f)
-        if (center) { gravity = Gravity.CENTER; maxWidth = 620.dp }
+    private fun subText(t: String, center: Boolean) = k.label(t, 17f, k.dim, k.font, lines = 0).apply {
+        setLineSpacing(5.dp.toFloat(), 1f)
+        hyphenationFrequency = android.text.Layout.HYPHENATION_FREQUENCY_NONE
+        if (center) { gravity = Gravity.CENTER; maxWidth = 660.dp }
         if (t.isEmpty()) visibility = View.GONE
     }
 
@@ -1749,28 +1809,20 @@ class SetupWizard(
     /**
      * Setup's buttons in the Dream focus look: the primary is Play-type (pearl at rest, the fading rainbow
      * fill when focused), the others neutral glass that turn pearl with dark ink; both wear the rainbow
-     * glow border while focused. Glow and fill share the capsule's radius (half its 46 dp height). The
-     * look is [PremiumKit.pill]'s Dream one, always on here: setup is the brand's first impression.
+     * glow border while focused. Glow and fill share the capsule's radius (half its 46 dp height).
      */
     private fun pill(label: String, primary: Boolean, onClick: () -> Unit): TextView =
-        k.pill(label, null, primary, 46, dream = true) { onClick() }.apply { setPadding(30.dp, 0, 30.dp, 0) }
-
-    /** A step's emblem: the pearl disc with a dark ink glyph (like the Settings card's title disc). */
-    private fun glyph(icon: Int) = FrameLayout(ctx).apply {
-        background = oval(PearlFocus.PEARL)
-        addView(ImageView(ctx).apply { setImageResource(icon); setColorFilter(PearlFocus.INK) }, FrameLayout.LayoutParams(26.dp, 26.dp, Gravity.CENTER))
-    }
+        k.pill(label, null, primary, 46, dream = true) { onClick() }.apply { setPadding(28.dp, 0, 28.dp, 0) }
 
     private inner class Row(val view: LinearLayout, val title: TextView, val caption: TextView?, val value: TextView?, val sw: SetupSwitch?, val check: View?)
 
     /**
-     * One option row, like Settings: optional icon disc or step [number], title (+ caption), then a
-     * value, a switch ([toggle]), a check mark ([check]) or a chevron. Unfocusable when [focusable] is
-     * false (plain facts and instructions).
+     * One option row, like Settings: optional icon disc, title (+ caption), then a value, a switch ([toggle]),
+     * a check mark ([check]) or a chevron. Unfocusable when [focusable] is false (plain facts and instructions).
      */
     private fun row(
         title: String, caption: String? = null, icon: Int? = null, value: String? = null, toggle: Boolean? = null,
-        chevron: Boolean = false, check: Boolean = false, number: Int? = null, focusable: Boolean = true, compact: Boolean = false,
+        chevron: Boolean = false, check: Boolean = false, focusable: Boolean = true, compact: Boolean = false,
         onClick: ((Row) -> Unit)? = null,
     ): Row {
         val focused = intArrayOf(android.R.attr.state_focused)
@@ -1779,9 +1831,9 @@ class SetupWizard(
         val v = LinearLayout(ctx).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
-            minimumHeight = (if (compact) 44 else 54).dp
-            setPadding(12.dp, (if (compact) 5 else 7).dp, 18.dp, (if (compact) 5 else 7).dp)
-            if (!interactive) background = Ui.rounded(ctx, Ui.alpha(k.text, 0.035f), Ui.R_MD)
+            minimumHeight = (if (compact) 46 else 56).dp
+            setPadding(12.dp, (if (compact) 4 else 8).dp, 18.dp, (if (compact) 4 else 8).dp)
+            // A plain fact or instruction reads as text; only what can be chosen gets the glass of a control.
             isFocusable = interactive
             isClickable = interactive
         }
@@ -1789,39 +1841,27 @@ class SetupWizard(
         val glow = if (interactive) PearlFocus.apply(v, Ui.R_MD) else null
         val iconRest = Ui.alpha(k.text, 0.8f)
         val d: Drawable? = icon?.let { try { ctx.getDrawable(it)?.mutate()?.apply { setTint(iconRest) } } catch (e: Exception) { null } }
-        when {
-            // Step number: a quiet gray disc with a white figure; on the focused pearl face, a faint ink disc and ink figure.
-            number != null -> v.addView(k.label("$number", 12f, Color.WHITE, k.bold).apply {
-                gravity = Gravity.CENTER
-                setTextColor(states(PearlFocus.INK, Color.WHITE))
-                isDuplicateParentStateEnabled = true
-                background = StateListDrawable().apply {
-                    addState(focused, oval(Ui.alpha(PearlFocus.INK, 0.10f)))
-                    addState(IntArray(0), oval(Ui.alpha(Color.WHITE, 0.14f)))
-                }
-            }, LinearLayout.LayoutParams(24.dp, 24.dp).apply { marginStart = 6.dp; marginEnd = 14.dp })
-            d != null -> v.addView(ImageView(ctx).apply {
-                setImageDrawable(d)
-                setPadding(8.dp, 8.dp, 8.dp, 8.dp)
-                isDuplicateParentStateEnabled = true
-                background = StateListDrawable().apply {
-                    addState(focused, GradientDrawable().apply { shape = GradientDrawable.OVAL; setColor(Ui.alpha(PearlFocus.INK, 0.08f)) })
-                    addState(IntArray(0), GradientDrawable().apply { shape = GradientDrawable.OVAL; setColor(Ui.alpha(k.text, 0.07f)) })
-                }
-            }, LinearLayout.LayoutParams(34.dp, 34.dp).apply { marginEnd = 14.dp })
-            else -> v.setPadding(20.dp, v.paddingTop, 18.dp, v.paddingBottom)
-        }
-        val texts = LinearLayout(ctx).apply { orientation = LinearLayout.VERTICAL }
-        // Names stay on one line (a step's sentence gets two) and never break mid-word.
-        val t = k.label(title, if (number != null) Ui.T_LABEL else 16f, k.text, if (number != null) k.font else k.medium, lines = if (number != null) 2 else 1).apply {
-            setTextColor(states(PearlFocus.INK, if (number != null) k.dim else Ui.alpha(k.text, 0.94f)))
+        if (d != null) v.addView(ImageView(ctx).apply {
+            setImageDrawable(d)
+            setPadding(8.dp, 8.dp, 8.dp, 8.dp)
             isDuplicateParentStateEnabled = true
-            ellipsize = android.text.TextUtils.TruncateAt.END
+            background = StateListDrawable().apply {
+                addState(focused, GradientDrawable().apply { shape = GradientDrawable.OVAL; setColor(Ui.alpha(PearlFocus.INK, 0.08f)) })
+                addState(IntArray(0), GradientDrawable().apply { shape = GradientDrawable.OVAL; setColor(Ui.alpha(k.text, 0.07f)) })
+            }
+        }, LinearLayout.LayoutParams(34.dp, 34.dp).apply { marginEnd = 14.dp })
+        else v.setPadding(20.dp, v.paddingTop, 18.dp, v.paddingBottom)
+        val texts = LinearLayout(ctx).apply { orientation = LinearLayout.VERTICAL }
+        // Setup text is never cut: titles and captions wrap in full, breaking only between words.
+        val t = k.label(title, 16.5f, k.text, k.medium, lines = 0).apply {
+            setTextColor(states(PearlFocus.INK, Ui.alpha(k.text, 0.94f)))
+            isDuplicateParentStateEnabled = true
+            setLineSpacing(2.dp.toFloat(), 1f)
             hyphenationFrequency = android.text.Layout.HYPHENATION_FREQUENCY_NONE
         }
         texts.addView(t)
         val cap = caption?.let {
-            k.label(it, 12.5f, k.dim, k.font, lines = 2).apply {
+            k.label(it, 13.5f, k.dim, k.font, lines = 0).apply {
                 setTextColor(states(PearlFocus.INK_DIM, k.dim))
                 isDuplicateParentStateEnabled = true
                 setPadding(0, 3.dp, 0, 0)
@@ -1830,7 +1870,7 @@ class SetupWizard(
         }
         v.addView(texts, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
         val value2 = value?.let {
-            k.label(it, Ui.T_LABEL, k.dim, k.medium).apply {
+            k.label(it, 15f, k.dim, k.medium, lines = 0).apply {
                 setTextColor(states(PearlFocus.INK_DIM, k.dim))
                 isDuplicateParentStateEnabled = true
                 maxWidth = 200.dp
@@ -1862,7 +1902,7 @@ class SetupWizard(
     /** A row whose value Left / Right (or Select, forward) steps through. */
     private fun stepper(title: String, caption: String?, icon: Int?, label: () -> String, change: (Int) -> Unit): Row {
         var r: Row? = null
-        fun show() { r?.value?.text = "‹ ${label()} ›" }
+        fun show() { r?.value?.text = "‹  ${label()}  ›" }
         r = row(title, caption, icon = icon, value = "") { change(1); show() }
         show()
         r.view.setOnKeyListener { _, code, e ->
@@ -1871,28 +1911,6 @@ class SetupWizard(
             by != 0
         }
         return r
-    }
-
-    private fun statusChip(t: String, tone: Int) = k.label("", Ui.T_LABEL, k.text, k.semibold).apply {
-        setPadding(14.dp, 8.dp, 16.dp, 8.dp)
-        setChip(this, t, tone)
-    }
-
-    /** Sets the chip's text and tone; a no-op when it already shows exactly that (no relayout, no redraw). */
-    private fun setChip(chip: TextView, t: String, tone: Int) {
-        val key = "$tone|$t"
-        if (chip.tag == key) return
-        chip.tag = key
-        // Busy is neutral white (the brand's only color is the rainbow; green and amber are status, not decoration).
-        val c = when (tone) { GOOD -> GREEN; WARN -> WARN_C; BUSY -> Color.WHITE; else -> k.dim }
-        chip.text = t
-        // The drawn status disc before the words (never a text "✓" / "●").
-        val mark = when (tone) { GOOD -> BrandRow.Mark.OK; WARN -> BrandRow.Mark.WARN; BUSY -> BrandRow.Mark.BUSY; else -> BrandRow.Mark.OFF }
-        chip.setCompoundDrawablesRelative(StatusGlyph(mark).apply { setBounds(0, 0, 16.dp, 16.dp) }, null, null, null)
-        chip.compoundDrawablePadding = 9.dp
-        chip.setTextColor(Ui.mix(c, k.text, 0.25f))
-        chip.background = Ui.rounded(ctx, Ui.alpha(c, 0.14f), Ui.R_PILL, 1f, Ui.alpha(c, 0.42f))
-        chip.visibility = if (t.isEmpty()) View.GONE else View.VISIBLE
     }
 
     private fun textField(hintText: String, value: String, type: Int, max: Int, onDone: () -> Unit) = EditText(ctx).apply {
@@ -1920,14 +1938,6 @@ class SetupWizard(
         layoutParams = LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT)
     }
 
-    private fun tapChip(t: String, size: Float, lift: Float, onClick: () -> Unit) = k.label(t, size, Color.WHITE).apply {
-        gravity = Gravity.CENTER
-        isFocusable = true
-        isClickable = true
-        setOnClickListener { onClick() }
-        setOnFocusChangeListener { v, has -> chipGlow[v]?.let { PearlFocus.focus(it, has) }; Ui.lift(v, has, lift) }
-    }
-
     /** ~300 ms horizontal shake, built from short chained steps. */
     private fun shake(v: View) {
         v.animate().cancel()
@@ -1945,21 +1955,21 @@ class SetupWizard(
     // ---- drawables ----
 
     /**
-     * Setup's sky: the brand's black falling into a dark gray (the logo's own black, like Home), with a faint
-     * neutral light from the top left. Fixed, not the theme's: setup is the first thing anyone sees.
+     * Setup's sky: the brand's black falling into a dark gray, with a faint neutral light from the top left.
+     * Fixed, not the theme's: setup is the first thing anyone sees.
      */
     private fun backdrop(): Drawable {
         val dm = ctx.resources.displayMetrics
-        val sky = GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM, intArrayOf(Color.BLACK, Color.rgb(12, 12, 14), Color.rgb(30, 30, 34)))
+        val sky = GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM, intArrayOf(Color.BLACK, Color.rgb(10, 10, 12), Color.rgb(24, 24, 28)))
         val wash = GradientDrawable().apply {
             gradientType = GradientDrawable.RADIAL_GRADIENT
             gradientRadius = dm.widthPixels * 0.6f
             setGradientCenter(0.3f, 0f)
-            colors = intArrayOf(Color.argb(18, 255, 255, 255), Color.TRANSPARENT)
+            colors = intArrayOf(Color.argb(16, 255, 255, 255), Color.TRANSPARENT)
         }
         val layers = LayerDrawable(arrayOf(sky, wash))
         // Baked once into one half-size bitmap (soft gradients scale up cleanly): one full-screen pass per frame
-        // instead of two gradient passes, and the lists' soft edges reuse the same pixels (SmoothScrollView).
+        // instead of two gradient passes.
         return try {
             val w = maxOf(1, dm.widthPixels / 2)
             val h = maxOf(1, dm.heightPixels / 2)
@@ -1975,63 +1985,75 @@ class SetupWizard(
 
     private fun oval(c: Int) = GradientDrawable().apply { shape = GradientDrawable.OVAL; setColor(c) }
 
-    /** An emoji chip's resting disc [d]: the chosen one a soft gray disc with a white hairline, the rest clear. */
-    private fun emojiBg(d: GradientDrawable, selected: Boolean) {
-        d.setColor(if (selected) Ui.alpha(Color.WHITE, 0.14f) else Color.TRANSPARENT)
-        d.setStroke(if (selected) 1.dp else 0, Ui.alpha(Color.WHITE, 0.55f))
-    }
 
     companion object {
         private const val TAG = "FireHome"
 
+        // Step ids (saved as the setup's place; the order comes from [CHAPTERS], not the numbers).
         private const val WELCOME = 0
         private const val PROFILE = 1
         private const val LOOK = 2
         private const val HOME = 3
         private const val CONTENT = 4
-        // (5 to 9 are no longer used.)
-        private const val APPLE = 10
         private const val AIRPODS = 11
         private const val IPHONE = 12
         private const val VOICE = 13
         private const val MORE = 14
         private const val DONE = 15
-        // Dream OS's own required steps. Order comes from [stepList], not the numbers.
         private const val ZONE = 16
         private const val ACCOUNTS = 17
         private const val SCRAPERS = 18
         private const val CHECK = 19
         private const val UNLOCK = 20
-        private const val INTRO = 21
         private const val PLAYBACK = 22
         private const val WHO = 23
         private const val NEED = 24
         private const val TMDB = 25
+
+        /**
+         * The chapters, in order. Get Ready and Connect hold everything Dream OS needs to play (every account step
+         * back to back, owner 2026-10-28); Your Fire TV and Make It Yours are the rest.
+         */
+        private val CHAPTERS = listOf(
+            "Get Ready" to listOf(NEED, ZONE),
+            "Connect" to listOf(TMDB, ACCOUNTS, SCRAPERS, CHECK),
+            "Your Fire Stick" to listOf(UNLOCK, HOME, LOOK, VOICE, AIRPODS, IPHONE),
+            "Make It Yours" to listOf(PROFILE, WHO, PLAYBACK, CONTENT, MORE),
+        )
 
         private const val V_IDLE = 0
         private const val V_LISTENING = 1
         private const val V_HEARD = 2
         private const val V_MISSED = 3
 
-        private const val GOOD = 0
-        private const val WARN = 1
-        private const val OFF = 2
-        private const val BUSY = 3
+        /** Design margins inside the Screen Fit inset (dp). */
+        private const val SIDE = 48
+        private const val TOP = 20
+        private const val BOTTOM = 24
+        /** The column's width (dp): wide enough for four tiles or a QR code beside its steps, narrow enough to read. */
+        private const val COL_W = 800
+        /** From the top of the content area to the step's head: the rail and the space under it (dp). */
+        private const val RAIL_ROOM = 56
+        /** From the sentence to the step's body (dp). */
+        private const val BODY_TOP = 22
+        /** A step's emblem (dp). */
+        private const val EMBLEM = 52
+        /** A step title (sp). */
+        private const val TITLE_SP = 28f
+        /** A QR code to scan with a phone (dp). */
+        private const val QR_DP = 132
 
-        /** Design margins inside the Screen fit inset (dp). */
-        private const val SIDE = 44
-        private const val TOP = 18
-        private const val BOTTOM = 36
+        /** Names for [Profiles.COLORS], in the same order. */
+        private val COLOR_NAMES = listOf("Violet", "Sky Blue", "Pink", "Green", "Amber", "Coral", "Lavender", "Teal")
 
         private const val MAIN = "main"
         private val NAV_KEYS = setOf(KeyEvent.KEYCODE_DPAD_UP, KeyEvent.KEYCODE_DPAD_DOWN, KeyEvent.KEYCODE_DPAD_LEFT,
             KeyEvent.KEYCODE_DPAD_RIGHT, KeyEvent.KEYCODE_DPAD_CENTER, KeyEvent.KEYCODE_ENTER)
         private const val QR = "qr"
-        private const val APPLE_TV = "com.apple.atve.amazon.appletv"
         private val GREEN = Color.parseColor("#30D158")
         private val GREEN_DEEP = Color.parseColor("#22A35A")
-        private val WARN_C = Color.parseColor("#FBBF24")
-        private val ERROR = Color.parseColor("#F87171")
+        private val WARN_C = Color.parseColor("#FFD60A")
+        private val ERROR = Color.parseColor("#FF8178")
     }
 }
 

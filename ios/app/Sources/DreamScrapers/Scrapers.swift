@@ -671,11 +671,6 @@ public enum Scrapers {
         PythonRuntime.log.info("Scrapers: test: \(found.count) found, \(ready) ready in \(ms()) ms")
         return TestResult(ok: true, found: found.count, ready: ready, ms: ms(), message: msg)
     }
-
-    /// The quick check (the two fastest providers, short limits, no season packs): for availability checks.
-    public static func quickCheck(_ request: PlayRequest) async -> [StreamCandidate] {
-        await ScraperSources.shared.find(request, budget: 6, light: true)
-    }
 }
 
 /// Runs async operations one after another (installs never overlap).

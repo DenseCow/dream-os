@@ -29,7 +29,7 @@ import android.widget.TextView
 class CinemaMyList(shell: CinemaShell) : CinemaRowsPage(shell) {
     private val saved = Tmdb.myList(ctx)
     private val listKey = key(saved)
-    private val progressKey = inProgress().joinToString(",") { it.key }
+    private val progressKey = progressSig()
     private var type = ALL
     private var order = RECENT
     private var from = 0
@@ -134,7 +134,10 @@ class CinemaMyList(shell: CinemaShell) : CinemaRowsPage(shell) {
         return WatchHistory.entries(ctx).filter { it.key in keys && (it.upNext || it.progress > 0f) }.distinctBy { it.key }
     }
 
-    override fun stale(): Boolean = key(Tmdb.myList(ctx)) != listKey || inProgress().joinToString(",") { it.key } != progressKey
+    /** What the Continue Watching posters show: which titles, their episode, Up Next and progress (a whole percent). */
+    private fun progressSig() = inProgress().joinToString(",") { "${it.key}@${it.season}:${it.episode}:${it.upNext}:${(it.progress * 100).toInt()}" }
+
+    override fun stale(): Boolean = key(Tmdb.myList(ctx)) != listKey || progressSig() != progressKey
 
     // ---- the saved choice ----
 

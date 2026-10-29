@@ -76,6 +76,8 @@ public protocol CatalogService: Sendable {
     func availabilityKnown() async -> [String: Availability]
     /// The title can wear an availability pill at all (STANDARDS §5: new movies and brand-new shows). No lookup.
     func mayHavePill(_ title: Title) -> Bool
+    /// A card's earlier answer with its best copy, no network (a title page's first frame).
+    func availabilityPeek(for title: Title) async -> AvailabilityDetail?
 
     // Gaps worker additions (defaults in PeopleContract.swift).
     /// One person's facts, biography and best-known titles (not [titleKey], the title they're seen in), nil when unknown.

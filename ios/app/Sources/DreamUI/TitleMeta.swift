@@ -15,13 +15,6 @@ public enum TitleMeta {
         return ([t.year.isEmpty ? nil : t.year, t.kind == .tv ? "Series" : "Movie"].compactMap { $0 } + g).joined(separator: Cinema.dot)
     }
 
-    /// Every title's full release date ("Jul 31, 2026"; owner, 2026-10-28), else the year when TMDB has no day.
-    /// Date-only TMDB dates are worded through DreamTime, so they never shift a day.
-    static func when(_ t: Title) -> String? {
-        if t.date.count == 10, let full = DreamTime.formatDay(t.date, "MMM d, yyyy") { return full }
-        return t.year.isEmpty ? nil : t.year
-    }
-
     /// TMDB's genre names (Discover.genreName).
     public static func genreName(_ kind: MediaKind, _ id: Int) -> String? {
         kind == .tv ? (tvGenres[id] ?? movieGenres[id]) : (movieGenres[id] ?? tvGenres[id])

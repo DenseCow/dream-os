@@ -98,12 +98,6 @@ enum ScraperEngine {
         Thread.detachNewThread { _ = try? PythonRuntime.call("reload_settings") }
     }
 
-    /// Playback started: Python gives back idle memory; its modules stay loaded. Background thread only.
-    static func trim() {
-        guard ready else { return }
-        _ = try? PythonRuntime.call("trim")
-    }
-
     static func refsJSON(_ refs: [ProviderRef]) -> String {
         json(refs.map { ["id": $0.id, "addon": $0.addon, "file": $0.file.path, "name": $0.name, "kind": $0.kind] })
     }
@@ -156,8 +150,10 @@ enum ScraperEngine {
                 cancel(job)
             }
             DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + timeout + 15, execute: watchdog)
+            // Cancelled, or finished by the watchdog while `ensure` waited: its slot is gone, so no scrape.
+            if job.isCancelled || job.isDone { watchdog.cancel(); job.complete("cancelled"); return }
             guard ensure() else { watchdog.cancel(); job.complete("python unavailable"); return }
-            if job.isCancelled { watchdog.cancel(); job.complete("cancelled"); return }
+            if job.isCancelled || job.isDone { watchdog.cancel(); job.complete("cancelled"); return }
             trace("job \(id): scrape call")
             // An urgent scrape runs on its own Python pool ("urgent"), never behind look-ahead providers' tasks.
             let pyLane = job.urgent ? "urgent" : lane.rawValue
@@ -213,7 +209,8 @@ enum ScraperEngine {
     /// From Python (sink): one provider finished (count -1 = timed out).
     static func finished(job id: Int, provider: String, count: Int, ms: Int, error: String?) {
         job(id)?.finished(provider: provider, count: count, ms: ms, error: error)
-        Scrapers.recordStat(provider.components(separatedBy: "#").first ?? provider, ms: ms, count: count, error: error)
+        // A cancelled scrape says nothing about the provider's speed or hit rate.
+        if error != "cancelled" { Scrapers.recordStat(provider.components(separatedBy: "#").first ?? provider, ms: ms, count: count, error: error) }
     }
 }
 
@@ -301,7 +298,6 @@ final class ScrapeJob: @unchecked Sendable {
     private var _done = false
     private var _cancelled = false
     private var _urgent = false
-    private var _firstMs = 0
     private var _answered = 0
     private var errors = 0
     private var withResults = Set<String>()
@@ -316,9 +312,6 @@ final class ScrapeJob: @unchecked Sendable {
     var version: Int { lock.withLock { _version } }
     var isDone: Bool { lock.withLock { _done } }
     var isCancelled: Bool { lock.withLock { _cancelled } }
-    /// ms from start to the first source (0 = none yet).
-    var firstMs: Int { lock.withLock { _firstMs } }
-    var answered: Int { lock.withLock { _answered } }
     var count: Int { lock.withLock { byHash.count } }
     /// Ended with every provider failing or timing out (the network, not "nothing out yet"), or without Python at all.
     var failedAll: Bool { lock.withLock { _done && (_answered == 0 || errors >= _answered) } }
@@ -398,7 +391,6 @@ final class ScrapeJob: @unchecked Sendable {
             }
             if !list.isEmpty {
                 withResults.insert(provider.components(separatedBy: "#").first ?? provider)
-                if _firstMs == 0 { _firstMs = max(1, Int(Date().timeIntervalSince(startedAt) * 1000)) }
             }
             bump()
         }
@@ -417,17 +409,19 @@ final class ScrapeJob: @unchecked Sendable {
     }
 
     func complete(_ error: String? = nil) {
-        let (n, providers, slowList, waiters): (Int, Int, [String], [CheckedContinuation<Void, Never>]) = lock.withLock {
-            if _done { return (-1, 0, [], []) }
+        let (n, providers, slowList, waiters, streams): (Int, Int, [String], [CheckedContinuation<Void, Never>], [AsyncStream<Int>.Continuation]) = lock.withLock {
+            if _done { return (-1, 0, [], [], []) }
             _done = true
             bump()
-            for c in watchers.values { c.finish() }
+            let s = Array(watchers.values)
             watchers.removeAll()
             let w = Array(doneWaiters.values)
             doneWaiters.removeAll()
-            return (byHash.count, withResults.count, slow, w)
+            return (byHash.count, withResults.count, slow, w, s)
         }
         guard n >= 0 else { return }
+        // Outside the lock: finish() runs the stream's onTermination on this thread, and that takes `lock` (deadlock).
+        for c in streams { c.finish() }
         for w in waiters { w.resume() }
         let ms = Int(Date().timeIntervalSince(startedAt) * 1000)
         let tail = (slowList.isEmpty ? "" : "; no answer: " + slowList.prefix(8).joined(separator: ", ")) + (error.map { "; \($0)" } ?? "")

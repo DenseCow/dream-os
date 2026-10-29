@@ -11,12 +11,18 @@ enum AccountWords {
         switch s.health {
         case .unchecked: return ("Connected · Not Checked Yet", nil, .none)
         case .invalid: return ("Sign In Again", Palette.redText, .warn)
+        case .blocked: return ("Approve This Network", Palette.amberText, .warn)
         default: break
         }
         if s.expired { return ("Expired", Palette.redText, .warn) }
         if s.health == .offline { return ("Couldn't Check Right Now", nil, .none) }
         if let until = s.premiumUntil { return ("Connected · Premium Until \(DreamTime.format(until, "MMM d, yyyy"))", Palette.greenText, .ok) }
         return ("Connected · Premium", Palette.greenText, .ok)
+    }
+
+    /// AllDebrid on a network it hasn't seen (AUTH_BLOCKED): signing in again won't help, approving it will.
+    static func blockedNote(_ name: String) -> String {
+        "\(name) holds your account on a network it hasn't seen before until you approve it. Open the email from \(name), approve this location, then choose Check Again."
     }
 }
 
@@ -125,7 +131,9 @@ struct AccountDetailView: View {
                     PageInfoRow(title: s.user ?? name, caption: DebridServices.site(service), lead: .monogram(DebridServices.monogram(service)))
                     PageInfoRow(title: "Status", value: words, valueTone: tone, lead: .mark(mark))
                 }
-                if tone == Palette.redText {
+                if s.health == .blocked {
+                    PageNote(text: AccountWords.blockedNote(name), size: 14).padding(.top, 12)
+                } else if tone == Palette.redText {
                     PageNote(text: words == "Expired" ? "Renew your plan on \(name)'s website, then choose Check Again." : "Link \(name) again to sign back in.", size: 14)
                         .padding(.top, 12)
                 }
@@ -184,16 +192,31 @@ struct AccountDetailView: View {
 /// copied), waiting for approval, then the account check. Premiumize without a device sign-in takes its API key.
 struct LinkAccountView: View {
     let service: String
+    /// Setup: a verified sign-in shows its result for 1.5 s, then the sheet closes by itself.
+    var autoClose = false
     var changed: () -> Void
     @Environment(\.dismiss) private var dismiss
     @Environment(\.openURL) private var openURL
     @State private var link: DebridDeviceLink?
-    @State private var phase: Phase = .starting
+    @State private var phase: Phase
     @State private var key = ""
     @State private var verified: DebridAccountState?
     @State private var copied = false
+    @State private var attempt = 0
 
     enum Phase: Equatable { case starting, waiting, saving, checking, done, failed(String), keyEntry, keyChecking }
+
+    /// No code this long after asking: an error with Try Again, never a spinner that waits forever.
+    static let codeWaitSeconds = 20
+
+    init(service: String, autoClose: Bool = false, changed: @escaping () -> Void) {
+        self.service = service
+        self.autoClose = autoClose
+        self.changed = changed
+        // A service that signs in with a key (Premiumize) opens on the key form: no "Getting a Code" for a code that
+        // never comes.
+        _phase = State(initialValue: PagesServices.debrid.usesDeviceSignIn(service) ? .starting : .keyEntry)
+    }
 
     var body: some View {
         let name = DebridServices.name(service)
@@ -214,8 +237,11 @@ struct LinkAccountView: View {
                     let ok = verified?.verified == true
                     PageResult(mark: ok ? .ok : .warn, headline: ok ? "\(name) Is Connected" : "\(name) Isn't Ready Yet")
                     PageNote(text: doneLine(name))
-                    PagePrimaryButton(title: "Done") { dismiss() }
-                    if !ok { PageSecondaryButton(title: "Check Again") { Task { await verify() } } }
+                    if !ok {
+                        PagePrimaryButton(title: "Check Again") { Task { await verify() } }
+                    } else if !autoClose {
+                        PagePrimaryButton(title: "Done") { dismiss() }
+                    }
                 case .failed(let msg):
                     PageResult(mark: .warn, headline: "Couldn't Connect")
                     PageNote(text: msg)
@@ -307,6 +333,7 @@ struct LinkAccountView: View {
             let (words, _, _) = AccountWords.status(s, checking: false)
             return [s.user.map { "Signed in as \($0)." }, words.replacingOccurrences(of: "Connected · ", with: "") + "."].compactMap { $0 }.joined(separator: " ")
         }
+        if s.health == .blocked { return AccountWords.blockedNote(name) }
         if s.expired { return "This account doesn't have an active premium plan. Renew it on \(name)'s website, then choose Check Again." }
         return "Dream OS couldn't confirm your plan. Check your internet connection, then choose Check Again."
     }
@@ -315,15 +342,26 @@ struct LinkAccountView: View {
         let d = PagesServices.debrid
         guard d.usesDeviceSignIn(service) else { phase = .keyEntry; return }
         phase = .starting
+        attempt += 1
+        let mine = attempt
+        let name = DebridServices.name(service)
+        let watchdog = Task { @MainActor in
+            try? await Task.sleep(for: .seconds(Self.codeWaitSeconds))
+            guard !Task.isCancelled, attempt == mine, phase == .starting else { return }
+            phase = .failed("\(name) didn't answer. Check your internet connection and try again.")
+        }
+        defer { watchdog.cancel() }
         do {
             let l = try await d.startDeviceLink(service)
+            // Timed out (or Try Again started another) while this one was out: its late code is dropped.
+            guard attempt == mine, phase == .starting else { return }
             link = l
             phase = .waiting
             await poll(l)
         } catch let e as DreamError {
-            phase = .failed(e.message)
+            if attempt == mine { phase = .failed(e.message) }
         } catch {
-            phase = .failed("\(DebridServices.name(service)) didn't answer. Check your internet connection and try again.")
+            if attempt == mine { phase = .failed("\(name) didn't answer. Check your internet connection and try again.") }
         }
     }
 
@@ -349,6 +387,10 @@ struct LinkAccountView: View {
         verified = await PagesServices.debrid.check(service)
         phase = .done
         changed()
+        if autoClose, verified?.verified == true {
+            try? await Task.sleep(for: .seconds(1.5))
+            dismiss()
+        }
     }
 
     private func linkKey() async {

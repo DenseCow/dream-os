@@ -98,6 +98,8 @@ class CinemaSearch(shell: CinemaShell) : CPage(shell) {
         queryField.focusRedirect = { live && keyboard.focusEntry() }
         queryField.onSearch = { q -> if (live) searchFor(q) }
         queryField.onAlexa = { on -> if (live || !on) alexaListening(on) }
+        queryField.onAlexaSearching = { if (live) alexaSearching() else null }
+        queryField.drawAsSearching = { draw -> if (live) drawAsSearching(draw) }
         // Hidden, the field keeps what it has: any edit (typed, pasted, replaced, deleted) is refused.
         queryField.filters = queryField.filters + android.text.InputFilter { _, _, _, dest, dstart, dend -> if (live) null else dest.subSequence(dstart, dend) }
         val box = FrameLayout(ctx).apply {
@@ -209,7 +211,7 @@ class CinemaSearch(shell: CinemaShell) : CPage(shell) {
 
     private fun fillSuggestions(title: String, items: List<String>, q: String = "") {
         val hadFocus = suggestList.hasFocus()
-        suggestTitle.text = title.uppercase()
+        suggestTitle.text = title
         // No heading while typing: the room goes to one more suggestion.
         suggestTitle.visibility = if (title.isEmpty()) View.GONE else View.VISIBLE
         suggestList.removeAllViews()
@@ -267,12 +269,15 @@ class CinemaSearch(shell: CinemaShell) : CPage(shell) {
             return
         }
         resultsTitle.text = "Trending Now"
-        trending?.let { addPosters(it); return }
+        // Kept per profile and day: a Kids profile never sees another profile's list, and the launcher runs for weeks.
+        val key = Profiles.suffix(ctx) + "|" + DreamTime.todayYmd(ctx)
+        trending?.takeIf { trendingKey == key }?.let { addPosters(it); return }
         val g = gen
         // No anime outside the anime sections (STANDARDS §5), nothing adult, nothing not out yet.
-        Net.background({ Tmdb.trending(ctx).filter { it.posterPath != null && !RowMix.isAnime(it) && !it.adult && RowMix.released(it) }.take(MAX_TILES) }) { list ->
+        Net.background({ Tmdb.trendingShown(ctx, art = "poster").take(MAX_TILES) }) { list ->
             if (list.isNullOrEmpty() || g != gen) return@background
             trending = list
+            trendingKey = key
             resetWall("trending")
             addPosters(list)
         }
@@ -369,7 +374,7 @@ class CinemaSearch(shell: CinemaShell) : CPage(shell) {
                 })
             }
             wall.addView(r, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { bottomMargin = ROW_GAP.dp })
-            if (i < 3) Ui.rise(listOf(r), fromDp = 14, startDelay = i * 45L, duration = 300L)
+            if (i < 3 && !still) Ui.rise(listOf(r), fromDp = 14, startDelay = i * 45L, duration = 300L)
         }
     }
 
@@ -393,13 +398,42 @@ class CinemaSearch(shell: CinemaShell) : CPage(shell) {
 
     // ---- voice ----
 
+    /** Rows go in without rising (Alexa's listening clears the page: a rise would open on a black wall). */
+    private var still = false
+
     fun alexaListening(on: Boolean) {
         listen.active = on
         if (on) {
-            queryField.setQuery("")
+            still = true
+            try { queryField.setQuery("") } finally { still = false }
             queryField.hint = "Listening…"
             keyboard.focusEntry()
         } else queryField.hint = HINT
+    }
+
+    /**
+     * Alexa has heard (its window is gone): "Searching…" with the glow breathing until the words arrive.
+     * Returns a twin of the glow, placed where this one is on screen, for the hand-off's cover to keep alive.
+     */
+    fun alexaSearching(): ScreenCover.Live? {
+        if (!listen.active) return null
+        queryField.hint = "Searching…"
+        listen.searching = true
+        if (!listen.isShown || listen.width == 0) return null
+        val at = IntArray(2).also { listen.getLocationOnScreen(it) }
+        val twin = ListenIndicator(pk).apply { active = true; searching = true }
+        return ScreenCover.Live(twin, at[0], at[1], listen.width, listen.height, stand = listen)
+    }
+
+    /**
+     * Runs [draw] with the page as it will look once Alexa has heard ("Searching…", the glow left out for
+     * the cover's twin), then puts it back: one message, so the screen never shows it early.
+     */
+    fun drawAsSearching(draw: (View?) -> Unit) {
+        if (!listen.active) return
+        val hint = queryField.hint
+        queryField.hint = "Searching…"
+        try { draw(listen) } finally { queryField.hint = hint }
     }
 
     fun searchFor(q: String) {
@@ -505,8 +539,9 @@ class CinemaSearch(shell: CinemaShell) : CPage(shell) {
         private const val MAX_TILES = 24
         private const val MAX_SUGGEST = 3
         private const val DEBOUNCE_MS = 250L
-        /** Trending titles for the empty state, fetched once per process. */
+        /** Trending titles for the empty state, for the profile and day in [trendingKey]. */
         private var trending: List<Title>? = null
+        private var trendingKey = ""
     }
 }
 

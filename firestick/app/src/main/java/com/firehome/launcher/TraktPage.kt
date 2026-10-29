@@ -179,7 +179,7 @@ internal class TraktPages(
                 else -> {
                     val header = s.view("acct", 0) { AccountHeader() } as AccountHeader
                     header.bind(Trakt.user(app()))
-                    s.view("k1", 20) { ui.kicker("SYNC") }
+                    s.view("k1", 20) { ui.kicker("Sync") }
                     val busy = asked || Trakt.isSyncing()
                     val caption = when {
                         busy -> Trakt.lastSyncedText(app())
@@ -195,24 +195,29 @@ internal class TraktPages(
                         ui.main.postDelayed(clearAsked, 90_000)
                         paint()
                     }
-                    s.row("w", "Watched History", "Movies and Episodes You Finish Are Marked Watched", static = true, top = 6)
-                    s.row("c", "Continue Watching", "Pick Up Where You Left Off on Any Device", static = true, top = 6)
-                    s.row("l", "My List", "Stays in Step With Your Trakt Watchlist", static = true, top = 6)
-                    s.view("k2", 20) { ui.kicker("ACCOUNT") }
-                    s.row("out", "Sign Out", "Stops Syncing This Profile With Trakt", chevron = true, top = 6) { panel.push(confirmSignOut()) }
+                    s.row("w", "Watched History", "Movies and episodes you finish are marked watched", static = true, top = 6)
+                    s.row("c", "Continue Watching", "Pick up where you left off on any device", static = true, top = 6)
+                    s.row("l", "My List", "Stays in step with your Trakt watchlist", static = true, top = 6)
+                    s.view("k2", 20) { ui.kicker("Account") }
+                    s.row("out", "Sign Out", "Stops syncing this profile with Trakt", chevron = true, top = 6) { panel.push(confirmSignOut()) }
                     advancedRow(s)
                 }
             }
         }
+        val listener: () -> Unit = {
+            if (asked && !Trakt.isSyncing()) { asked = false; ui.main.removeCallbacks(clearAsked) }
+            if (s.alive) paint()
+        }
         s.onShow = {
-            Trakt.onChanged = {
-                if (asked && !Trakt.isSyncing()) { asked = false; ui.main.removeCallbacks(clearAsked) }
-                if (s.alive) paint()
-            }
+            Trakt.onChanged = listener
             paint()
         }
         s.onResume = { paint() }
-        s.onHide = { ui.main.removeCallbacks(clearAsked) }
+        // Covered or closed: Trakt no longer holds this screen (opened from Accounts, nothing else clears it).
+        s.onHide = {
+            ui.main.removeCallbacks(clearAsked)
+            if (Trakt.onChanged === listener) Trakt.onChanged = null
+        }
         s.focus = { s.rowFor("sync")?.view ?: s.rowFor("in")?.view ?: s.rowFor("own")?.view }
         return s
     }
@@ -220,8 +225,8 @@ internal class TraktPages(
     /** Advanced (only on the viewer's own Trakt app): the keys, and removing them. */
     private fun advancedRow(s: SetupScreen) {
         if (!Trakt.usesOwnKeys(app())) { s.hide("k3"); s.hide("adv"); return }
-        s.view("k3", 20) { ui.kicker("ADVANCED") }
-        s.row("adv", "Advanced", "Your Trakt App Keys", chevron = true, top = 6) { panel.push(advanced()) }
+        s.view("k3", 20) { ui.kicker("Advanced") }
+        s.row("adv", "Advanced", "Your Trakt app keys", chevron = true, top = 6) { panel.push(advanced()) }
     }
 
     /** The account: avatar (or its initial), name, and "@username · Connected". */
@@ -279,7 +284,7 @@ internal class TraktPages(
         var id = ""
         var secret = ""
         var checking = false
-        s.add(ui.note("Dream OS is open source, so it doesn't come with Trakt keys. Your own Trakt app is free and is used only by this Fire TV."), 0)
+        s.add(ui.note("Dream OS is open source, so it doesn't come with Trakt keys. Your own Trakt app is free and is used only by this Fire Stick."), 0)
 
         val wrap = LinearLayout(ctx).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
         wrap.addView(ui.steps(listOf(
@@ -301,7 +306,7 @@ internal class TraktPages(
         }
         s.add(uri, 14)
 
-        s.add(ui.kicker("YOUR APP KEYS"), 20)
+        s.add(ui.kicker("Your App Keys"), 20)
         val error = ui.note("").apply { visibility = View.GONE }
         fun paint() {
             s.row("id", "Client ID", if (id.isEmpty()) "On Your Trakt App's Page" else masked(id), if (id.isEmpty()) "Enter" else "Change",
@@ -384,7 +389,7 @@ internal class TraktPages(
         val s = SetupScreen(ui, "Advanced", "TRAKT")
         val id = Trakt.keys(app())?.id.orEmpty()
         s.row("app", "Your Trakt App", if (id.isEmpty()) null else "Client ID ${masked(id)}", static = true, top = 0)
-        s.row("remove", "Remove Trakt App Keys", "Signs Every Profile on This Fire TV Out of Trakt", chevron = true, top = 8) {
+        s.row("remove", "Remove Trakt App Keys", "Signs every profile on this Fire Stick out of Trakt", chevron = true, top = 8) {
             panel.push(confirmRemoveKeys())
         }
         return s
@@ -392,7 +397,7 @@ internal class TraktPages(
 
     private fun confirmRemoveKeys(): SetupScreen {
         val s = SetupScreen(ui, "Remove Trakt App Keys?", "TRAKT")
-        s.add(ui.note("Dream OS forgets your Trakt app's keys, and every profile on this Fire TV is signed out of Trakt. Everything already on this Fire TV stays. You can enter keys again anytime."), 0)
+        s.add(ui.note("Dream OS forgets your Trakt app's keys, and every profile on this Fire Stick is signed out of Trakt. Everything already on this Fire Stick stays. You can enter keys again anytime."), 0)
         val remove = ui.pill("Remove", false) {
             Trakt.removeOwnKeys(app())
             panel.pop() // this confirmation
@@ -536,7 +541,7 @@ internal class TraktPages(
 
     private fun confirmSignOut(): SetupScreen {
         val s = SetupScreen(ui, "Sign Out of Trakt?", "TRAKT")
-        s.add(ui.note("Dream OS stops syncing this profile with Trakt. Everything already on this Fire TV stays, and your Trakt account keeps its history. You can sign in again anytime."), 0)
+        s.add(ui.note("Dream OS stops syncing this profile with Trakt. Everything already on this Fire Stick stays, and your Trakt account keeps its history. You can sign in again anytime."), 0)
         val out = ui.pill("Sign Out", false) {
             Trakt.signOut(app())
             panel.pop()

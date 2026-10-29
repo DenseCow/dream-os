@@ -179,6 +179,8 @@ object StreamCache {
 
     private fun run(app: Context, job: Job, url: String, headers: Map<String, String>, startMs: Long, durationMs: Long) {
         hold(job) // the hand-off itself may land mid-navigation: not even the clean-up and probe then
+        // Cancelled meanwhile (a fast start took over): the clean-up below would delete what that one is writing.
+        if (job.cancelled) return
         val t0 = SystemClock.elapsedRealtime()
         val cache = get(app)
         // One title at a time.

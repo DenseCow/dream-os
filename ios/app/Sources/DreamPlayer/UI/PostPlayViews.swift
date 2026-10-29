@@ -43,7 +43,7 @@ private struct UpNextCard: View {
             }
             .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
             VStack(alignment: .leading, spacing: 6) {
-                Text("Next Episode").font(.system(size: 12, weight: .bold)).tracking(2).textCase(.uppercase).foregroundStyle(.white.opacity(0.62))
+                Text("Next Episode").font(.system(size: 12, weight: .bold)).foregroundStyle(.white.opacity(0.62))
                 (Text(line(n, ep)) + Text(ep.flatMap { Labels.runtime($0.runtime) }.map { "  ·  \($0)" } ?? "").foregroundColor(.white.opacity(0.6)))
                     .font(.system(size: 15, weight: .semibold)).foregroundStyle(.white).lineLimit(2).frame(maxWidth: 190, alignment: .leading)
                 HStack(spacing: 10) {
@@ -127,7 +127,7 @@ private struct StillWatching: View {
             Color.black.opacity(0.46).ignoresSafeArea()
             LinearGradient(colors: [.black.opacity(0.86), .black.opacity(0.52), .clear], startPoint: .leading, endPoint: .trailing).ignoresSafeArea()
             VStack(alignment: .leading, spacing: 12) {
-                Text(session.request?.title.name ?? "").font(.system(size: 13, weight: .bold)).tracking(2.2).textCase(.uppercase)
+                Text(session.request?.title.name ?? "").font(.system(size: 13, weight: .bold))
                     .foregroundStyle(.white.opacity(0.62)).lineLimit(1)
                 Text("Are You Still Watching?").font(.system(size: 34, weight: .bold)).foregroundStyle(.white)
                 if let r = session.request, let s = r.season, let e = r.episode {
@@ -156,26 +156,3 @@ struct CardPress: ButtonStyle {
     }
 }
 
-/// The sleep timer's expiry card (SleepTimer.kt): 60 s to answer.
-struct SleepCard: View {
-    let seconds: Int
-    @ObservedObject var session: PlayerSession
-    var body: some View {
-        ZStack {
-            Color.black.opacity(150 / 255).ignoresSafeArea()
-            VStack(spacing: 14) {
-                Text("Still Watching?").font(.system(size: 28, weight: .bold)).foregroundStyle(.white)
-                // The iPhone pauses (and closes the player, spot saved) instead of turning the TV off.
-                Text("Pausing in \(seconds) s").font(.system(size: 16, weight: .medium)).monospacedDigit().foregroundStyle(.white.opacity(0.74))
-                HStack(spacing: 12) {
-                    Button("Keep Watching") { session.keepWatching() }.buttonStyle(PillStyle(primary: true))
-                    Button("Stop Now") { session.sleepNow() }.buttonStyle(PillStyle())
-                }
-                .padding(.top, 6)
-            }
-            .padding(32)
-            .background(RoundedRectangle(cornerRadius: 28, style: .continuous).fill(Color(white: 0.05).opacity(0.96)))
-            .overlay(RoundedRectangle(cornerRadius: 28, style: .continuous).strokeBorder(.white.opacity(0.10), lineWidth: 1))
-        }
-    }
-}

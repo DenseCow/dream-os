@@ -19,6 +19,7 @@ struct SettingsView: View {
     @State private var premiumTone: Color?
     @State private var checkingPremium = false
     @State private var trailers = BackgroundTrailers.mode
+    @State private var animeApart = AnimePrefs.apart
     @State private var episodeAlerts = EpisodeAlerts.enabled
     @State private var clock = DreamTime.clockSummary()
     @State private var zone = DreamTime.summary()
@@ -79,6 +80,13 @@ struct SettingsView: View {
                         BackgroundTrailers.cycle(); trailers = BackgroundTrailers.mode
                     }
                 }
+                group("Home & Browse") {
+                    // RowMix.animeApart reads it; closing Settings reloads the pages (AppShell, PageSnapshots.fingerprint).
+                    PageRow(title: "Keep Anime in Anime Sections", caption: "Anime Shows Only on the Anime Page and Its Rows",
+                            lead: .symbol("line.3.horizontal.decrease"), toggle: animeApart) {
+                        animeApart.toggle(); AnimePrefs.apart = animeApart
+                    }
+                }
                 group("Time & Region") {
                     PageLinkRow(title: "Time Zone", caption: "New Episode Times, the Clock and Reminders", value: zone, lead: .symbol("clock")) {
                         TimeZoneView()
@@ -86,6 +94,11 @@ struct SettingsView: View {
                     PageRow(title: "Clock Format", caption: "Now \(DreamTime.formatTime(Date()))", value: clock, lead: .symbol("clock.badge")) {
                         cycleClock()
                     }
+                }
+                group("Fire Stick") {
+                    // Unlock/UnlockFireStickView.swift: the TV's one-time ADB grants, done from this iPhone (no computer).
+                    PageLinkRow(title: "Unlock Fire Stick", caption: "Home Button, Voice Search and More on Your Fire Stick",
+                                lead: .symbol("tv")) { UnlockFireStickView() }
                 }
                 group("Advanced") {
                     PageLinkRow(title: "TMDB Key", caption: "Titles, Artwork and Search", value: tmdbSet ? "Set" : "Built In",
@@ -103,7 +116,7 @@ struct SettingsView: View {
                 }
             }
         }
-        .task { await refresh() }
+        // On every appearance (back from Accounts, Scrapers, Trakt): once, not twice on the first.
         .onAppear { Task { await refresh() } }
         .onReceive(NotificationCenter.default.publisher(for: DreamTime.changed)) { _ in
             zone = DreamTime.summary(); clock = DreamTime.clockSummary()
@@ -172,7 +185,7 @@ struct SettingsView: View {
         } else {
             var states: [DebridAccountState] = []
             for s in linked { states.append(await d.state(s)) }
-            if states.contains(where: { $0.linked && ($0.expired || $0.health == .invalid) }) {
+            if states.contains(where: { $0.linked && ($0.expired || $0.health == .invalid || $0.health == .blocked) }) {
                 accounts = "Needs Attention"; accountsTone = Palette.redText
             } else {
                 accounts = linked.count == 1 ? DebridServices.name(linked[0]) : "\(linked.count) Connected"
@@ -186,6 +199,7 @@ struct SettingsView: View {
         tmdbSet = SecureStore.get("tmdb.key") != nil
         omdbSet = SecureStore.get("omdb.key") != nil
         trailers = BackgroundTrailers.mode
+        animeApart = AnimePrefs.apart
         zone = DreamTime.summary()
         clock = DreamTime.clockSummary()
         trakt = (TraktWords.value, TraktWords.caption, TraktWords.tone)

@@ -129,19 +129,23 @@ struct TimeZoneList: View {
     var body: some View {
         let groups = Dictionary(grouping: DreamTime.choices(), by: { DreamTime.region($0.id) })
         let order = ["United States", "Americas", "Europe & Africa", "Asia & Pacific", "Other"]
-        VStack(alignment: .leading, spacing: 0) {
-            PageRow(title: "Automatic", caption: "\(DreamTime.labelFor(DreamTime.detected().identifier))  ·  \(DreamTime.formatTimeIn(Date(), DreamTime.detected()))",
-                    lead: .mark(selected == nil ? .pick : .off)) { choose(nil) }
-            ForEach(order.filter { groups[$0] != nil }, id: \.self) { region in
-                PageSection(title: region).padding(.top, PageSpace.group)
-                VStack(spacing: PageSpace.row) {
-                    ForEach(groups[region] ?? []) { c in
-                        let tz = TimeZone(identifier: c.id) ?? .current
-                        PageRow(title: c.label, caption: DreamTime.offsetText(tz), value: DreamTime.formatTimeIn(Date(), tz),
-                                lead: .mark(selected == c.id ? .pick : .off)) { choose(c.id) }
+        // Each zone's time moves on with the clock while the page is open.
+        TimelineView(.everyMinute) { tick in
+            let now = tick.date
+            VStack(alignment: .leading, spacing: 0) {
+                PageRow(title: "Automatic", caption: "\(DreamTime.labelFor(DreamTime.detected().identifier))  ·  \(DreamTime.formatTimeIn(now, DreamTime.detected()))",
+                        lead: .mark(selected == nil ? .pick : .off)) { choose(nil) }
+                ForEach(order.filter { groups[$0] != nil }, id: \.self) { region in
+                    PageSection(title: region).padding(.top, PageSpace.group)
+                    VStack(spacing: PageSpace.row) {
+                        ForEach(groups[region] ?? []) { c in
+                            let tz = TimeZone(identifier: c.id) ?? .current
+                            PageRow(title: c.label, caption: DreamTime.offsetText(tz), value: DreamTime.formatTimeIn(now, tz),
+                                    lead: .mark(selected == c.id ? .pick : .off)) { choose(c.id) }
+                        }
                     }
+                    .padding(.top, 10)
                 }
-                .padding(.top, 10)
             }
         }
     }

@@ -87,11 +87,9 @@ class PlayerOverlay(private val host: PlayerHost) : PlayerEngine.Listener, Playe
     private lateinit var playBtn: ImageView
     private lateinit var btnEpisodes: TextView
     private lateinit var btnAudio: TextView
-    private lateinit var btnSpeed: TextView
     private lateinit var btnInfo: TextView
     private lateinit var btnRestart: TextView
     private lateinit var btnSource: TextView
-    private lateinit var btnCast: TextView
     /** Each action's full label (compact buttons show only their icon, the label as a caption on focus). */
     private val labels = LinkedHashMap<TextView, String>()
     private val compact = HashSet<TextView>()
@@ -197,7 +195,6 @@ class PlayerOverlay(private val host: PlayerHost) : PlayerEngine.Listener, Playe
     private var reqKey: String? = null
     private var showGen = 0
     private var lastAction: View? = null
-    private var speed = 1f
     private var markers: Markers? = null
     private var info: PlayerInfo? = null
     private var infoWaiters: MutableList<(PlayerInfo?) -> Unit>? = null
@@ -274,6 +271,7 @@ class PlayerOverlay(private val host: PlayerHost) : PlayerEngine.Listener, Playe
         menus.closeNow()
         closeXRayNow()
         visible = false
+        clockMin = Long.MIN_VALUE; endsMin = Long.MIN_VALUE
         cardUp = false
         ready = false
         scrubTarget = -1L
@@ -426,7 +424,7 @@ class PlayerOverlay(private val host: PlayerHost) : PlayerEngine.Listener, Playe
 
     /**
      * Subtitles never draw through a player sheet: hidden while X-Ray (strip or card), a menu sheet (Episodes,
-     * Audio & Subtitles, Speed, Info), Change Source or a post-play card is up, and back as soon as none is.
+     * Audio & Subtitles, Info), Change Source or a post-play card is up, and back as soon as none is.
      * Called on each open / close (and when another component's panel comes or goes); no polling.
      */
     private fun syncSubtitles() {
@@ -669,13 +667,10 @@ class PlayerOverlay(private val host: PlayerHost) : PlayerEngine.Listener, Playe
         btnEpisodes = action(PlayerIcon.EPISODES, "Episodes") { openSheet("episodes") }
         btnAudio = action(PlayerIcon.SUBTITLES, "Audio & Subtitles") { openSheet("audio") }
         btnSource = action(PlayerIcon.SOURCE, "Change Source") { changeSource() }
-        btnSpeed = action(PlayerIcon.SPEED, "Speed") { openSheet("speed") }
         btnInfo = action(PlayerIcon.INFO, "Info") { openSheet("info") }
-        btnCast = action(PlayerIcon.CAST, "Cast & Characters") { openCast() }
         btnRestart = action(PlayerIcon.RESTART, "Start Over") { restart() }
-        // A calm row: Speed is gone and Cast & Characters lives inside Info (PlayerMenus.openInfo); those two views
-        // still exist (their state updates stay harmless) but never join the row. Start Over sits alone in the far
-        // right corner, after Next Episode (shown once past the first minute).
+        // Cast & Characters lives inside Info (PlayerMenus.openInfo). Start Over sits alone in the far right
+        // corner, after Next Episode (shown once past the first minute).
         for (b in listOf(btnEpisodes, btnAudio, btnSource, btnInfo)) actionsRow.addView(b)
         actionsRow.addView(View(ctx), LinearLayout.LayoutParams(0, 1, 1f))
         btnNext = action(PlayerIcon.NEXT, "Next Episode") { playNextEpisode() }
@@ -897,16 +892,11 @@ class PlayerOverlay(private val host: PlayerHost) : PlayerEngine.Listener, Playe
         }
     }
 
-    /**
-     * Picks how many actions show only their icon so the row stays on one line: level 0 keeps Speed,
-     * Info and Start Over as icons (calm by default), 1 adds Episodes and Change Source, 2 adds
-     * Audio & Subtitles. Next Episode always keeps its label.
-     */
+    /** Every action is a round icon, named by its caption on focus; Next Episode keeps its label. */
     private fun fitActions() {
         if (!built) return
         val avail = actionsRow.width - actionsRow.paddingLeft - actionsRow.paddingRight
         if (avail <= 0) return
-        // Cinema: every action is a round icon (named by its caption on focus); Next Episode keeps its label.
         if (compactLevel == 0) return
         compactLevel = 0
         for (b in labels.keys) setCompact(b, b !== btnNext)
@@ -1011,6 +1001,7 @@ class PlayerOverlay(private val host: PlayerHost) : PlayerEngine.Listener, Playe
         if (!visible) return
         visible = false
         main.removeCallbacks(ticker)
+        clockMin = Long.MIN_VALUE; endsMin = Long.MIN_VALUE // the clock settings may change while hidden
         if (scrubTarget >= 0) cancelScrub()
         val g = ++showGen
         controls.animate().alpha(0f).setDuration(Ui.OVERLAY_OUT).setInterpolator(Ui.EXIT)
@@ -1433,7 +1424,6 @@ class PlayerOverlay(private val host: PlayerHost) : PlayerEngine.Listener, Playe
         val req = host.request
         val key = reqKey
         PlayerPrefs.applyStyle(ctx, root, visible)
-        if (speed != 1f) engine.setSpeed(speed)
         applyTrackPrefs()
         if (req != null && req.tmdbId > 0) {
             val dur = engine.durationMs
@@ -1574,6 +1564,9 @@ class PlayerOverlay(private val host: PlayerHost) : PlayerEngine.Listener, Playe
         audioApplied = false
         userAudio = false
         userText = false
+        autoSubs = null
+        autoNote = null
+        noticeAfter = 0L
         seenText.clear()
         stopThumbs()
         cardLogoFor = null
@@ -1621,14 +1614,14 @@ class PlayerOverlay(private val host: PlayerHost) : PlayerEngine.Listener, Playe
         val r = host.request
         when {
             r == null -> { kicker.text = ""; titleView.text = "Dream Player"; subView.text = "" }
-            r.trailer -> { kicker.text = "TRAILER"; titleView.text = r.title; subView.text = "" }
+            r.trailer -> { kicker.text = "Trailer"; titleView.text = r.title; subView.text = "" }
             r.type == "episode" -> {
-                kicker.text = listOfNotNull(r.season?.let { "Season $it" }, r.episode?.let { "Episode $it" }).joinToString("  ·  ").uppercase()
+                kicker.text = listOfNotNull(r.season?.let { "Season $it" }, r.episode?.let { "Episode $it" }).joinToString("  ·  ")
                 titleView.text = r.title
                 subView.text = r.episodeTitle.orEmpty()
             }
             else -> {
-                kicker.text = (r.year?.let { "Movie  ·  $it" } ?: if (r.tmdbId > 0) "Movie" else "").uppercase()
+                kicker.text = r.year?.let { "Movie  ·  $it" } ?: if (r.tmdbId > 0) "Movie" else ""
                 titleView.text = r.title
                 subView.text = ""
             }
@@ -1684,18 +1677,15 @@ class PlayerOverlay(private val host: PlayerHost) : PlayerEngine.Listener, Playe
         btnNext.visibility = if (nextReq != null) View.VISIBLE else View.GONE
         btnRestart.visibility = if (engine.durationMs > 0 && engine.positionMs > 60_000) View.VISIBLE else View.GONE
         btnSource.visibility = if (canChangeSource()) View.VISIBLE else View.GONE
-        btnCast.visibility = if (xray.canOpen(r)) View.VISIBLE else View.GONE
-        val sp = if (speed == 1f) "Speed" else "Speed  ·  " + PlayerMenus.speedLabel(speed)
-        labels[btnSpeed] = sp
-        btnSpeed.contentDescription = sp
-        if (btnSpeed !in compact) btnSpeed.text = sp
         compactLevel = -1
         if (actionsRow.width > 0) fitActions() else actionsRow.post { fitActions() }
     }
 
     // ======== time ========
 
-    private var lastClock = ""
+    /** The minutes the clock and "Ends at" last showed: their text is formatted only when one changes. */
+    private var clockMin = Long.MIN_VALUE
+    private var endsMin = Long.MIN_VALUE
 
     private fun updateTimes() {
         if (!built) return
@@ -1707,11 +1697,14 @@ class PlayerOverlay(private val host: PlayerHost) : PlayerEngine.Listener, Playe
         val rem = if (dur > 0) "−" + fmt(maxOf(0, dur - pos)) else "LIVE"
         if (remaining.text.toString() != rem) remaining.text = rem
         val now = System.currentTimeMillis()
-        val c = DreamTime.formatTime(ctx, now)
-        if (c != lastClock) { lastClock = c; clock.text = c }
-        val ends = if (dur > 0) "Ends at " + DreamTime.formatTime(ctx, now + ((dur - pos).coerceAtLeast(0) / speed).toLong()) else ""
-        if (endsAt.text.toString() != ends) endsAt.text = ends
-        endsAt.visibility = if (ends.isEmpty()) View.GONE else View.VISIBLE
+        if (now / 60_000 != clockMin) { clockMin = now / 60_000; clock.text = DreamTime.formatTime(ctx, now) }
+        val end = now + (dur - pos).coerceAtLeast(0)
+        val em = if (dur > 0) end / 60_000 else -1L
+        if (em != endsMin) {
+            endsMin = em
+            endsAt.text = if (dur > 0) "Ends at " + DreamTime.formatTime(ctx, end) else ""
+            endsAt.visibility = if (dur > 0) View.VISIBLE else View.GONE
+        }
         if (btnRestart.visibility == View.GONE && dur > 0 && pos > 60_000) {
             btnRestart.visibility = View.VISIBLE
             compactLevel = -1
@@ -1727,7 +1720,12 @@ class PlayerOverlay(private val host: PlayerHost) : PlayerEngine.Listener, Playe
         val h = s / 3600
         val m = (s % 3600) / 60
         val sec = s % 60
-        return if (h > 0) String.format(Locale.US, "%d:%02d:%02d", h, m, sec) else String.format(Locale.US, "%d:%02d", m, sec)
+        // "1:02:03" / "2:03", built by hand: this runs on every tick while the controls show.
+        val b = StringBuilder(8)
+        if (h > 0) { b.append(h).append(':'); if (m < 10) b.append('0') }
+        b.append(m).append(':')
+        if (sec < 10) b.append('0')
+        return b.append(sec).toString()
     }
 
     private fun offsetLabel(delta: Long): String {
@@ -1878,7 +1876,6 @@ class PlayerOverlay(private val host: PlayerHost) : PlayerEngine.Listener, Playe
         if (visible) hideControls()
         when (kind) {
             "audio" -> menus.openAudio()
-            "speed" -> menus.openSpeed()
             "info" -> menus.openInfo()
             "episodes" -> menus.openEpisodes()
         }
@@ -1889,20 +1886,11 @@ class PlayerOverlay(private val host: PlayerHost) : PlayerEngine.Listener, Playe
         syncSubtitles()
         val v: View = when (opener) {
             "audio" -> btnAudio
-            "speed" -> btnSpeed
             "info" -> btnInfo
             "episodes" -> btnEpisodes
             else -> scrubber
         }
         showControlsFocusing(if (v.visibility == View.VISIBLE) v else scrubber)
-    }
-
-    override fun speed() = speed
-
-    override fun setSpeed(s: Float) {
-        speed = s
-        engine.setSpeed(s)
-        updateActions()
     }
 
     override fun info() = info
@@ -1925,7 +1913,74 @@ class PlayerOverlay(private val host: PlayerHost) : PlayerEngine.Listener, Playe
     override fun subtitleStyleChanged() = PlayerPrefs.applyStyle(ctx, root, false)
 
     override fun userPicked(kind: String) {
-        if (kind == "audio") userAudio = true else userText = true
+        if (kind == "audio") userAudio = true else pickedText()
+    }
+
+    /** The viewer chose subtitles in the player: kept for this title, so [audioCheck] never overrides it. */
+    private fun pickedText() {
+        userText = true
+        autoSubs = null
+        autoNote = null
+        host.request?.let { PlayerPrefs.noteSubsChosen(ctx, it) }
+    }
+
+    // ======== audio in another language ========
+
+    /** Languages the automatic subtitles look for, while they're on for this stream ([audioCheck]). */
+    private var autoSubs: List<String>? = null
+    /** "Japanese Audio": the first half of the notice, until the subtitles are settled. */
+    private var autoNote: String? = null
+    /** A notice already on screen at the picture's start (a CAM note): this one waits until then. */
+    private var noticeAfter = 0L
+
+    /**
+     * The picture starts and the audio playing is in another language than the viewer's (a new anime episode in
+     * Japanese, say), with no track in their language: subtitles in their subtitle language (else their audio
+     * language) come on, from the video or Dream Subtitles ([subs]), with a short notice. Nothing when the audio's
+     * language is unknown, or the viewer chose subtitles in the player for this title. [after]: a notice is showing.
+     */
+    fun audioCheck(subs: DreamSubtitles.Session, after: Boolean) {
+        checkRequest() // a new stream's state is reset before this one's is set
+        val req = host.request ?: return
+        if (req.trailer || userText || PlayerPrefs.subsChosen(ctx, req)) return
+        val audio = engine.tracks("audio")
+        val playing = PlayerPrefs.normLang(audio.firstOrNull { it.selected }?.language) ?: return
+        val want = AnimeDubs.want(ctx)
+        if (playing == want || audio.any { it.supported && PlayerPrefs.normLang(it.language) == want }) return
+        val player = PlayerPrefs.subLang(ctx)?.takeIf { it != PlayerPrefs.OFF }
+        val langs = (listOfNotNull(player) + subs.languages() + want).map { if (it == "pob") "pt" else it }.distinct()
+        noticeAfter = if (after) SystemClock.uptimeMillis() + 3_800 else 0L
+        autoSubs = langs
+        autoNote = "${AnimeDubs.langName(playing)} Audio"
+        android.util.Log.w("FireHome", "dream player: audio is $playing, viewer's is $want: subtitles in ${langs.joinToString("/")}")
+        if (autoPick()) return
+        val key = reqKey
+        subs.showWhenReady { added ->
+            if (reqKey != key || added) return@showWhenReady // added: the new tracks go through applyTrackPrefs → autoPick
+            autoNote?.let { say("$it  ·  No ${AnimeDubs.langName(langs.first())} Subtitles Found") }
+            autoNote = null
+        }
+    }
+
+    /** Selects the automatic subtitles' track when there is one (says so once); false when none is there yet. */
+    private fun autoPick(): Boolean {
+        val langs = autoSubs ?: return false
+        val text = engine.tracks("text").filter { it.supported }
+        val sel = text.firstOrNull { it.selected }?.takeIf { PlayerPrefs.normLang(it.language) in langs }
+        val pick = sel ?: langs.firstNotNullOfOrNull { l ->
+            text.filter { PlayerPrefs.normLang(it.language) == l }.minByOrNull { if (it.label.contains("forced", ignoreCase = true)) 1 else 0 }
+        } ?: return false
+        if (!pick.selected) engine.selectTrack("text", pick.id)
+        PlayerPrefs.applyStyle(ctx, root, visible)
+        autoNote?.let { say("$it  ·  ${AnimeDubs.langName(PlayerPrefs.normLang(pick.language))} Subtitles On") }
+        autoNote = null
+        return true
+    }
+
+    private fun say(text: String) {
+        val wait = noticeAfter - SystemClock.uptimeMillis()
+        val color = Ui.alpha(Color.WHITE, 0.92f)
+        if (wait > 0) main.postDelayed({ notice(text, color) }, wait) else notice(text, color)
     }
 
     // ======== track preferences ========
@@ -1952,6 +2007,7 @@ class PlayerOverlay(private val host: PlayerHost) : PlayerEngine.Listener, Playe
                 val want = PlayerPrefs.subLang(ctx)
                 val sel = text.firstOrNull { it.selected }
                 when {
+                    autoSubs != null -> autoPick() // the audio is in another language: its subtitles stay on
                     want == null -> {}
                     want == PlayerPrefs.OFF -> if (sel != null) e.selectTrack("text", null)
                     sel == null || PlayerPrefs.normLang(sel.language) != want -> {
@@ -1968,8 +2024,8 @@ class PlayerOverlay(private val host: PlayerHost) : PlayerEngine.Listener, Playe
     private fun toggleSubtitles() {
         val text = engine.tracks("text")
         val sel = text.firstOrNull { it.selected }
-        userText = true
         if (sel != null) {
+            pickedText()
             engine.selectTrack("text", null)
             PlayerPrefs.setSubLang(ctx, PlayerPrefs.OFF)
             toast("Subtitles  ·  Off")
@@ -1977,6 +2033,7 @@ class PlayerOverlay(private val host: PlayerHost) : PlayerEngine.Listener, Playe
             val want = PlayerPrefs.subLang(ctx)?.takeIf { it != PlayerPrefs.OFF } ?: PlayerPrefs.audioLang(ctx) ?: Locale.getDefault().language
             val pick = text.filter { it.supported }.let { s -> s.firstOrNull { PlayerPrefs.normLang(it.language) == want } ?: s.firstOrNull() }
             if (pick == null) { toast("No subtitles for this stream"); return }
+            pickedText()
             engine.selectTrack("text", pick.id)
             PlayerPrefs.setSubLang(ctx, PlayerPrefs.normLang(pick.language))
             toast("Subtitles  ·  " + pick.label)

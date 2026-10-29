@@ -112,7 +112,10 @@ object GenreSearch {
 
     /** Lowercase words, punctuation and apostrophes gone ("Sci-Fi" → "sci fi", "’80s" → "80s"). */
     private fun words(s: String) = s.lowercase().replace("’", "").replace("'", "").replace("&", " and ").replace("+", "")
-        .split(Regex("[^a-z0-9]+")).filter { it.isNotEmpty() }
+        .split(NON_WORD).filter { it.isNotEmpty() }
+
+    /** Compiled once: [suggest] squashes every category's words on each key typed. */
+    private val NON_WORD = Regex("[^a-z0-9]+")
 
     private fun squash(s: String) = words(s).joinToString("")
 

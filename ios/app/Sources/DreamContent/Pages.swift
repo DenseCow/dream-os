@@ -39,6 +39,25 @@ final class PageSession: @unchecked Sendable {
     var rows: [CatalogRow] { lock.withLock { order.compactMap { slots[$0]?.row } } }
 }
 
+/// A chart as first claimed on a page, shared by every row that asks after it.
+final class ChartMemo: @unchecked Sendable {
+    private let lock = NSLock()
+    private var tasks: [String: Task<[Title], Never>] = [:]
+
+    /// The kept answer; else [make]'s, kept only when [store] (a page-1 fill: look-ahead and deep pages claim nothing).
+    func value(_ key: String, store: Bool, _ make: @escaping @Sendable () async -> [Title]) async -> [Title] {
+        if let t = lock.withLock({ tasks[key] }) { return await t.value }
+        if !store { return await make() }
+        let t = lock.withLock { () -> Task<[Title], Never> in
+            if let t = tasks[key] { return t }
+            let t = Task { await make() }
+            tasks[key] = t
+            return t
+        }
+        return await t.value
+    }
+}
+
 /// The rows every page shows, in order (CinemaPages.kt / CinemaBrowse.kt / SeasonHub.kt row lists).
 enum Pages {
     static let minRow = 6
@@ -80,12 +99,20 @@ enum Pages {
     static func home(_ s: PageSession) async {
         let c = s.claims
         let ctx = s.ctx
+        let charts = ChartMemo()
+        // Top 10 and Trending Now are claimed once by the first row's fill and that answer is reused: each ask was two
+        // charts tidied and ranked again, and a deep row's later page fetched other chart pages to claim nothing.
         @Sendable func top10() async -> [Title] {
-            await Pages.top10(c, nil)
+            await charts.value("Top 10 Today", store: RowPaging.state == nil) { await Pages.top10(c, nil) }
         }
         // Trending claims right after Top 10 (the TV's order); the three charts are fetched side by side, and every
         // row that waits on them starts its own fetch at the same time (speed pass: no round trips in series).
         @Sendable func trending() async -> [Title] {
+            // Trending Now's own later pages are fetched as usual.
+            if RowPaging.state != nil && !RowPaging.foreign("Trending Now") { return await trendingList() }
+            return await charts.value("Trending Now", store: RowPaging.state == nil) { await trendingList() }
+        }
+        @Sendable func trendingList() async -> [Title] {
             async let a = (try? await Tmdb.trending()) ?? []
             async let b = (try? await Tmdb.list("/trending/all/week", "&page=2")) ?? []
             _ = await top10()
@@ -95,13 +122,16 @@ enum Pages {
                    custom: { await continueRow(nil) }))
         s.add(Slot(row: CatalogRow(id: "Top Picks for You", name: "Top Picks for You", style: .big, items: []), custom: {
             async let picks = HomePicks.topPicks(ctx)
-            async let day = (try? await Tmdb.list("/trending/all/day")) ?? []
+            async let day1 = (try? await Tmdb.list("/trending/all/day")) ?? []
+            async let day2 = (try? await Tmdb.list("/trending/all/day", "&page=2")) ?? []
             _ = await trending()
             var name = "Top Picks for You"
             var list = c.take("Top Picks for You", await picks)
             if list.count < HomePicks.minPicks {
+                // Popular Today: only what's out and no anime outside its sections (the row's personal name lets
+                // anime through `take`). Two pages: Top 10 and Trending Now claim most of the first.
                 name = "Popular Today"
-                list = c.take("Top Picks for You", (await day).filter { $0.backdropPath != nil }, 12)
+                list = c.take("Top Picks for You", (await day1 + day2).filter { $0.backdropPath != nil && RowMix.released($0) && !RowMix.animeHidden($0) }, 12)
             }
             if list.isEmpty { return nil }
             let items = await items(Array(list.prefix(12))) { t in (bigKicker(t), nil, nil) }
@@ -128,7 +158,7 @@ enum Pages {
             let taken = Set((await trending()).map(\.key) + (await top10()).map(\.key))
             let p2 = (try? await Tmdb.list("/trending/all/week", "&page=2")) ?? []
             for l in [p2, await p3, await p4] {
-                let ok = l.filter { !taken.contains($0.key) && $0.votes >= 300 && $0.backdropPath != nil && !RowMix.isAnime($0) && RowMix.released($0) }.sorted { $0.rating > $1.rating }
+                let ok = l.filter { !taken.contains($0.key) && $0.votes >= 300 && $0.backdropPath != nil && !RowMix.animeHidden($0) && RowMix.released($0) }.sorted { $0.rating > $1.rating }
                 if let f = ok.first { return [f] }
             }
             return []
@@ -185,7 +215,7 @@ enum Pages {
                 })
             case 2:
                 s.add(spotlight("Coming Soon", {
-                    Array(((try? await Discover.list(DFilters(type: .movie, sort: .comingSoon))) ?? []).filter { !$0.date.isEmpty }.dropFirst(16).prefix(8))
+                    Array(((try? await Discover.list(DFilters(type: .movie, sort: .comingSoon))) ?? []).filter { !$0.date.isEmpty && !RowMix.animeHidden($0) }.dropFirst(16).prefix(8))
                 }, pick: { $0.max { $0.votes < $1.votes } }))
             case 3: if seeds.count > 1 { s.add(because(seeds[1])) }
             default: break
@@ -268,7 +298,7 @@ enum Pages {
             })
         }
         s.add(titles("Trending This Week", .big, decorate: { t in (t.genreIds.lazy.compactMap { Discover.genreName(kind, $0) }.first ?? label, nil, nil) }) {
-            try await Tmdb.list("/trending/\(kind.rawValue)/week", type: kind)
+            try await Tmdb.list("/trending/\(kind.rawValue)/week", type: kind).filter(RowMix.released)
         })
         because()
         s.add(titleRow("Top 10 Today", .top10) {
@@ -368,7 +398,7 @@ enum Pages {
             }
             for await (i, l) in g { lists[i] = l }
         }
-        return RowMix.interleave(lists).filter { spec.anime || !RowMix.isAnime($0) }
+        return RowMix.interleave(lists).filter { spec.anime || !RowMix.animeHidden($0) }
     }
 
     static func genre(_ s: PageSession, _ spec: GenreSpec) {
@@ -445,13 +475,15 @@ enum Pages {
         let c = s.claims
         let today = Seasons.today()
         let kids = s.ctx.kids
+        // The slots below are kept by `s`: they capture its context, never `s` itself (that was a cycle).
+        let ctx = s.ctx
         guard let hub = SeasonCalendar.find(id) else { return }
         let kick = ["Tonight's Pick", hub.night(today)].compactMap { $0 }.joined(separator: "  ·  ")
-        s.add(spotlight(kick) { (await Seasons.pick(hub, kids: kids, today, s.ctx)).map { c.claim("Tonight's Pick", [$0]) } })
+        s.add(spotlight(kick) { (await Seasons.pick(hub, kids: kids, today, ctx)).map { c.claim("Tonight's Pick", [$0]) } })
         for (i, r) in hub.rowsFor(kids: kids).enumerated() {
             let title = SeasonCalendar.fill(r.title, hub, today)
             s.add(titleRow(title, i == 0 ? .big : .landscape, decorate: { _ in (i == 0 ? hub.kicker : nil, nil, nil) }) {
-                let l = c.take(title, withArt(await Seasons.load(hub, r, kids: kids, today, s.ctx))); return l.count >= minRow ? l : nil
+                let l = c.take(title, withArt(await Seasons.load(hub, r, kids: kids, today, ctx))); return l.count >= minRow ? l : nil
             })
         }
         let others = Seasons.all(kids: kids, today).filter { $0.id != hub.id }
@@ -521,7 +553,8 @@ enum Seasons {
                 }
                 for await (i, t) in g { picked[i] = t }
             }
-            raw = picked.compactMap { $0 }
+            // Fetched one by one, not through a list: the profile's rating limit applies here.
+            raw = await KidsFilter.titles(picked.compactMap { $0 })
         case .popular:
             let kinds = [(MediaKind.movie, movie), (.tv, tv)].compactMap { k, q in q.map { (k, $0) } }
             var lists = [[Title]](repeating: [], count: kinds.count)

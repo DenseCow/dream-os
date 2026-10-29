@@ -35,6 +35,19 @@ public enum PlayerPrefs {
     public static func setAudioLang(_ l: String?) { if let l { DreamStore.shared.set(l, "player.audioLang", perProfile: true) } }
     public static func setSubLang(_ l: String?) { if let l { DreamStore.shared.set(l, "player.subLang", perProfile: true) } }
 
+    /// Titles ("movie:603", "tv:1396": a whole show) whose subtitles the viewer chose in the player: automatic
+    /// subtitles for audio in another language leave them alone.
+    public static func subsChosen(_ r: PlayRequest) -> Bool {
+        r.title.id > 0 && (DreamStore.shared.get([String].self, "player.subsChosen", perProfile: true) ?? []).contains(r.title.key)
+    }
+    public static func noteSubsChosen(_ r: PlayRequest) {
+        guard r.title.id > 0 else { return }
+        var list = DreamStore.shared.get([String].self, "player.subsChosen", perProfile: true) ?? []
+        guard !list.contains(r.title.key) else { return }
+        list.append(r.title.key)
+        DreamStore.shared.set(Array(list.suffix(200)), "player.subsChosen", perProfile: true)
+    }
+
     /// Skip Intros Automatically (default off).
     public static var autoSkipIntros: Bool {
         get { bool("autoSkipIntro", false) }

@@ -11,7 +11,6 @@ import android.widget.FrameLayout
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
-import java.net.URLDecoder
 import java.util.concurrent.FutureTask
 import java.util.concurrent.TimeUnit
 
@@ -47,12 +46,8 @@ object SkipMarkers {
         val pipe = url.indexOf('|')
         val clean = if (pipe >= 0) url.substring(0, pipe) else url
         val all = HashMap(headers)
-        if (pipe >= 0) for (kv in url.substring(pipe + 1).split('&')) {
-            val eq = kv.indexOf('=')
-            if (eq <= 0) continue
-            val v = kv.substring(eq + 1)
-            all.putIfAbsent(kv.substring(0, eq), try { URLDecoder.decode(v, "UTF-8") } catch (e: Exception) { v })
-        }
+        // Read the way the player reads them, so the chapter request sends what the player's does.
+        if (pipe >= 0) for ((k, v) in StreamUrls.headers(url.substring(pipe + 1))) all.putIfAbsent(k, v)
         val path = clean.substringBefore('?').lowercase()
         val streamable = clean.startsWith("http") && !path.contains("/manifest") &&
             listOf(".m3u8", ".mpd", ".mp4", ".m4v", ".ts").none { path.endsWith(it) }
@@ -195,7 +190,9 @@ object SkipMarkers {
         val season = req.season ?: return null
         val episode = req.episode ?: return null
         if (season < 1 || !Tmdb.hasKey(ctx)) return null
-        val show = Net.getJson("https://api.themoviedb.org/3/tv/${req.tmdbId}?api_key=${Tmdb.key(ctx)}&language=en-US")
+        // The show's cached details (genres, original language, seasons): no TMDB call per episode. Unavailable is
+        // thrown, not returned, so it isn't cached as "no markers".
+        val show = WatchHistory.details(ctx.applicationContext, "tv", req.tmdbId) ?: throw IllegalStateException("TMDB details unavailable")
         val genres = show.optJSONArray("genres")
         val animation = genres != null && (0 until genres.length()).any { genres.optJSONObject(it)?.optInt("id") == 16 }
         if (!animation || show.optString("original_language") != "ja") return null
@@ -302,6 +299,8 @@ object SkipMarkers {
         private const val MISS_TTL = 2L * 24 * 3600_000
         private var map: LinkedHashMap<String, Pair<Long, Markers?>>? = null
         private var file: File? = null
+        /** One writer at a time: two puts sharing the .tmp file could leave it with another's tail. */
+        private val writeLock = Any()
 
         @Synchronized private fun load(ctx: Context): LinkedHashMap<String, Pair<Long, Markers?>> {
             map?.let { return it }
@@ -344,9 +343,11 @@ object SkipMarkers {
             }
             try {
                 val f = file ?: return
-                val tmp = File(f.path + ".tmp")
-                tmp.writeText(text)
-                tmp.renameTo(f)
+                synchronized(writeLock) {
+                    val tmp = File(f.path + ".tmp")
+                    tmp.writeText(text)
+                    tmp.renameTo(f)
+                }
             } catch (e: Exception) { Log.w(TAG, "skip cache write failed: $e") }
         }
     }

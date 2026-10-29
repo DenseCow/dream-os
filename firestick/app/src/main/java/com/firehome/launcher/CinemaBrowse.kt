@@ -58,7 +58,7 @@ class CinemaBrowse(shell: CinemaShell) : CinemaRowsPage(shell) {
         // The tiles wear the most popular title of the week.
         if (Tmdb.hasKey(ctx)) for ((card, type) in listOf(tv to "tv", movies to "movie")) {
             // Anime only inside anime (STANDARDS §5): the tiles wear the most popular non-anime title that is out.
-            Net.background({ Tmdb.list(ctx, "/trending/$type/week", type = type).firstOrNull { it.backdropPath != null && !RowMix.isAnime(it) && !it.adult && RowMix.released(it) } }) { t ->
+            Net.background({ Tmdb.trendingShown(ctx, "/trending/$type/week", type = type, art = "backdrop").firstOrNull() }) { t ->
                 if (t == null || released) return@background
                 card.art().source(t.backdrop("w780"))
                 card.art().bind(0)
@@ -303,9 +303,9 @@ class CinemaGenre(shell: CinemaShell, private val spec: GenreSpec) : CinemaRowsP
         private fun mixed(ctx: android.content.Context, spec: GenreSpec, f: DiscoverFilters.() -> Unit = {}): List<Title> =
             RowMix.interleave(RowPaging.all(*GenreShelves.types(spec).map { type ->
                 { Tmdb.list(ctx, "/discover/$type", Discover.query(DiscoverFilters(type = type, genre = if (type == "movie") spec.movie else spec.tv, lang = spec.lang, year = spec.year).apply(f)), type) }
-            }.toTypedArray())).filter { spec.anime || !RowMix.isAnime(it) }
+            }.toTypedArray())).filter { spec.anime || !RowMix.animeHidden(ctx, it) }
 
-        private fun heroTitles(ctx: android.content.Context, spec: GenreSpec) = mixed(ctx, spec) { rating = 7 }.filter { it.backdropPath != null }.take(6)
+        private fun heroTitles(ctx: android.content.Context, spec: GenreSpec) = mixed(ctx, spec) { rating = 7 }.filter { it.backdropPath != null && RowMix.released(it) }.take(6)
 
         /**
          * Fetches what [spec]'s page shows first (its hero and first rows) into TMDB's cache, on a background

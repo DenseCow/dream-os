@@ -3,16 +3,16 @@ package com.firehome.launcher
 import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.Color
-import android.util.Log
 
 /**
  * The theme's page gradient computed per pixel at the screen's full resolution, with a fine dither.
  * A dark gradient like Dream Cinema's (black to near-black) has only a dozen or so steps per channel across the
  * screen, so drawn plainly it shows wide flat bands, and the old quarter-size fades stretched those
  * bands into visible blocks. Here every pixel takes its exact (fractional) color plus a little
- * triangular noise before rounding: the steps dissolve into a grain too fine to see, and the fades,
- * the hero's melt into the page and the page itself all come from the same math, so they meet
- * without a seam. Linear and radial gradients only. A photo wallpaper keeps its own path.
+ * triangular noise before rounding: the steps dissolve into a grain too fine to see. The fades and the
+ * hero's melt into the page come from this math; the page itself is the same gradient drawn dithered by
+ * the GPU ([pageDrawable]), so they meet without a seam. Linear and radial gradients only. A photo
+ * wallpaper keeps its own path.
  */
 object SmoothGradient {
 
@@ -75,22 +75,16 @@ object SmoothGradient {
             Theme.get(ctx, Theme.BG_ANGLE), dm.widthPixels, dm.heightPixels)
     }
 
-    @Volatile private var page: Pair<String, Bitmap>? = null
-
     /**
-     * The window's background: the whole gradient as one opaque screen-sized bitmap (made once per theme,
-     * ~8 MB at 1080p), or null when it's solid (nothing to smooth), a photo, or the bitmap couldn't be made.
+     * The window's background: the gradient drawn by the GPU with its dither on, which breaks the steps up the
+     * same way [render]'s noise does. It was a screen-sized bitmap (8.3 MB at 1080p, and as much again as a
+     * texture). Null when it's solid (nothing to smooth) or a photo.
      */
-    fun pageBitmap(ctx: Context): Bitmap? {
+    fun pageDrawable(ctx: Context): android.graphics.drawable.Drawable? {
         val s = spec(ctx) ?: return null
         if (s.type == 2 || s.top == s.bottom) return null
-        page?.let { if (it.first == s.key) return it.second }
-        return try {
-            render(s, s.w, s.h, 0, null).also { page = s.key to it }
-        } catch (e: Throwable) {
-            Log.w("FireHome", "smooth background not made: $e")
-            null
-        }
+        @Suppress("DEPRECATION")
+        return Theme.gradient(s.top, s.bottom, s.type, s.angle, s.w).apply { setDither(true) }
     }
 
     /**

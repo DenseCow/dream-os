@@ -183,16 +183,51 @@ object Net {
     /** True while [view] waits for its art. */
     fun loading(view: ImageView) = requests.containsKey(view)
 
-    /** Shared pool for short blocking side jobs (shell checks, key injection, history writes) that must not
-     *  queue behind image loads. Up to 3 threads, idle ones exit after 30 s; overflow runs on a fresh daemon. */
-    val misc: ExecutorService = ThreadPoolExecutor(0, 3, 30, TimeUnit.SECONDS, SynchronousQueue()) { r ->
-        Thread(r, "net-misc").apply { isDaemon = true }
+    private const val MISC_THREADS = 6
+    private const val NOW_THREADS = 6
+
+    /**
+     * Shared pool for blocking side jobs (shell checks, key injection, history writes, sweeps) that must not queue
+     * behind image loads. At most [MISC_THREADS] run at once and the rest wait their turn (a burst used to start a
+     * thread per job); idle threads exit after 30 s. What a viewer is waiting on goes to [runNow] instead.
+     */
+    val misc: ExecutorService = object : ThreadPoolExecutor(MISC_THREADS, MISC_THREADS, 30, TimeUnit.SECONDS, LinkedBlockingQueue(),
+        { r -> Thread(r, "net-misc").apply { isDaemon = true } }) {
+        override fun execute(command: Runnable) {
+            super.execute(command)
+            val waiting = queue.size
+            if (waiting > 0) busy("background jobs", waiting)
+        }
+    }.apply { allowCoreThreadTimeOut(true) }
+
+    /**
+     * Work a viewer waits on (a Play's resolve and its lookups, the fast start): never queued behind [misc]. A few
+     * run at once (one per title being resolved); past [NOW_THREADS] a job still starts at once, on its own thread.
+     */
+    private val now: ExecutorService = ThreadPoolExecutor(0, NOW_THREADS, 30, TimeUnit.SECONDS, SynchronousQueue()) { r ->
+        Thread(r, "net-now").apply { isDaemon = true }
     }.apply {
-        rejectedExecutionHandler = java.util.concurrent.RejectedExecutionHandler { r, _ -> Thread(r, "net-misc-x").apply { isDaemon = true }.start() }
+        rejectedExecutionHandler = java.util.concurrent.RejectedExecutionHandler { r, _ ->
+            busy("foreground jobs over $NOW_THREADS", 1)
+            Thread(r, "net-now-x").apply { isDaemon = true }.start()
+        }
+    }
+
+    @Volatile private var busyLoggedAt = 0L
+
+    /** At most one log line every 10 s while work is waiting for a thread. */
+    private fun busy(what: String, n: Int) {
+        val t = android.os.SystemClock.uptimeMillis()
+        if (t - busyLoggedAt < 10_000) return
+        busyLoggedAt = t
+        Log.w("Net", "thread cap reached: $what ($n waiting)")
     }
 
     /** Runs [work] on [misc]; exceptions are swallowed like an ad-hoc Thread's would be. */
     fun run(work: () -> Unit) = misc.execute { try { work() } catch (e: Exception) { Log.w("Net", "background job failed: $e") } }
+
+    /** Runs [work] for a viewer who is waiting: at once, never behind background jobs. */
+    fun runNow(work: () -> Unit) = now.execute { try { work() } catch (e: Exception) { Log.w("Net", "job failed: $e") } }
     private val main = Handler(Looper.getMainLooper())
 
     // RGB_565 bitmaps, so ~2 bytes per pixel. The stick only has 1.7 GB of RAM.
@@ -369,8 +404,6 @@ object Net {
         view.tag = url
         if (url == null) return
         cached(url)?.let {
-            // A card's art from memory shows at once, even if a fade of an earlier image was cut short.
-            if (view is ArtView) { view.animate().cancel(); view.alpha = 1f }
             view.setImageBitmap(it)
             // A row getting its art back ahead of focus (ArtWindow.restore) is usually not drawn yet: its
             // textures go up on the render thread now, not all twenty in the frame the row comes back in.
@@ -389,7 +422,6 @@ object Net {
             // rather than pops. Art for a row still off screen (or a hidden page) is simply there when
             // the row scrolls in, with no fade running out of sight.
             val late = onScreen(view)
-            if (view is ArtView) view.animate().cancel()
             view.alpha = if (late) 0f else 1f
             view.setImageBitmap(bmp)
             if (late) view.animate().alpha(1f).setDuration(Ui.FADE_IMAGE).setInterpolator(Ui.EASE).start()
@@ -443,12 +475,6 @@ object Net {
      */
     private fun onScreen(v: View): Boolean {
         if (!v.isAttachedToWindow) return false
-        // Card art in a row that isn't drawn for now (pages hide rows that faded out) is simply there
-        // when the row shows: a fade nobody sees would still redraw the screen for its whole length.
-        if (v is ArtView) {
-            var p: Any? = v.parent
-            while (p is View) { if (p.visibility != View.VISIBLE) return false; p = p.parent }
-        }
         return v.visibility != View.VISIBLE || v.getGlobalVisibleRect(onScreenRect)
     }
 

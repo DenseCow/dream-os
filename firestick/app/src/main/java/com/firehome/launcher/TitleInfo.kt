@@ -170,7 +170,8 @@ class TitleInfo(
 
         /** A season's median episode length (TMDB season episodes, their "runtime"), 0 when none is known. */
         fun episodeMinutes(eps: List<JSONObject>?): Int = median(eps.orEmpty().map { it.optInt("runtime", 0) })
-        private const val MIN_VOTES = 20
+        /** TMDB's score shows only with this many votes, as on the meta line ([Ratings.audienceFor]). */
+        private const val MIN_VOTES = 150
 
         /** "March 1, 2024" in the user's zone (a date-only value: parsed and worded in the same zone, so the day never shifts). */
         fun longDate(ctx: Context, ymd: String?): String? {
@@ -324,24 +325,30 @@ class TitleInfo(
             // The services Dream OS knows lead (Netflix, HBO Max...), the rest in TMDB's order.
             return (0 until a.length()).mapNotNull { a.optJSONObject(it) }.sortedWith(compareBy(
                 { o -> if (Tmdb.SERVICES.any { it.providerId == o.optInt("provider_id") }) 0 else 1 },
-                { o -> o.optInt("display_priority", 999) })).mapNotNull { o ->
-                val id = o.optInt("provider_id")
-                Tmdb.SERVICES.firstOrNull { it.providerId == id }?.let { return@mapNotNull it.name }
-                var n = o.optString("provider_name").trim()
-                // YouTube's movie store stays out; YouTube TV is a real streaming service and shows (owner, 2026-10-28).
-                if (n.isEmpty() || id == 192 || (n.contains("YouTube", true) && !n.equals("YouTube TV", true)) ||
-                    n.contains("Channel", true) || n.contains("with Ads", true)) return@mapNotNull null
-                n = n.replace("Paramount Plus", "Paramount+").replace(Regex("\\s+(Premium|Essential|Standard|Basic)$"), "")
-                when (n) {
-                    "Amazon Video" -> "Amazon"
-                    "Amazon Prime Video" -> "Prime Video"
-                    "Apple TV Store" -> "Apple TV"
-                    "Google Play Movies" -> "Google Play"
-                    "tru TV" -> "truTV"
-                    "fuboTV" -> "Fubo"
-                    else -> n
-                }
-            }.distinct()
+                { o -> o.optInt("display_priority", 999) })).mapNotNull { o -> providerName(o.optInt("provider_id"), o.optString("provider_name")) }
+            .distinct()
+        }
+
+        /**
+         * A provider as people say it ([providerNames]), or null for one that doesn't belong in a where-to-watch
+         * line: YouTube's movie store, add-on channels, ad tiers. Shared with the title page's Also Streaming On.
+         */
+        fun providerName(id: Int, raw: String): String? {
+            Tmdb.SERVICES.firstOrNull { it.providerId == id }?.let { return it.name }
+            var n = raw.trim()
+            // YouTube's movie store stays out; YouTube TV is a real streaming service and shows (owner, 2026-10-28).
+            if (n.isEmpty() || id == 192 || (n.contains("YouTube", true) && !n.equals("YouTube TV", true)) ||
+                n.contains("Channel", true) || n.contains("with Ads", true)) return null
+            n = n.replace("Paramount Plus", "Paramount+").replace(Regex("\\s+(Premium|Essential|Standard|Basic)$"), "")
+            return when (n) {
+                "Amazon Video" -> "Amazon"
+                "Amazon Prime Video" -> "Prime Video"
+                "Apple TV Store" -> "Apple TV"
+                "Google Play Movies" -> "Google Play"
+                "tru TV" -> "truTV"
+                "fuboTV" -> "Fubo"
+                else -> n
+            }
         }
     }
 }
@@ -367,7 +374,9 @@ class InfoGrid(
         fun dp(v: Int) = (v * density).toInt()
         val gap = dp(GAP)
         val unit = (widthPx - (columns - 1) * gap) / columns
-        val rows = pack(cells, columns).take(maxRows)
+        // More than fits: the wide cells (Where to Watch, Ratings) go first, so the ones dropped are the small
+        // facts at the end, never the scores or the JustWatch-credited line.
+        val rows = pack(cells, columns).let { if (it.size <= maxRows) it else pack(cells.sortedByDescending { c -> c.span }, columns) }.take(maxRows)
         count = rows.sumOf { it.size }
         for ((ri, row) in rows.withIndex()) {
             val line = object : LinearLayout(ctx) { override fun hasOverlappingRendering() = false }.apply { orientation = HORIZONTAL }

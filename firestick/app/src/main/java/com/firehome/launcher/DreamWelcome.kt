@@ -11,13 +11,13 @@ import android.view.ViewGroup.LayoutParams.WRAP_CONTENT
 import android.widget.LinearLayout
 
 /**
- * Setup's Welcome page: what Dream OS is, and its features as a tidy two-column grid, each with a
- * small glyph drawn in code ([WelcomeGlyph], the SetupArt line-art look: a pearl monoline icon on a
+ * Setup's Welcome page: what Dream OS is, and its features as two quiet rows of named glyphs, each
+ * drawn in code ([WelcomeGlyph], the SetupArt line-art look: a pearl monoline icon on a
  * dark-glass disc in a thin rainbow ring).
  */
 internal object WelcomeFeatures {
     /** (glyph, name, caption). Each one is a real Dream OS feature (see the files named). */
-    // The first row pairs the engine with what it makes possible; the rest keep to one-line captions so ten fit.
+    // The TV's Welcome shows the names only; the captions say what each one is (and back the names up).
     val ITEMS = listOf(
         Triple(WelcomeGlyph.ENGINE, "Dream Core Engine", "Searches every scraper you've added at once, then picks the best stream that's ready on your account."), // NativeResolver, Scrapers
         Triple(WelcomeGlyph.CORE, "Instant Play", "Powered by Dream Core Engine: what you'll watch next is found ahead of time, so it starts in about a second."), // PreResolve, NewEpisodeBanner
@@ -31,24 +31,25 @@ internal object WelcomeFeatures {
         Triple(WelcomeGlyph.VOICE, "Voice Search", "Hold the microphone button and say a title."), // DreamVoice
     )
 
-    fun grid(ctx: Context, k: PremiumKit): LinearLayout {
+    /**
+     * The features as two quiet rows of five: each glyph over its name, centered, no caption (ten
+     * captions on a 1080p screen were the Welcome page's clutter, and they were cut at two lines).
+     */
+    fun strip(ctx: Context, k: PremiumKit): LinearLayout {
         val dp = { v: Int -> Ui.dp(ctx, v) }
         val grid = LinearLayout(ctx).apply { orientation = LinearLayout.VERTICAL }
-        for ((r, pair) in ITEMS.chunked(2).withIndex()) {
-            val line = LinearLayout(ctx).apply { orientation = LinearLayout.HORIZONTAL }
-            for ((c, item) in pair.withIndex()) {
-                val cell = LinearLayout(ctx).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.TOP }
+        for ((r, five) in ITEMS.chunked(5).withIndex()) {
+            val line = LinearLayout(ctx).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.TOP }
+            for (item in five) {
+                val cell = LinearLayout(ctx).apply { orientation = LinearLayout.VERTICAL; gravity = Gravity.CENTER_HORIZONTAL }
                 cell.addView(WelcomeGlyph(ctx, item.first), LinearLayout.LayoutParams(dp(40), dp(40)))
-                val texts = LinearLayout(ctx).apply { orientation = LinearLayout.VERTICAL }
-                texts.addView(k.label(item.second, 15f, SetupBrand.TEXT, k.semibold))
-                texts.addView(k.label(item.third, 12.5f, SetupBrand.DIM, k.font, lines = 2).apply {
-                    setLineSpacing(dp(2).toFloat(), 1f)
-                    ellipsize = android.text.TextUtils.TruncateAt.END
-                }, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { topMargin = dp(2) })
-                cell.addView(texts, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f).apply { marginStart = dp(12) })
-                line.addView(cell, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f).apply { if (c > 0) marginStart = dp(36) })
+                cell.addView(k.label(item.second, 13.5f, Ui.alpha(SetupBrand.TEXT, 0.86f), k.medium, lines = 0).apply {
+                    gravity = Gravity.CENTER
+                    hyphenationFrequency = android.text.Layout.HYPHENATION_FREQUENCY_NONE
+                }, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { topMargin = dp(8) })
+                line.addView(cell, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f).apply { marginStart = dp(8); marginEnd = dp(8) })
             }
-            grid.addView(line, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { if (r > 0) topMargin = dp(9) })
+            grid.addView(line, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { if (r > 0) topMargin = dp(16) })
         }
         return grid
     }

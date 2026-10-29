@@ -79,6 +79,85 @@ public struct AvailabilityPill: View {
     }
 }
 
+/// A title page language pill (`LanguagePills`; fire-home Availability.Pill.language) in the status pills' look:
+/// audio in amber with a drawn speaker ("Korean Audio Only"), a dub or subtitles found in green with the status check
+/// ("English Dub Available", "English Subtitles"), none found plain (graphite edge, gray words, no disc). Informational.
+public struct LanguagePill: View {
+    let pill: LanguagePills.Pill
+    public init(_ pill: LanguagePills.Pill) { self.pill = pill }
+
+    private var plain: Bool { pill.kind == .noSubs }
+    private var color: Color { pill.kind == .audio ? Palette.amber : Palette.green }
+    private var tint: Color { plain ? Color(red: 196 / 255, green: 196 / 255, blue: 202 / 255) : pill.kind == .audio ? Palette.amberText : Palette.greenText }
+
+    public var body: some View {
+        ViewThatFits(in: .horizontal) {
+            ForEach(Array(pill.labels.enumerated()), id: \.offset) { capsule($0.element) }
+        }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(pill.labels.first ?? "")
+    }
+
+    private func capsule(_ label: String) -> some View {
+        HStack(spacing: 8) {
+            if !plain {
+                Group {
+                    if pill.kind == .audio { SpeakerGlyph(color: color) } else { PillGlyph(tone: .available, color: color) }
+                }
+                .frame(width: 16, height: 16)
+            }
+            Text(label)
+                .font(.system(size: 13, weight: .semibold))
+                .tracking(0.26)
+                .foregroundStyle(tint)
+                .lineLimit(1)
+                .fixedSize()
+        }
+        .padding(.leading, plain ? 13 : 8)
+        .padding(.trailing, 13)
+        .frame(height: 30)
+        .background {
+            Capsule().fill(LinearGradient(colors: [Color(red: 36 / 255, green: 36 / 255, blue: 40 / 255).opacity(0.89),
+                                                   Color(red: 12 / 255, green: 12 / 255, blue: 14 / 255).opacity(0.89)],
+                                          startPoint: .top, endPoint: .bottom))
+            if plain {
+                Capsule().strokeBorder(Color.white.opacity(0.28), lineWidth: 1)
+            } else {
+                Capsule().fill(color.opacity(0.09))
+                Capsule().strokeBorder(color.opacity(0.36), lineWidth: 1)
+            }
+        }
+        .fixedSize()
+    }
+}
+
+/// The audio pill's glyph: a speaker (box, cone, one sound arc) knocked out of its amber disc.
+struct SpeakerGlyph: View {
+    let color: Color
+    var body: some View {
+        Canvas { c, size in
+            let u = min(size.width, size.height) / 2
+            let cx = size.width / 2, cy = size.height / 2
+            c.fill(Path(ellipseIn: CGRect(x: cx - u, y: cy - u, width: 2 * u, height: 2 * u)), with: .color(color))
+            let ink = Color(red: 17 / 255, green: 17 / 255, blue: 20 / 255)
+            var p = Path()
+            p.move(to: CGPoint(x: cx - 0.56 * u, y: cy - 0.18 * u))
+            p.addLine(to: CGPoint(x: cx - 0.30 * u, y: cy - 0.18 * u))
+            p.addLine(to: CGPoint(x: cx + 0.02 * u, y: cy - 0.46 * u))
+            p.addLine(to: CGPoint(x: cx + 0.02 * u, y: cy + 0.46 * u))
+            p.addLine(to: CGPoint(x: cx - 0.30 * u, y: cy + 0.18 * u))
+            p.addLine(to: CGPoint(x: cx - 0.56 * u, y: cy + 0.18 * u))
+            p.closeSubpath()
+            c.fill(p, with: .color(ink))
+            var arc = Path()
+            arc.addArc(center: CGPoint(x: cx + 0.20 * u, y: cy), radius: 0.40 * u,
+                       startAngle: .degrees(-50), endAngle: .degrees(50), clockwise: false)
+            c.stroke(arc, with: .color(ink), style: StrokeStyle(lineWidth: u * 0.17, lineCap: .round))
+        }
+        .accessibilityHidden(true)
+    }
+}
+
 /// The Watched pill (owner-approved, STANDARDS §2 / §5; fire-home Availability.Pill's watched look): a dark
 /// graphite-gold capsule (#2A2412) with a faint gold edge, a drawn gold check (CheckInk's shape, never a text mark)
 /// and "Watched" in gold (#E8C468). It replaces the availability pill on a title the viewer has watched. The same

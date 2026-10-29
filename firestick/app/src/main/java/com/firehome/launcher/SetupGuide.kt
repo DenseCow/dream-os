@@ -36,8 +36,8 @@ internal object SetupGuide {
 
     // ---- TMDB ----
 
-    const val TMDB_INTRO = "TMDB's sign-up is easiest on a computer, but your phone works too. Each page below opens " +
-        "on your phone when you scan its code."
+    const val TMDB_INTRO = "TMDB's sign-up is easiest on a computer, but your phone works too. Each step has a code to " +
+        "scan with your phone."
 
     val TMDB_STEPS = listOf(
         Step("Make a free TMDB account. Open Join TMDB, fill in the form and choose Sign Up.",
@@ -214,16 +214,16 @@ internal object SetupGuide {
     fun checkHelp(message: String): List<String> {
         val m = message.lowercase()
         return when {
-            "add a source" in m -> listOf("Go back to Set Up Scrapers and add your repository.")
-            "turn on at least one provider" in m -> listOf("Go back to Set Up Scrapers and choose Use Recommended Settings.")
+            "add a source" in m -> listOf("Go back to Add Your Scrapers and add your repository.")
+            "turn on at least one provider" in m -> listOf("Go back to Add Your Scrapers and choose Use Recommended Settings.")
             "link a streaming account" in m -> listOf("Your scrapers work, but no debrid service is ready to play.",
-                "Go back to Connect Your Accounts and check that your service says Connected and has an active paid plan.")
-            "no sources came back" in m -> listOf("Check the TV's internet connection, then choose Try Again.",
-                "If it still finds nothing, go back to Set Up Scrapers and choose Use Recommended Settings, or add another repository.")
-            "none are ready" in m -> listOf("Your debrid service had none of them ready just now. Choose Try Again in a moment.",
+                "Go back to Connect a Debrid Service and check that your service says Connected and has an active paid plan.")
+            "no sources came back" in m -> listOf("Check the Fire Stick's internet connection, then choose Check Again.",
+                "If it still finds nothing, go back to Add Your Scrapers and choose Use Recommended Settings, or add another repository.")
+            "none are ready" in m -> listOf("Your debrid service had none of them ready just now. Choose Check Again in a moment.",
                 "If it keeps happening, check that your plan is active, or connect another service.")
             "restart" in m -> listOf("Choose Close Dream OS in Settings, open Dream OS again, then try again.")
-            else -> listOf("Choose Try Again. If it still doesn't pass, go back and check that your debrid service says Connected and your scrapers have providers on.")
+            else -> listOf("Choose Check Again. If it still doesn't pass, go back and check that your debrid service says Connected and your scrapers have providers on.")
         }
     }
 
@@ -238,82 +238,106 @@ internal object SetupGuide {
     // =================================================================================
 
     /**
-     * A guide line as a focusable row (the remote scrolls the list through them): a numbered pearl disc when [n] is
-     * set, the text in white and [see] in gray, both wrapping; with [onClick] a chevron. Pearl box with dark ink and
-     * the rainbow border when focused, like every setup row.
+     * Show Me How as a walkthrough on the TV: one step per page, never a list to scroll. The page's codes are right
+     * on it (a QR code per website named, with its short address), so nothing opens underneath. [intro] leads the
+     * first page.
      */
-    fun row(ctx: Context, k: PremiumKit, n: Int?, text: String, see: String?, bold: Boolean = false, onClick: (() -> Unit)? = null): View {
-        val dp = { v: Int -> Ui.dp(ctx, v) }
-        val row = LinearLayout(ctx).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.TOP
-            setPadding(dp(14), dp(12), dp(18), dp(12))
-            isFocusable = true
-            isClickable = onClick != null
-            minimumHeight = dp(52)
-        }
-        PearlFocus.bind(row, Ui.R_MD)
-        if (n != null) row.addView(k.label("$n", 13f, Color.WHITE, k.bold).apply {
-            gravity = Gravity.CENTER
-            isDuplicateParentStateEnabled = true
-            setTextColor(PearlFocus.states(PearlFocus.PEARL, PearlFocus.INK))
-            background = StateListDrawable().apply {
-                addState(intArrayOf(android.R.attr.state_focused), oval(PearlFocus.INK))
-                addState(IntArray(0), oval(PearlFocus.PEARL))
-            }
-        }, LinearLayout.LayoutParams(dp(24), dp(24)).apply { marginEnd = dp(14); topMargin = dp(1) })
-        val texts = LinearLayout(ctx).apply { orientation = LinearLayout.VERTICAL; isDuplicateParentStateEnabled = true }
-        texts.addView(k.label(text, 15.5f, SetupBrand.TEXT, if (bold) k.semibold else k.medium, lines = 0).apply {
-            isDuplicateParentStateEnabled = true
-            setTextColor(PearlFocus.states(PearlFocus.INK, SetupBrand.TEXT))
-            setLineSpacing(dp(2).toFloat(), 1f)
-            hyphenationFrequency = android.text.Layout.HYPHENATION_FREQUENCY_NONE
-        })
-        if (!see.isNullOrEmpty()) texts.addView(k.label(see, 14f, SetupBrand.DIM, k.font, lines = 0).apply {
-            isDuplicateParentStateEnabled = true
-            setTextColor(PearlFocus.states(PearlFocus.INK_DIM, SetupBrand.DIM))
-            setLineSpacing(dp(3).toFloat(), 1f)
-            hyphenationFrequency = android.text.Layout.HYPHENATION_FREQUENCY_NONE
-        }, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { topMargin = dp(5) })
-        row.addView(texts, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
-        if (onClick != null) {
-            row.addView(k.label("›", 26f, SetupBrand.DIM).apply {
-                isDuplicateParentStateEnabled = true
-                setTextColor(PearlFocus.states(PearlFocus.INK_DIM, Ui.alpha(Color.WHITE, 0.34f)))
-            }, LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT).apply { marginStart = dp(14); gravity = Gravity.CENTER_VERTICAL })
-            row.setOnClickListener { onClick() }
-        }
-        row.layoutParams = LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT)
-        return row
-    }
+    fun guide(ui: SetupUi, parts: SetupParts, panel: SetupPanel, title: String, steps: List<Step>, intro: String? = null): SetupScreen =
+        pager(ui, parts, panel, title, "Step", steps.mapIndexed { i, st -> Page(st.text, st.see, st.links, st.keyArt, if (i == 0) intro else null) })
 
-    private fun oval(c: Int) = GradientDrawable().apply { shape = GradientDrawable.OVAL; setColor(c) }
+    /** If Something Goes Wrong: one problem and its fix per page, the same walkthrough as [guide]. */
+    fun trouble(ui: SetupUi, parts: SetupParts, panel: SetupPanel, tips: List<Tip>): SetupScreen =
+        pager(ui, parts, panel, "If Something Goes Wrong", "Problem", tips.map { Page(it.problem, it.fix) })
 
-    /** Show Me How: [intro], then each step; a step that names pages is followed by a row per page (its code). */
-    fun guide(ui: SetupUi, parts: SetupParts, panel: SetupPanel, title: String, steps: List<Step>, intro: String? = null): SetupScreen {
+    private class Page(val head: String, val body: String?, val links: List<Link> = emptyList(), val keyArt: Boolean = false, val lead: String? = null)
+
+    /**
+     * A walkthrough for the remote: "‹  Step 2 of 6  ›" over one page at a time, and one button. Select (or
+     * Right) goes to the next page, Left to the one before; on the last page the button says Done and goes back.
+     * The page is rebuilt in place under a still button, so focus never moves and nothing scrolls.
+     */
+    private fun pager(ui: SetupUi, parts: SetupParts, panel: SetupPanel, title: String, noun: String, pages: List<Page>): SetupScreen {
         val ctx = ui.ctx
         val k = ui.k
+        val dp = { v: Int -> Ui.dp(ctx, v) }
         val s = SetupScreen(ui, title, null)
-        var top = 0
-        intro?.let { s.add(parts.note(it, 14.5f), 0); top = 14 }
-        for ((i, st) in steps.withIndex()) {
-            s.add(row(ctx, k, i + 1, st.text, st.see), if (i == 0) top else 8)
-            if (st.keyArt) s.add(TmdbKeyArt(ctx, k).apply { layoutParams = LinearLayout.LayoutParams(MATCH_PARENT, Ui.dp(ctx, TmdbKeyArt.HEIGHT_DP)) }, 8)
-            for (l in st.links) s.add(BrandRow(ctx, k, null, true, null) { panel.push(linkScreen(ui, parts, panel, l)) }
-                .apply { set(l.title, l.short, "Open on Your Phone") }, 6)
+        val counter = k.label("", 15f, Ui.alpha(Color.WHITE, 0.70f), k.medium)
+        val page = LinearLayout(ctx).apply { orientation = LinearLayout.VERTICAL }
+        s.add(counter, 0)
+        s.add(page.apply { layoutParams = LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT) }, 12)
+        var at = 0
+        lateinit var go: (Int) -> Unit
+        val button = parts.pill("Next Step", true) { if (at + 1 < pages.size) go(at + 1) else panel.pop() }
+        button.setOnKeyListener { _, code, e ->
+            if (e.action != android.view.KeyEvent.ACTION_DOWN) return@setOnKeyListener code == android.view.KeyEvent.KEYCODE_DPAD_LEFT || code == android.view.KeyEvent.KEYCODE_DPAD_RIGHT
+            when (code) {
+                android.view.KeyEvent.KEYCODE_DPAD_RIGHT -> { if (at + 1 < pages.size) go(at + 1); true }
+                android.view.KeyEvent.KEYCODE_DPAD_LEFT -> { if (at > 0) go(at - 1); true }
+                else -> false
+            }
         }
-        val done = parts.pill("Done", true) { panel.pop() }
-        s.add(parts.pills(done), 22)
+        s.add(parts.pills(button), 24)
+        go = { i ->
+            val p = pages[i]
+            val dir = if (i >= at) 1 else -1
+            at = i
+            // "‹  Step 2 of 6  ›": an arrow is bright only where Left or Right has a page to go to.
+            counter.text = android.text.SpannableStringBuilder().apply {
+                fun arrow(t: String, on: Boolean) {
+                    val from = length
+                    append(t)
+                    setSpan(android.text.style.ForegroundColorSpan(Ui.alpha(Color.WHITE, if (on) 0.85f else 0.18f)), from, length, 0)
+                }
+                arrow("‹", i > 0)
+                append("   $noun ${i + 1} of ${pages.size}   ")
+                arrow("›", i + 1 < pages.size)
+            }
+            button.text = if (i + 1 < pages.size) "Next $noun" else "Done"
+            page.removeAllViews()
+            val row = LinearLayout(ctx).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.TOP }
+            val texts = LinearLayout(ctx).apply { orientation = LinearLayout.VERTICAL }
+            p.lead?.let { texts.addView(k.label(it, 16f, SetupBrand.DIM, k.font, lines = 0).apply { setLineSpacing(dp(3).toFloat(), 1f) },
+                LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { bottomMargin = dp(14) }) }
+            texts.addView(k.label(p.head, 23f, SetupBrand.TEXT, k.semibold, lines = 0).apply {
+                setLineSpacing(dp(3).toFloat(), 1f)
+                hyphenationFrequency = android.text.Layout.HYPHENATION_FREQUENCY_NONE
+            })
+            if (!p.body.isNullOrEmpty()) texts.addView(k.label(p.body, 17f, SetupBrand.DIM, k.font, lines = 0).apply {
+                setLineSpacing(dp(4).toFloat(), 1f)
+                hyphenationFrequency = android.text.Layout.HYPHENATION_FREQUENCY_NONE
+            }, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { topMargin = dp(10) })
+            row.addView(texts, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
+            // One website: its code beside the words. Several: a row of codes under them.
+            if (p.links.size == 1) row.addView(code(ui, p.links[0], 128), LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT).apply { marginStart = dp(32) })
+            page.addView(row, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
+            if (p.links.size > 1) {
+                val codes = LinearLayout(ctx).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.TOP }
+                for ((j, l) in p.links.withIndex()) codes.addView(code(ui, l, 96), LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f).apply { if (j > 0) marginStart = dp(16) })
+                page.addView(codes, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { topMargin = dp(18) })
+            }
+            if (p.keyArt) page.addView(TmdbKeyArt(ctx, k), LinearLayout.LayoutParams(MATCH_PARENT, dp(TmdbKeyArt.HEIGHT_DP)).apply { topMargin = dp(16) })
+            page.alpha = 0f
+            page.translationX = dp(18 * dir).toFloat()
+            page.animate().alpha(1f).translationX(0f).setDuration(Ui.OVERLAY_IN).setInterpolator(Ui.EASE).start()
+        }
+        go(0)
+        s.focus = { button }
         return s
     }
 
-    /** If Something Goes Wrong: each problem and its fix. */
-    fun trouble(ui: SetupUi, parts: SetupParts, panel: SetupPanel, tips: List<Tip>): SetupScreen {
-        val s = SetupScreen(ui, "If Something Goes Wrong", null)
-        for ((i, t) in tips.withIndex()) s.add(row(ui.ctx, ui.k, null, t.problem, t.fix, bold = true), if (i == 0) 0 else 8)
-        val done = parts.pill("Done", true) { panel.pop() }
-        s.add(parts.pills(done), 22)
-        return s
+    /** A website as a QR code with its name and short address under it (the TV opens no browser). */
+    private fun code(ui: SetupUi, l: Link, sizeDp: Int): View {
+        val ctx = ui.ctx
+        val dp = { v: Int -> Ui.dp(ctx, v) }
+        return LinearLayout(ctx).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.CENTER_HORIZONTAL
+            ui.qr(l.url, sizeDp)?.let { addView(it, LinearLayout.LayoutParams(dp(sizeDp), dp(sizeDp))) }
+            addView(ui.k.label(l.title, 15f, SetupBrand.TEXT, ui.k.semibold, lines = 0).apply { gravity = Gravity.CENTER },
+                LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT).apply { topMargin = dp(8) })
+            addView(ui.k.label(l.short, 13f, SetupBrand.DIM, ui.k.font, lines = 0).apply { gravity = Gravity.CENTER },
+                LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT).apply { topMargin = dp(2) })
+        }
     }
 
     /** A page on the viewer's phone: its QR code and short address (the TV opens no browser). */
@@ -323,9 +347,9 @@ internal object SetupGuide {
         val s = SetupScreen(ui, l.title, null)
         val wrap = LinearLayout(ctx).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
         val col = LinearLayout(ctx).apply { orientation = LinearLayout.VERTICAL }
-        col.addView(ui.k.label("Scan the code with your phone's camera, or go to", 15f, SetupBrand.DIM, ui.k.font, lines = 2))
-        col.addView(ui.k.label(l.short, 19f, SetupBrand.TEXT, ui.k.semibold, lines = 2), LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT).apply { topMargin = dp(6) })
-        col.addView(ui.k.label("on a phone or computer.", 15f, SetupBrand.DIM, ui.k.font, lines = 1), LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT).apply { topMargin = dp(6) })
+        col.addView(ui.k.label("Scan the code with your phone's camera, or go to", 15f, SetupBrand.DIM, ui.k.font, lines = 0))
+        col.addView(ui.k.label(l.short, 19f, SetupBrand.TEXT, ui.k.semibold, lines = 0), LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT).apply { topMargin = dp(8) })
+        col.addView(ui.k.label("on a phone or computer.", 15f, SetupBrand.DIM, ui.k.font, lines = 0), LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT).apply { topMargin = dp(8) })
         wrap.addView(col, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
         ui.qr(l.url, 160)?.let { wrap.addView(it, LinearLayout.LayoutParams(dp(160), dp(160)).apply { marginStart = dp(24) }) }
         s.add(wrap, 0)
@@ -363,10 +387,9 @@ internal object SetupGuide {
         setPadding(dp(16), dp(12), dp(16), dp(14))
         background = Ui.rounded(ctx, Ui.alpha(Color.WHITE, 0.045f), Ui.R_MD, 1f, Ui.alpha(Color.WHITE, 0.10f))
         addView(k.label("A Repository Address Looks Like This", 15f, SetupBrand.TEXT, k.semibold))
-        for (a in ADDRESS_EXAMPLES) addView(k.label(a, 13.5f, Ui.alpha(SetupBrand.TEXT, 0.85f), Typeface.MONOSPACE).apply {
-            setPadding(dp(12), dp(6), dp(12), dp(6))
-            background = Ui.rounded(ctx, Ui.alpha(Color.WHITE, 0.06f), 10)
-        }, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { topMargin = dp(7) })
+        // Plain lines, one per example (no capsule around each: they're text to read, not things to choose).
+        for (a in ADDRESS_EXAMPLES) addView(k.label(a, 15f, Ui.alpha(SetupBrand.TEXT, 0.90f), Typeface.MONOSPACE),
+            LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { topMargin = dp(8) })
         addView(k.label("Enter it exactly as you got it. It usually starts with https:// and often has github in it.", 14f, SetupBrand.DIM, k.font, lines = 0),
             LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { topMargin = dp(9) })
         layoutParams = LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT)

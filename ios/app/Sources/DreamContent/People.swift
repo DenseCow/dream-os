@@ -7,10 +7,10 @@ import DreamCore
 extension ContentCatalog {
     func personDetails(id: Int, excluding titleKey: String?) async -> PersonDetails? {
         guard Tmdb.hasKey else { return nil }
-        if let hit = await PeopleCache.shared.person(id) { return People.without(hit, titleKey) }
+        if let hit = await PeopleCache.shared.person(id) { return await People.without(hit, titleKey) }
         guard let p = await People.fetch(id) else { return nil }
         await PeopleCache.shared.put(p)
-        return People.without(p, titleKey)
+        return await People.without(p, titleKey)
     }
 
     func cast(for request: PlayRequest) async -> [CastMember] {
@@ -77,8 +77,8 @@ enum People {
     static func fetch(_ id: Int) async -> PersonDetails? {
         guard let j = try? await Tmdb.object("/person/\(id)", "&append_to_response=combined_credits") else { return nil }
         let born = Tmdb.str(j, "birthday"), died = Tmdb.str(j, "deathday")
-        let b = born.isEmpty ? nil : DreamTime.formatDay(born, "MMM d, yyyy")
-        let d = died.isEmpty ? nil : DreamTime.formatDay(died, "MMM d, yyyy")
+        // The title page's long date ("July 31, 1970"), date-only so it never shifts a day.
+        let b = DreamTime.longDate(born), d = DreamTime.longDate(died)
         let life: String? = if let b, let d { "\(b) – \(d)" } else if let b { "Born \(b)" } else { nil }
         let place = Tmdb.str(j, "place_of_birth")
         let meta = [life, place.isEmpty ? nil : place].compactMap { $0 }.joined(separator: "  ·  ")
@@ -92,14 +92,14 @@ enum People {
             .sorted { $0.votes > $1.votes }
         // Known titles first; a newcomer's handful of small ones still shows.
         let known = { let k = all.filter { $0.votes >= 20 }; return k.count >= 4 ? k : all }()
-        let allowed = await KidsFilter.titles(Array(known.prefix(40)))
+        // Kept unfiltered (the cache is shared by every profile): `without` applies the current profile's limit.
         return PersonDetails(id: id, name: Tmdb.str(j, "name"), profilePath: Tmdb.path(j, "profile_path"), meta: meta,
-                             bio: Tmdb.str(j, "biography"), knownFor: allowed, department: Tmdb.str(j, "known_for_department"))
+                             bio: Tmdb.str(j, "biography"), knownFor: Array(known.prefix(40)), department: Tmdb.str(j, "known_for_department"))
     }
 
-    static func without(_ p: PersonDetails, _ key: String?) -> PersonDetails {
+    static func without(_ p: PersonDetails, _ key: String?) async -> PersonDetails {
         var q = p
-        q.knownFor = Array(p.knownFor.filter { $0.key != key }.prefix(maxTitles))
+        q.knownFor = Array(await KidsFilter.titles(p.knownFor.filter { $0.key != key }).prefix(maxTitles))
         return q
     }
 }

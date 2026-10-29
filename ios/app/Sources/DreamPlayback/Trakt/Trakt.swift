@@ -29,6 +29,9 @@ public final class Trakt: @unchecked Sendable {
 
     /// Home opening (the app coming to the front) syncs at most this often; a finished playback skips the wait.
     static let homeEveryMs: Int64 = 15 * 60_000
+    /// Watchlist pages of `watchlistPage` read per type (10,000 titles; past that the sync leaves My List alone).
+    static let watchlistPage = 500
+    static let watchlistPages = 20
     /// Renew the access token when it has less than this left.
     static let refreshAheadMs: Int64 = 60 * 60_000
     /// Trakt counts a stop at this percentage or more as watched.
@@ -219,6 +222,8 @@ public final class Trakt: @unchecked Sendable {
         switch r.code {
         case 200:
             guard let o = r.object, let t = Self.tokens(from: o) else { return nil }
+            // Signed out (or the profile deleted) while the renewal was on its way: it must not sign back in.
+            guard vault.tokens(p)?.r == cur.r else { return nil }
             vault.setTokens(p, t)
             plog.info("Trakt: sign-in renewed")
             return t

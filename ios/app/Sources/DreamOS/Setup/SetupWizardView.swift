@@ -29,8 +29,9 @@ enum SetupGate {
         get { DreamStore.shared.get(Bool.self, "setup.introOK") ?? false }
         set { DreamStore.shared.set(newValue, "setup.introOK") }
     }
+    static var hasTMDBKey: Bool { !Keys.tmdb.trimmingCharacters(in: .whitespaces).isEmpty }
 
-    /// What still keeps the Accounts step from being done, in plain words; nil when it's done.
+    /// What still keeps the debrid step from being done, in plain words; nil when it's done.
     static func accountsBlocker() async -> String? {
         let d = PagesServices.debrid
         let linked = await d.linkedOrder()
@@ -42,6 +43,7 @@ enum SetupGate {
         switch first.health {
         case .unchecked: return "Checking your account…"
         case .invalid: return "Sign in to \(n) again, or connect another service, to continue."
+        case .blocked: return "Approve this network in the email from \(n), then choose \(n) to check again."
         default:
             if first.expired { return "Your \(n) plan has expired. Renew it, or connect another service, to continue." }
             return "Couldn't reach \(n). Check your internet connection, then choose \(n) to check again."
@@ -53,366 +55,116 @@ enum SetupGate {
     }
 }
 
-/// First-run setup (SetupWizard.kt), one idea per screen, for a phone: Welcome, Before You Start, Your Time Zone,
-/// Connect Your Accounts, Set Up Scrapers, Playback Preferences (optional), Getting You Ready (one real search, then
-/// the connection speed card), Create Your Profile, Who's Watching?,
-/// Your Shows (TMDB / OMDb keys), You're All Set. Every choice is saved the moment it's made; the required steps hold
-/// Continue until they're met. Fire TV-only steps (Home button, unlock, Screen Fit, phone typing, AirPods, ad
-/// blocking, moving to a new stick) are left out.
-struct SetupWizardView: View {
-    var firstRun: Bool
-    var finish: () -> Void
+/// Setup's steps. Raw values are what `SetupGate` saves, so an interrupted setup resumes after an update.
+enum SetupStep: String, CaseIterable {
+    case welcome, intro, zone, content, accounts, scrapers, check, unlock, alerts, saver, profile, who, playback, extras, done
 
-    enum Step: String, CaseIterable {
-        case welcome, intro, zone, accounts, scrapers, playback, check, profile, who, content, done
-    }
-
-    @State private var step: Step = .welcome
-    @State private var forward = true
-    @State private var blocker: String?
-    @State private var shake = 0
-    @State private var name = ""
-    @State private var emoji = ProfileLook.emojis[0]
-    @State private var color = ProfileLook.colors[0]
-    @State private var me: Profile?
-    @State private var check: ScraperTestResult?
-    @State private var checking = false
-    @State private var checkLine = ""
-    @State private var zone: String? = DreamTime.isAutomatic ? nil : DreamTime.zone.identifier
-    @State private var celebrating = false
-
-    /// A build without a TMDB key (an open-source build) shows nothing until one is added; Continue waits for one.
-    private static let needsTMDB = Keys.tmdb.trimmingCharacters(in: .whitespaces).isEmpty
-    /// Owner's order (2026-10-28): the time zone first, then every account step back to back (TMDB key, debrid,
-    /// scrapers, the check that they work together), then the steps that have nothing to do with accounts.
-    private let steps: [Step] = [.welcome, .intro, .zone, .content, .accounts, .scrapers, .check, .playback, .profile, .who, .done]
-
-    var body: some View {
-        NavigationStack { wizard.toolbar(.hidden, for: .navigationBar) }
-            .dreamNavigationLook()
-            .onChange(of: step) { _, s in if firstRun { SetupGate.currentStep = s == .done ? nil : s.rawValue } }
-    }
-
-    private var wizard: some View {
-        ZStack {
-            DreamBackground()
-            if celebrating {
-                Celebration(name: name).transition(.opacity)
-            } else {
-                VStack(spacing: 0) {
-                    topBar
-                    ScrollViewReader { reader in
-                        ScrollView {
-                            Color.clear.frame(height: 0).id("setup.top")
-                            content
-                                .frame(maxWidth: 620, alignment: .leading)
-                                .frame(maxWidth: .infinity)
-                                .padding(.horizontal, 24)
-                                .padding(.top, 12)
-                                .padding(.bottom, 24)
-                                .id(step)
-                                .transition(.asymmetric(insertion: .move(edge: forward ? .trailing : .leading).combined(with: .opacity),
-                                                        removal: .opacity))
-                        }
-                        .scrollIndicators(.hidden)
-                        .scrollDismissesKeyboard(.interactively)
-                        // Every new step starts at its top (owner, 2026-10-28), not where the last one was scrolled.
-                        .onChange(of: step) { _, _ in reader.scrollTo("setup.top", anchor: .top) }
-                    }
-                    bottomBar
-                }
-            }
+    var chapter: SetupChapter? {
+        switch self {
+        case .intro, .zone: .getReady
+        case .content, .accounts, .scrapers, .check: .connect
+        case .unlock, .alerts, .saver: .device
+        case .profile, .who, .playback, .extras: .makeItYours
+        case .welcome, .done: nil
         }
-        .task { await prepare() }
+    }
+}
+
+/// Pages pushed on setup's own navigation stack (long lists live on a page of their own; swipe back returns).
+enum SetupPage: Hashable {
+    case zones, quality, audio, allSourceSettings, manageScrapers, unlockFireStick
+}
+
+/// Where setup is and what it holds between steps. Steps decide when they're done and call `forward()`.
+@MainActor @Observable
+final class SetupFlow {
+    static let order: [SetupStep] = [.welcome, .intro, .zone, .content, .accounts, .scrapers, .check,
+                                     .unlock, .alerts, .saver, .profile, .who, .playback, .extras, .done]
+
+    let firstRun: Bool
+    let finish: () -> Void
+    var step: SetupStep = .welcome
+    /// How the step on screen was reached. Finished tasks only move on by themselves after a forward move.
+    var cameForward = true
+    /// Changes on every step change, so a delayed auto-advance knows the viewer is still on the same visit.
+    var visit = 0
+    var blocker: String?
+    var shake = 0
+    var path: [SetupPage] = []
+    var celebrating = false
+
+    var name = ""
+    var emoji = ProfileLook.emojis[0]
+    var color = ProfileLook.colors[0]
+    var me: Profile?
+
+    init(firstRun: Bool, finish: @escaping () -> Void) {
+        self.firstRun = firstRun
+        self.finish = finish
     }
 
-    // MARK: Chrome
+    var index: Int { Self.order.firstIndex(of: step) ?? 0 }
 
-    private var topBar: some View {
-        HStack {
-            Button {
-                back()
-            } label: {
-                Image(systemName: "chevron.left").font(.system(size: 18, weight: .semibold)).frame(width: 44, height: 44)
-            }
-            .foregroundStyle(Palette.text)
-            .opacity(index > 0 ? 1 : 0)
-            .disabled(index == 0)
-            .accessibilityLabel("Back")
-            Spacer()
-            HStack(spacing: 8) {
-                ForEach(steps.indices, id: \.self) { i in
-                    Circle().fill(Palette.text)
-                        .frame(width: 6, height: 6)
-                        .opacity(i == index ? 1 : (i < index ? 0.5 : 0.2))
-                        .scaleEffect(i == index ? 1.35 : 1)
-                }
-            }
-            .accessibilityElement(children: .ignore)
-            .accessibilityLabel("Step \(index + 1) of \(steps.count)")
-            Spacer()
-            if !firstRun {
-                Button("Close") { finish() }.font(.system(size: 16, weight: .medium)).foregroundStyle(Palette.text).frame(minWidth: 44, minHeight: 44)
-            } else {
-                Color.clear.frame(width: 44, height: 44)
-            }
-        }
-        .padding(.horizontal, 12)
-        .animation(.easeOut(duration: 0.3), value: index)
+    /// "Step 2 of 4" inside the current chapter.
+    var counter: String {
+        guard let c = step.chapter else { return "" }
+        let inChapter = Self.order.filter { $0.chapter == c }
+        return "Step \((inChapter.firstIndex(of: step) ?? 0) + 1) of \(inChapter.count)"
     }
 
-    private var bottomBar: some View {
-        VStack(spacing: 10) {
-            if let blocker {
-                Text(blocker)
-                    .font(.system(size: 14))
-                    .foregroundStyle(Palette.textSecondary)
-                    .multilineTextAlignment(.center)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .modifier(Shake(amount: CGFloat(shake)))
-                    .transition(.opacity)
-            }
-            PagePrimaryButton(title: primaryLabel) { Task { await next() } }
-            if let skip = skipLabel {
-                Button(skip) { Task { await next(skipping: true) } }
-                    .font(.system(size: 15, weight: .medium))
-                    .foregroundStyle(Palette.textSecondary)
-                    .frame(minHeight: 36)
-            }
-        }
-        .frame(maxWidth: 620)
-        .padding(.horizontal, 24)
-        .padding(.top, 10)
-        .padding(.bottom, 12)
-        .background(LinearGradient(colors: [Palette.page.opacity(0), Palette.page], startPoint: .top, endPoint: .center).ignoresSafeArea())
+    var chapterFraction: Double {
+        guard let c = step.chapter else { return 0 }
+        let inChapter = Self.order.filter { $0.chapter == c }
+        return Double((inChapter.firstIndex(of: step) ?? 0) + 1) / Double(inChapter.count)
     }
 
-    private var index: Int { steps.firstIndex(of: step) ?? 0 }
+    func forward() {
+        guard index + 1 < Self.order.count else { return }
+        SetupGate.savedStep = step.rawValue
+        move(to: Self.order[index + 1], forward: true)
+        PageHaptics.tap()
+    }
 
-    private var primaryLabel: String {
-        switch step {
-        case .welcome: "Get Started"
-        case .intro: "I Understand"
-        case .check: SetupGate.checkPassed ? "Continue" : (checking ? "Checking…" : (check == nil ? "Check Now" : "Try Again"))
-        case .done: "Start Watching"
-        default: "Continue"
+    func back() {
+        guard index > 0 else { return }
+        move(to: Self.order[index - 1], forward: false)
+    }
+
+    /// Moves on after `delay` (the result shows first), only if the viewer is still on this visit of the step.
+    func forward(after delay: Double) {
+        let v = visit
+        Task { @MainActor in
+            try? await Task.sleep(for: .seconds(delay))
+            guard visit == v, path.isEmpty, !celebrating else { return }
+            forward()
         }
     }
 
-    private var skipLabel: String? {
-        switch step {
-        case .playback, .profile, .who: "Skip"
-        // Required steps never offer Skip (owner, 2026-10-28): the TMDB step (passes at once when a key is built in)
-        // and the final check (Check Later removed now that the scrapers answer).
-        case .content, .check: nil
-        default: nil
-        }
+    private func move(to s: SetupStep, forward: Bool) {
+        blocker = nil
+        cameForward = forward
+        visit += 1
+        withAnimation(.easeInOut(duration: 0.32)) { step = s }
     }
 
-    // MARK: Steps
-
-    @ViewBuilder private var content: some View {
-        switch step {
-        case .welcome:
-            StepHead(symbol: "sparkles", title: "Welcome to Dream OS",
-                     text: "Dream OS turns your iPhone into your own streaming service: every movie and show in one beautiful place, ready to play in seconds. Setup takes about 15 minutes, and every step shows you how.")
-            VStack(spacing: PageSpace.row) {
-                PageInfoRow(title: "Everything in One Place", caption: "Movies, shows and anime from every service", lead: .symbol("square.grid.2x2"))
-                PageInfoRow(title: "Plays in Seconds", caption: "Straight from your own debrid account", lead: .symbol("bolt"))
-                PageInfoRow(title: "Made for Everyone at Home", caption: "Profiles, Kids limits and PINs", lead: .symbol("person.2"))
-            }
-            .padding(.top, 24)
-        case .intro:
-            StepHead(symbol: "hand.raised", title: "Before You Start", tags: ["Required"],
-                     text: "Dream OS doesn't include or host any movies, shows or sources. You connect your own accounts and add your own scraper repositories, and you're responsible for what you add.")
-            // What You'll Need (owner, 2026-10-28): what's required, what gives the full recommended experience, what
-            // each piece does and what it costs, before the steps ask for them.
-            PageSection(title: "What You'll Need", required: true).padding(.top, 24)
-            VStack(spacing: PageSpace.row) {
-                // TMDB is always a requirement (owner, 2026-10-28).
-                PageInfoRow(title: "A TMDB Key", caption: "Lets Dream show every poster, detail and search. Takes about 5 minutes", value: "Free")
-                PageInfoRow(title: "A Debrid Service", caption: "The paid account that streams what you watch, in full quality. About $3 to $12 a month",
-                            value: "Paid")
-                PageInfoRow(title: "A Scraper Repository", caption: "A web address for the add-ons that find streams for your debrid service",
-                            value: "Free")
-            }
-            .padding(.top, 10)
-            PageSection(title: "For the Full Viewing Experience").padding(.top, 22)
-            VStack(spacing: PageSpace.row) {
-                PageInfoRow(title: "Premiumize", caption: "The debrid service with the fastest Play. TorBox works the same way",
-                            value: "Recommended")
-                PageInfoRow(title: "An OMDb Key", caption: Keys.omdb.isEmpty ? "Rotten Tomatoes and IMDb scores on every title"
-                            : "Rotten Tomatoes and IMDb scores on every title. Already included", value: "Free")
-                PageInfoRow(title: "Trakt", caption: "Your history, progress and watchlist, the same on every device and app", value: "Free")
-                PageInfoRow(title: "A Profile for Everyone", caption: "Their own Continue Watching, recommendations and Kids limits")
-            }
-            .padding(.top, 10)
-            PageNote(text: "Each step explains what it needs and shows you how, tap by tap. You'll make the keys and accounts on their own websites in Safari, and Dream keeps your place while you're away. Anything optional can be added later in Settings.", size: 13.5).padding(.top, 12)
-            PageSection(title: "Your Privacy").padding(.top, 24)
-            Text("Where your information goes:").font(.system(size: 16, weight: .medium)).foregroundStyle(Palette.text).padding(.top, 10).padding(.leading, 6)
-            VStack(spacing: PageSpace.row) {
-                ForEach([("TMDB", "Posters, artwork and details"), ("TVmaze", "New-episode air times"),
-                         ("Your Debrid Service", "Finds and plays what you choose"), ("Your Scrapers", "Searches only the sites you add"),
-                         ("Trakt", "Only if you link it")], id: \.0) { p in
-                    PageInfoRow(title: p.0, caption: p.1)
-                }
-            }
-            .padding(.top, 10)
-            PageNote(text: "A few free services provide extras such as subtitles. Dream OS has no ads, tracking or analytics.", size: 13.5).padding(.top, 12)
-        case .zone:
-            StepHead(symbol: "clock", title: "Your Time Zone", text: "Dream OS uses this to show when new episodes and movies come out.")
-            Text("\(DreamTime.label(DreamTime.zone))  ·  \(DreamTime.formatTime(Date()))")
-                .font(.system(size: 20, weight: .semibold)).foregroundStyle(Palette.text).padding(.top, 18).padding(.leading, 6)
-            TimeZoneList(selected: $zone) {}.padding(.top, 16)
-        case .accounts:
-            StepHead(symbol: "key", title: "Connect Your Accounts", tags: ["Required", "Paid", "About 5 Minutes"],
-                     text: "A debrid service is a paid online account that streams movies and shows to Dream in full quality, with no waiting. Dream needs one to play anything. Most cost about $3 to $12 a month.")
-            PageSection(title: "Which One to Pick").padding(.top, 22)
-            PageNote(text: SetupGuide.pickLine, size: 15).padding(.top, 8)
-            VStack(spacing: PageSpace.row) {
-                // Open until setup's check has passed once (owner: beginners shouldn't have to find the help).
-                SetupDisclosure(title: "Show Me How", caption: "Sign up, then connect it to Dream", symbol: "list.number",
-                                startOpen: !SetupGate.checkPassed) {
-                    GuideSteps(steps: SetupGuide.debridSteps())
-                }
-                SetupDisclosure(title: "If Something Goes Wrong", caption: "Expired codes, plans and keys", symbol: "questionmark.circle") {
-                    TroubleList(tips: SetupGuide.debridTrouble)
-                }
-            }
-            .padding(.top, 16)
-            AccountsList(inSetup: true) { Task { await refreshBlocker() } }.padding(.top, 26)
-            SetupDisclosure(title: "Show Me How to Connect Trakt", caption: "Optional and free. Add it now or later in Settings",
-                            symbol: "list.number") {
-                GuideSteps(steps: SetupGuide.traktSteps())
-            }
-            .padding(.top, 10)
-        case .scrapers:
-            StepHead(symbol: "magnifyingglass", title: "Set Up Scrapers", tags: ["Required", "Free", "About 2 Minutes"],
-                     text: "Scrapers are free add-ons that search the web for streams of what you pick, so your debrid service can play them. They come in a repository: a web address you add here. Dream OS doesn't include any.")
-            AddressExamples().padding(.top, 22)
-            PageNote(text: "Repositories are shared by the people who make them, usually on a web page or on GitHub. If someone told you about Dream, ask them for the address they use.", size: 15)
-                .padding(.top, 12)
-            VStack(spacing: PageSpace.row) {
-                SetupDisclosure(title: "Show Me How", caption: "Add it, then choose your providers", symbol: "list.number",
-                                startOpen: !SetupGate.checkPassed) {
-                    GuideSteps(steps: SetupGuide.scraperSteps)
-                }
-                SetupDisclosure(title: "If Something Goes Wrong", caption: "Addresses that won't install", symbol: "questionmark.circle") {
-                    TroubleList(tips: SetupGuide.scraperTrouble)
-                }
-            }
-            .padding(.top, 16)
-            ScrapersList { Task { await refreshBlocker() } }.padding(.top, 26)
-        case .playback:
-            // SetupWizard.playbackStep: the Sources & Quality page's own groups, saved the moment they change.
-            StepHead(symbol: "slider.horizontal.3", title: "Playback Preferences", tags: ["Optional"],
-                     text: "Choose picture quality, languages, subtitles and sound. The defaults suit most people.")
-            SourcesQualityRows().padding(.top, 22)
-        case .check:
-            StepHead(symbol: "checkmark.seal", title: "Getting You Ready", tags: ["Required", "About 30 Seconds"],
-                     text: "Dream OS runs one real search with your debrid service and scrapers, so you know everything works before you start watching.")
-            VStack(alignment: .leading, spacing: 10) {
-                if SetupGate.checkPassed && check == nil {
-                    PageResult(mark: .ok, headline: "Ready to Watch")
-                } else if checking {
-                    PageResult(mark: .busy, headline: "Checking…")
-                    if !checkLine.isEmpty { PageNote(text: checkLine, size: 14) }
-                } else if let r = check {
-                    PageResult(mark: r.ok ? .ok : .warn, headline: r.ok ? "Found \(r.found) Sources  ·  \(r.ready) Ready to Play" : "Not Quite Ready")
-                    PageNote(text: r.message, size: 14)
-                    if !r.ok { ErrorHelp(lines: SetupGuide.checkHelp(r.message)).padding(.top, 6) }
-                }
-                // After the check passes: a short speed test, with "Use 1080p" when it's too slow for Maximum Quality.
-                if SetupGate.checkPassed && !checking {
-                    SetupSpeedCard().padding(.top, 16)
-                }
-                if !SetupGate.checkPassed && !checking && check == nil {
-                    SetupDisclosure(title: "Show Me How", caption: "What happens when you check", symbol: "list.number", startOpen: true) {
-                        GuideSteps(steps: SetupGuide.checkSteps)
-                    }
-                }
-            }
-            .padding(.top, 24)
-        case .profile:
-            StepHead(symbol: "person.crop.circle", title: "Create Your Profile", text: "A name and a picture. Each profile keeps its own list, history and look.")
-            HStack(spacing: 16) {
-                ProfileFace(emoji: emoji, color: color, size: 72)
-                PageTextField(placeholder: "Your Name", text: $name, capitalization: .words)
-            }
-            .padding(.top, 22)
-            LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 8), count: 6), spacing: 10) {
-                ForEach(ProfileLook.emojis, id: \.self) { e in
-                    Button { PageHaptics.select(); emoji = e } label: {
-                        Text(e).font(.system(size: 26)).frame(width: 48, height: 48)
-                            .background(Circle().fill(Color.white.opacity(e == emoji ? 0.16 : 0.05)))
-                            .overlay(Circle().strokeBorder(e == emoji ? Palette.pearl.opacity(0.7) : .clear, lineWidth: 1.5))
-                    }
-                    .buttonStyle(CardPressStyle(radius: 24))
-                }
-            }
-            .padding(.top, 18)
-            HStack(spacing: 12) {
-                ForEach(ProfileLook.colors, id: \.self) { c in
-                    Button { PageHaptics.select(); color = c } label: {
-                        Circle().fill(Color(hex: UInt32(c))).frame(width: 32, height: 32)
-                            .overlay { if c == color { PageCheck(color: .white, weight: 0.11).frame(width: 32, height: 32) } }
-                    }
-                    .buttonStyle(CardPressStyle(radius: 16))
-                }
-            }
-            .padding(.top, 14)
-        case .who:
-            StepHead(symbol: "person.2", title: "Who's Watching?", tags: ["Optional"],
-                     text: "Add a profile for everyone at home. A Kids profile only shows movies and shows up to the rating you choose.")
-            WhoList().padding(.top, 22)
-        case .content:
-            StepHead(symbol: "film", title: "Connect Movie & Show Info", tags: ["Required", "Free", "About 5 Minutes"],
-                     text: Keys.tmdb.isEmpty
-                        ? "TMDB is a free movie and TV website. Every poster, detail and search in Dream comes from it, so Dream needs your own free TMDB key before it can show anything."
-                        : "TMDB is a free movie and TV website. Every poster, detail and search in Dream comes from it. Your TMDB key is added, so you can continue.")
-            PageSection(title: "Your TMDB Key", required: true).padding(.top, 22)
-            VStack(spacing: PageSpace.row) {
-                NavigationStackLink(title: "Movie & Show Info", caption: "Posters, details and search", kind: .tmdb)
-                SetupDisclosure(title: "Show Me How", caption: "Get your free key from TMDB", symbol: "list.number",
-                                startOpen: Keys.tmdb.isEmpty) {
-                    GuideSteps(steps: SetupGuide.tmdbSteps, intro: SetupGuide.tmdbIntro)
-                }
-                SetupDisclosure(title: "If Something Goes Wrong", caption: "Keys that don't work", symbol: "questionmark.circle") {
-                    TroubleList(tips: SetupGuide.tmdbTrouble)
-                }
-            }
-            .padding(.top, 10)
-            PageSection(title: "Ratings", required: false).padding(.top, PageSpace.group)
-            PageNote(text: "A free OMDb key adds Rotten Tomatoes and IMDb scores to every title. You can add it now or later in Settings.", size: 15)
-                .padding(.top, 8)
-            VStack(spacing: PageSpace.row) {
-                NavigationStackLink(title: "Ratings", caption: "Rotten Tomatoes and IMDb scores", kind: .omdb)
-                SetupDisclosure(title: "Show Me How", caption: "Get your free key from OMDb", symbol: "list.number") {
-                    VStack(alignment: .leading, spacing: 22) {
-                        GuideSteps(steps: SetupGuide.omdbSteps)
-                        VStack(alignment: .leading, spacing: 12) {
-                            PageSection(title: "If Something Goes Wrong").padding(.leading, -6)
-                            TroubleList(tips: SetupGuide.omdbTrouble)
-                        }
-                    }
-                }
-            }
-            .padding(.top, 10)
-        case .done:
-            VStack(spacing: 14) {
-                ProfileFace(emoji: emoji, color: color, size: 100).padding(.top, 30)
-                Text(name.isEmpty ? "You're All Set" : "You're All Set, \(name)")
-                    .font(.system(size: 30, weight: .bold)).foregroundStyle(Palette.text).multilineTextAlignment(.center)
-                Text("Change anything anytime in Settings.").font(.system(size: 16)).foregroundStyle(Palette.textSecondary)
-                DoneChecks().padding(.top, 14)
-            }
-            .frame(maxWidth: .infinity)
-        }
+    /// The one line that says what's missing, with a short shake (never a disabled button).
+    func block(_ why: String) {
+        PageHaptics.warning()
+        withAnimation(.easeOut(duration: 0.2)) { blocker = why }
+        withAnimation(.linear(duration: 0.4)) { shake += 1 }
     }
 
-    // MARK: Flow
+    func complete() async {
+        SetupGate.isDone = true
+        SetupGate.savedStep = nil
+        SetupGate.currentStep = nil
+        PageHaptics.success()
+        withAnimation(.easeOut(duration: 0.4)) { celebrating = true }
+        try? await Task.sleep(for: .seconds(2.6))
+        finish()
+    }
 
-    private func prepare() async {
+    func load() async {
         me = await Services.shared.profiles.current()
         if let me {
             name = (firstRun && me.name == "Me") ? "" : me.name
@@ -421,279 +173,168 @@ struct SetupWizardView: View {
         }
         guard firstRun, !SetupGate.restored else { return }
         SetupGate.restored = true
-        if let c = SetupGate.currentStep, let cur = Step(rawValue: c), steps.contains(cur) {
+        if let c = SetupGate.currentStep, let cur = SetupStep(rawValue: c), cur != .welcome {
             step = cur // reopens exactly where the viewer was
-        } else if let s = SetupGate.savedStep, let saved = Step(rawValue: s),
-           let i = steps.firstIndex(of: saved), i + 1 < steps.count {
-            step = steps[i + 1] // an interrupted setup picks up after the last finished step
+        } else if let s = SetupGate.savedStep, let saved = SetupStep(rawValue: s),
+                  let i = Self.order.firstIndex(of: saved), i + 1 < Self.order.count {
+            step = Self.order[i + 1] // an interrupted setup picks up after the last finished step
         }
-    }
-
-    private func back() {
-        guard index > 0 else { return }
-        blocker = nil
-        forward = false
-        withAnimation(.easeInOut(duration: 0.32)) { step = steps[index - 1] }
-    }
-
-    private func refreshBlocker() async {
-        guard blocker != nil else { return }
-        blocker = await blockerFor(step)
-    }
-
-    private func blockerFor(_ s: Step) async -> String? {
-        switch s {
-        case .accounts: return await SetupGate.accountsBlocker()
-        case .scrapers: return await SetupGate.scrapersBlocker()
-        case .check: return SetupGate.checkPassed ? nil : "Run the check to continue."
-        case .profile: return name.trimmingCharacters(in: .whitespaces).isEmpty ? "Type your name first." : nil
-        case .content: return Keys.tmdb.trimmingCharacters(in: .whitespaces).isEmpty ? "Add your TMDB key to continue." : nil
-        default: return nil
-        }
-    }
-
-    private func next(skipping: Bool = false) async {
-        if step == .check && !SetupGate.checkPassed && !skipping { await runCheck(); return }
-        if !skipping, let why = await blockerFor(step) {
-            PageHaptics.warning()
-            withAnimation(.easeOut(duration: 0.2)) { blocker = why }
-            withAnimation(.linear(duration: 0.4)) { shake += 1 }
-            return
-        }
-        blocker = nil
-        switch step {
-        case .intro: SetupGate.introAccepted = true
-        case .profile where !skipping: await saveProfile()
-        case .done:
-            SetupGate.isDone = true
-            SetupGate.savedStep = nil
-            PageHaptics.success()
-            withAnimation(.easeOut(duration: 0.4)) { celebrating = true }
-            try? await Task.sleep(for: .seconds(2.6))
-            finish()
-            return
-        default: break
-        }
-        SetupGate.savedStep = step.rawValue
-        forward = true
-        PageHaptics.tap()
-        withAnimation(.easeInOut(duration: 0.32)) { step = steps[min(index + 1, steps.count - 1)] }
-    }
-
-    private func saveProfile() async {
-        let n = name.trimmingCharacters(in: .whitespaces)
-        guard !n.isEmpty else { return }
-        var p = me ?? Profile(id: "p1", name: n)
-        p.name = String(n.prefix(20))
-        p.avatar = emoji
-        p.color = color
-        try? await Services.shared.profiles.save(p, pin: nil)
-        me = p
-        NotificationCenter.default.post(name: .dreamProfileChanged, object: nil)
-    }
-
-    private func runCheck() async {
-        guard !checking else { return }
-        checking = true
-        checkLine = ""
-        blocker = nil
-        let r = await PagesServices.scrapers.test { msg in Task { @MainActor in checkLine = msg } }
-        SetupGate.checkPassed = r.ok
-        check = r
-        checking = false
-        if r.ok { PageHaptics.success() } else { PageHaptics.warning() }
     }
 }
 
-/// A step's illustration, title, its facts ("Required", "Free", "About 5 Minutes") and one plain explanation.
-private struct StepHead: View {
-    var symbol: String
-    var title: String
-    var tags: [String] = []
-    var text: String
+/// First-run setup (setup-redesign.md, adapted to touch). Steps are in `SetupFlow.order`; chapters in `SetupStep`.
+struct SetupWizardView: View {
+    @State private var flow: SetupFlow
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    init(firstRun: Bool, finish: @escaping () -> Void) {
+        _flow = State(initialValue: SetupFlow(firstRun: firstRun, finish: finish))
+    }
+
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            PageArt(symbol: symbol, size: 84)
-            Text(title).font(.system(size: 30, weight: .bold)).tracking(-0.3).foregroundStyle(Palette.text).padding(.top, 8)
-                .fixedSize(horizontal: false, vertical: true)
-            if !tags.isEmpty {
-                MetaFlow(spacing: 8, lineSpacing: 8) {
-                    ForEach(Array(tags.enumerated()), id: \.offset) { i, t in
-                        SetupTag(text: t, strong: i == 0 && t == "Required")
+        @Bindable var flow = flow
+        NavigationStack(path: $flow.path) {
+            root
+                .toolbar(.hidden, for: .navigationBar)
+                .navigationDestination(for: SetupPage.self) { page(for: $0) }
+        }
+        .dreamNavigationLook()
+        .environment(flow)
+        .dynamicTypeSize(...DynamicTypeSize.xxLarge)
+        .preferredColorScheme(.dark)
+        .onChange(of: flow.step) { _, s in if flow.firstRun { SetupGate.currentStep = s == .done ? nil : s.rawValue } }
+        .task { await flow.load() }
+    }
+
+    private var root: some View {
+        ZStack {
+            DreamBackground()
+            if flow.celebrating {
+                Celebration(name: flow.name).transition(.opacity)
+            } else {
+                VStack(spacing: 0) {
+                    topBar
+                    ZStack {
+                        stepView
+                            .id(flow.step)
+                            .transition(reduceMotion ? .opacity
+                                        : .asymmetric(insertion: .move(edge: flow.cameForward ? .trailing : .leading).combined(with: .opacity),
+                                                      removal: .opacity))
+                    }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    // Swiping in from the left edge goes back one step, like a pushed page.
+                    .overlay(alignment: .leading) {
+                        if flow.index > 0 {
+                            Color.clear
+                                .frame(width: 16)
+                                .contentShape(Rectangle())
+                                .gesture(DragGesture(minimumDistance: 12).onEnded { g in
+                                    if g.translation.width > 70, abs(g.translation.height) < 80 { flow.back() }
+                                })
+                                .accessibilityHidden(true)
+                        }
                     }
                 }
             }
-            Text(text).font(.system(size: 16)).foregroundStyle(Palette.textSecondary).lineSpacing(3).fixedSize(horizontal: false, vertical: true)
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private var topBar: some View {
+        HStack(spacing: 8) {
+            Button {
+                flow.back()
+            } label: {
+                Image(systemName: "chevron.left")
+                    .font(.system(size: 18, weight: .semibold))
+                    .frame(width: 44, height: 44)
+                    .contentShape(Rectangle())
+            }
+            .foregroundStyle(Palette.text)
+            .opacity(flow.index > 0 ? 1 : 0)
+            .disabled(flow.index == 0)
+            .accessibilityLabel("Back")
+            if let c = flow.step.chapter {
+                ChapterRail(chapter: c, fraction: flow.chapterFraction, counterText: flow.counter)
+                    .padding(.top, 6)
+                    .padding(.trailing, flow.firstRun ? 12 : 0)
+            } else {
+                Spacer()
+            }
+            // First run has no Close, so the four chapter labels get that room.
+            if !flow.firstRun {
+                Button("Close") { flow.finish() }
+                    .font(.body.weight(.medium))
+                    .foregroundStyle(Palette.text)
+                    .frame(minWidth: 44, minHeight: 44)
+            } else if flow.step.chapter == nil {
+                Color.clear.frame(width: 44, height: 44)
+            }
+        }
+        .padding(.horizontal, 8)
+    }
+
+    @ViewBuilder private var stepView: some View {
+        switch flow.step {
+        case .welcome: WelcomeStep()
+        case .intro: NeedStep()
+        case .zone: ZoneStep()
+        case .content: TMDBStep()
+        case .accounts: DebridStep()
+        case .scrapers: ScrapersStep()
+        case .check: CheckStep()
+        case .unlock: FireStickStep()
+        case .alerts: AlertsStep()
+        case .saver: SaverStep()
+        case .profile: ProfileStep()
+        case .who: WhoStep()
+        case .playback: PictureSoundStep()
+        case .extras: ExtrasStep()
+        case .done: DoneStep()
+        }
+    }
+
+    @ViewBuilder private func page(for p: SetupPage) -> some View {
+        switch p {
+        case .zones:
+            TimeZonePickPage()
+        case .quality:
+            PageChoiceList(title: "Maximum Quality",
+                           note: "Dream OS plays the best video up to this quality. Choose a lower one if videos pause to load.",
+                           options: PlaybackPrefs.qualities.map { .init(id: $0.id, label: $0.label) },
+                           current: { PlaybackPrefs.quality ?? "" }) { PlaybackPrefs.setQuality($0) }
+        case .audio:
+            PageChoiceList(title: "Audio Language", note: nil,
+                           options: PlaybackPrefs.audio.map { .init(id: $0.code, label: $0.name) },
+                           current: { PlaybackPrefs.audioLang }) { PlaybackPrefs.setAudioLang($0) }
+        case .allSourceSettings:
+            SourcesQualityView()
+        case .manageScrapers:
+            ScrapersView()
+        case .unlockFireStick:
+            UnlockFireStickView()
+        }
     }
 }
 
-/// A key row that opens the key page in a sheet (setup has no navigation stack of its own).
-private struct NavigationStackLink: View {
-    var title: String
-    var caption: String
-    var kind: KeyEntryView.Kind
-    @State private var open = false
-    @State private var set = false
-    var body: some View {
-        // TMDB has no built-in key (Keys.tmdb is the viewer's own); OMDb may.
-        PageRow(title: title, caption: caption, value: set ? "Added" : (kind == .tmdb || Keys.omdb.isEmpty ? "Not Added" : "Built In"),
-                valueTone: set ? Palette.greenText : nil,
-                trailingMark: set ? .ok : .none, chevron: true) { open = true }
-            .onAppear { set = SecureStore.get(kind.store) != nil }
-            .sheet(isPresented: $open, onDismiss: { set = SecureStore.get(kind.store) != nil }) {
-                NavigationStack { KeyEntryView(kind: kind).toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { open = false } } } }
-                    .dreamNavigationLook()
-                    .presentationBackground(Palette.page)
-            }
-    }
-}
+/// The time zone list on its own page: picking one saves it, comes back and moves on.
+private struct TimeZonePickPage: View {
+    @Environment(SetupFlow.self) private var flow
+    @State private var selected: String? = DreamTime.isAutomatic ? nil : DreamTime.zone.identifier
 
-/// Who's Watching in setup: every profile, Add a Profile (ProfilesPages.overview).
-private struct WhoList: View {
-    @State private var profiles: [Profile] = []
-    @State private var current: String?
-    @State private var edit: ProfilePickerView.EditTarget?
     var body: some View {
-        VStack(spacing: PageSpace.row) {
-            ForEach(Array(profiles.enumerated()), id: \.element.id) { i, p in
-                PageRow(title: p.name.isEmpty ? "Profile" : p.name, caption: ProfileLook.caption(p, current: current),
-                        lead: .custom(AnyView(ProfileFace(emoji: ProfileLook.emoji(p, index: i), color: ProfileLook.color(p, index: i), size: 40))),
-                        chevron: true) { edit = .existing(p) }
-            }
-            if profiles.count < ProfileLook.maxProfiles {
-                PageRow(title: "Add a Profile", caption: "For someone else at home, or a Kids profile", lead: .symbol("plus"), chevron: true) { edit = .add }
-            }
-            PageNote(text: "Each profile keeps its own list, history and look.", size: 14).padding(.top, 10)
-        }
-        .task { await load() }
-        .sheet(item: $edit) { t in
-            NavigationStack {
-                switch t {
-                case .existing(let p): ProfileEditView(profile: p, isFirst: profiles.first?.id == p.id, isCurrent: p.id == current) { Task { await load() } }
-                case .add: ProfileEditView(profile: nil, isFirst: false, isCurrent: false) { Task { await load() } }
+        PageScaffold(title: "Time Zone", subtitle: "Dream OS uses this to show when new episodes and movies come out.") {
+            TimeZoneList(selected: $selected) {
+                Task { @MainActor in
+                    try? await Task.sleep(for: .milliseconds(250))
+                    flow.path.removeAll()
+                    flow.forward(after: 0.45)
                 }
             }
-            .dreamNavigationLook()
-            .presentationBackground(Palette.page)
-        }
-    }
-    private func load() async {
-        profiles = await Services.shared.profiles.profiles()
-        current = await Services.shared.profiles.current()?.id
-    }
-}
-
-/// The final check's connection card (DreamSetupMore.kt `SpeedCard`): the gauge, "Your Connection  ·  85 Mbps  ·  Great
-/// for 4K", and a one-tap "Use 1080p" when the speed is too slow for the chosen Maximum Quality. The test starts when
-/// the card appears and stops if the step is left.
-private struct SetupSpeedCard: View {
-    @State private var gauge = 0.0
-    @State private var head = "Your Connection"
-    @State private var line = "Testing your connection…"
-    @State private var better: String?
-
-    var body: some View {
-        HStack(alignment: .center, spacing: 16) {
-            SpeedGauge(gauge: gauge).frame(width: 64, height: 64)
-            VStack(alignment: .leading, spacing: 4) {
-                Text(head).font(.system(size: 17, weight: .semibold)).foregroundStyle(Palette.text)
-                    .fixedSize(horizontal: false, vertical: true)
-                Text(line).font(.system(size: 14)).foregroundStyle(Palette.textSecondary)
-                    .fixedSize(horizontal: false, vertical: true)
-                if let better {
-                    Button("Use \(PlaybackPrefs.qualityLabel(better))") { use(better) }
-                        .buttonStyle(PearlButtonStyle())
-                        .padding(.top, 8)
-                }
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-        }
-        .padding(.leading, 14).padding(.trailing, 18).padding(.vertical, 12)
-        .background(RoundedRectangle(cornerRadius: 16, style: .continuous).fill(Color.white.opacity(0.045)))
-        .overlay(RoundedRectangle(cornerRadius: 16, style: .continuous).strokeBorder(Color.white.opacity(0.08), lineWidth: 1))
-        .task { await run() }
-    }
-
-    /// Log scale: 1 Mbps near the start, 200 Mbps at the end.
-    private static func position(_ mbps: Double) -> Double { min(1, max(0, log(1 + mbps) / log(201))) }
-
-    private func run() async {
-        head = "Your Connection"
-        line = "Testing your connection…"
-        better = nil
-        let mbps = await SpeedTest.measure(seconds: 4) { v in
-            withAnimation(.easeInOut(duration: 0.24)) { gauge = Self.position(v) }
-            line = "Testing…  \(Int(v)) Mbps"
-        }
-        if Task.isCancelled { return }
-        guard let mbps else {
-            withAnimation(.easeInOut(duration: 0.4)) { gauge = 0 }
-            line = "The speed test couldn't run right now. Everything else is ready."
-            return
-        }
-        PlaybackPrefs.lastSpeed = mbps
-        withAnimation(.easeInOut(duration: 0.6)) { gauge = Self.position(mbps) }
-        head = "Your Connection  ·  \(Int(mbps)) Mbps  ·  \(SpeedTest.verdict(mbps))"
-        // Not chosen yet ("Automatic"): Dream Core allows up to 4K, so the card measures against that.
-        let q = PlaybackPrefs.quality ?? "4k"
-        let label = PlaybackPrefs.qualityLabel(q)
-        if let b = SpeedTest.suggestion(q, mbps) {
-            line = "Too slow for smooth \(label). \(PlaybackPrefs.qualityLabel(b)) will play more smoothly."
-            withAnimation(.easeOut(duration: 0.25)) { better = b }
-        } else {
-            line = PlaybackPrefs.quality == nil ? "Fast enough for \(label)." : "Fast enough for \(label), your Maximum Quality."
-        }
-    }
-
-    private func use(_ q: String) {
-        PageHaptics.success()
-        PlaybackPrefs.setQuality(q)
-        line = "Maximum Quality is now \(PlaybackPrefs.qualityLabel(q)). Change it anytime in Settings."
-        withAnimation(.easeOut(duration: 0.25)) { better = nil }
-    }
-}
-
-/// SetupArt's speed gauge with its needle eased between readings.
-private struct SpeedGauge: View, Animatable {
-    var gauge: Double
-    nonisolated var animatableData: Double {
-        get { gauge }
-        set { gauge = newValue }
-    }
-    var body: some View { SetupArt(.speed, size: 64, gauge: gauge) }
-}
-
-/// The summary on You're All Set: a drawn check when done, a quiet ring when not.
-private struct DoneChecks: View {
-    @State private var items: [(String, Bool)] = []
-    var body: some View {
-        MetaFlow(spacing: 10, lineSpacing: 10) {
-            ForEach(items, id: \.0) { it in
-                HStack(spacing: 8) {
-                    PageMarkGlyph(mark: it.1 ? .ok : .off, size: 15)
-                    Text(it.0).font(.system(size: 13.5, weight: .medium)).foregroundStyle(it.1 ? Palette.text : Palette.textSecondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-                .padding(.horizontal, 14).padding(.vertical, 8)
-                .background(Capsule().fill(Color.white.opacity(0.06)))
-            }
-        }
-        .task {
-            let accounts = await SetupGate.accountsBlocker() == nil
-            let scrapers = await PagesServices.scrapers.status().ready
-            let omdb = SecureStore.get("omdb.key") != nil
-            items = [("Profile", true),
-                     (accounts ? "Accounts Connected" : "Accounts", accounts),
-                     (scrapers ? "Scrapers Ready" : "Scrapers", scrapers),
-                     (SetupGate.checkPassed ? "Ready to Watch" : "Final Check", SetupGate.checkPassed),
-                     (omdb ? "Your Ratings Key" : "Built-In Ratings", true)]
         }
     }
 }
 
-/// The send-off: "You're All Set" in the middle, the rainbow halo, "Welcome to Dream OS".
+/// The send-off: "Dream OS" in the middle, the rainbow halo, "Welcome to Dream OS".
 struct Celebration: View {
     var name: String
     @State private var on = false

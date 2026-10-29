@@ -13,6 +13,8 @@ struct BrowseView: View {
     @State private var showsArt: URL?
     @State private var moviesArt: URL?
     @State private var loaded = false
+    /// The last full load (its reload token and time): coming back from a genre or service page doesn't ask again.
+    @State private var lastLoad: (token: Int, at: Date)?
 
     var body: some View {
         GeometryReader { geo in
@@ -103,6 +105,7 @@ struct BrowseView: View {
     }
 
     private func load() async {
+        if let l = lastLoad, l.token == shell.reloadToken, Date().timeIntervalSince(l.at) < 600 { return }
         let c = Services.shared.catalog
         // The tiles wear the art Movies and TV Shows showed last time at once (their snapshots), then today's.
         if showsArt == nil { showsArt = PageSnapshots.get(.shows)?.hero.first { $0.title.backdropPath != nil }?.title.backdrop("w780") }
@@ -118,5 +121,7 @@ struct BrowseView: View {
         loaded = true
         if let u = (await shows)?.first(where: { $0.title.backdropPath != nil })?.title.backdrop("w780"), u != showsArt { showsArt = u }
         if let u = (await movies)?.first(where: { $0.title.backdropPath != nil })?.title.backdrop("w780"), u != moviesArt { moviesArt = u }
+        // An empty answer (offline) is asked again on the next visit.
+        if !Task.isCancelled, !genres.isEmpty || !services.isEmpty { lastLoad = (shell.reloadToken, Date()) }
     }
 }

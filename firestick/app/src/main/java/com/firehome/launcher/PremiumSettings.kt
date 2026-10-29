@@ -745,6 +745,9 @@ class PremiumSettings(
         val old = data
         data = sections
         built.clear() // new section objects; the rows on screen are kept or rebuilt below
+        // The other sections' rows are built ahead again (prebuild stops once every section had them).
+        root.removeCallbacks(prebuild)
+        if (!closing) root.postDelayed(prebuild, PREBUILD_STEP)
         val catsChanged = old.size != sections.size || old.indices.any { old[it].title != sections[it].title || old[it].icon != sections[it].icon || old[it].badge != sections[it].badge }
         if (shown !in sections.indices) shown = 0
         if (catsChanged) {

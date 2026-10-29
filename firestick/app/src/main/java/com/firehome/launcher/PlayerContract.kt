@@ -37,7 +37,8 @@ object StreamUrls {
         val parts = path.substringAfterLast('/').substringBefore('?').split('.')
         if (parts.size < 3) return null
         return parts.subList(1, parts.size - 1).lastOrNull { p ->
-            p.all(Char::isLetter) && (p.length in 2..3 && p.lowercase() == p || p.length > 3 && p[0].isUpperCase()) &&
+            // A long word only when it is a language's name ("English"): "BluRay" or "Movie" in a release name isn't one.
+            p.all(Char::isLetter) && (p.length in 2..3 && p.lowercase() == p || p.length > 3 && p[0].isUpperCase() && AudioLanguages.codeForName(p) != null) &&
                 !p.equals("forced", true) && !p.equals("sdh", true)
         }
     }
@@ -92,7 +93,6 @@ interface PlayerEngine {
     fun tracks(kind: String): List<Track>
     /** Selects a track; for "text", null turns subtitles off. */
     fun selectTrack(kind: String, id: String?)
-    fun addExternalSubtitle(uri: String, language: String?, label: String?)
     /** Short stream description, e.g. "2160p · HEVC · HDR10 · E-AC3 5.1". */
     fun videoInfo(): String
     fun addListener(l: Listener)

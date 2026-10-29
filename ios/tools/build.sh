@@ -2,10 +2,12 @@
 # Compile check in WSL. Usage (from Windows: wsl -e bash -lc '...'):
 #   build.sh <worker> [target]   copies app/ to ~/dreamos-ios/<worker>/ and builds one module (default: whole app)
 # Each worker uses its own <worker> name so builds never share a .build folder.
-# Source of truth stays in app/; never edit the WSL copy.
+# Source of truth stays in app/; never edit the WSL copy. A git worktree builds its own app/ (the one
+# next to this script), so a worker on a branch compiles its branch.
 set -o pipefail
 worker="${1:?worker name}"; target="${2:-}"
 src="$(cd "$(dirname "$0")/.." && pwd)/app/"
+[ -f "${src}Package.swift" ] || { echo "No app/Package.swift next to $0"; exit 1; }
 dst="$HOME/dreamos-ios/$worker"
 mkdir -p "$dst"
 rsync -a --delete --exclude .build --exclude .swiftpm --exclude xtool "$src" "$dst/"

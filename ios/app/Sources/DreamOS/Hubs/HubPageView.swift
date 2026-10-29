@@ -44,9 +44,11 @@ struct HubPageView: View {
         // Dream's black glass (BarGlass): up by the time the masthead reaches Back.
         .barGlass(bar)
         .toolbarRole(.editor)
+        // `start`, like every catalog page: the fill is the model's own task, so opening a title never cuts it short,
+        // and coming back doesn't fetch every row again.
         .task {
             hub = await Services.shared.catalog.hub(id: id)
-            await model.load()
+            model.start()
         }
         .refreshable {
             hub = await Services.shared.catalog.hub(id: id)

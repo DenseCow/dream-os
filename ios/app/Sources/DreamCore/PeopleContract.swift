@@ -4,7 +4,7 @@ import Foundation
 // (an episode's own cast and guest stars), and one person's facts, biography and best-known titles.
 // The requirements are declared in `CatalogService` (Services.swift); the defaults below keep every module building.
 
-/// One person (XRayData.Person): "Jan 5, 1970 – Jan 1, 2020  ·  Place" / "Born Jan 5, 1970", the biography, and their
+/// One person (XRayData.Person): "January 5, 1970 – January 1, 2020  ·  Place" / "Born January 5, 1970", the biography, and their
 /// best-known titles (combined credits, no self / host / narrator roles, no talk or news shows, posters only, by
 /// votes: only titles with 20+ votes when at least four have them, 14 at most).
 public struct PersonDetails: Codable, Sendable, Hashable, Identifiable {

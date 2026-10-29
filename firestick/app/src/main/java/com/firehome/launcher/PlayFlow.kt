@@ -209,25 +209,29 @@ object PlayFlow {
     class NextUp(val request: PlaybackRequest, val still: String?, val overview: String, val runtimeMin: Int)
 
     /**
-     * The episode after [r] from TMDB season data (rolls over to the next season's first episode),
-     * or null at the end of the series / when the next one hasn't aired. Blocking.
+     * The aired episode after [season] [episode] of show [showId] and the season it's in: the next one in that season,
+     * else the lowest episode of the next season the show lists (specials, season 0, never count). Null at the end
+     * of the series or when it hasn't aired. Continue Watching's Up Next uses the same rule. Blocking.
      */
-    fun nextEpisode(ctx: Context, r: PlaybackRequest): NextUp? {
-        if (r.type != "episode") return null
-        val season = r.season ?: return null
-        val episode = r.episode ?: return null
+    fun episodeAfter(ctx: Context, showId: Int, season: Int, episode: Int): Pair<Int, JSONObject>? {
         val today = DreamTime.todayYmd(ctx)
         fun aired(ep: JSONObject) = ep.optString("air_date").let { it.isNotEmpty() && it != "null" && it <= today }
         var s = season
-        var next = WatchHistory.seasonEpisodes(ctx, r.tmdbId, season)?.firstOrNull { it.optInt("episode_number") == episode + 1 }
+        var next = WatchHistory.seasonEpisodes(ctx, showId, season)?.firstOrNull { it.optInt("episode_number") == episode + 1 }
         if (next == null) {
-            // The next season the show lists (specials, season 0, never count).
-            val seasons = WatchHistory.details(ctx, "tv", r.tmdbId)?.optJSONArray("seasons")
+            val seasons = WatchHistory.details(ctx, "tv", showId)?.optJSONArray("seasons")
             s = seasons?.let { a -> (0 until a.length()).map { a.getJSONObject(it).optInt("season_number") }.filter { it > season }.minOrNull() }
                 ?: return null
-            next = WatchHistory.seasonEpisodes(ctx, r.tmdbId, s)?.minByOrNull { it.optInt("episode_number") }
+            next = WatchHistory.seasonEpisodes(ctx, showId, s)?.minByOrNull { it.optInt("episode_number") }
         }
         if (next == null || !aired(next)) return null
+        return s to next
+    }
+
+    /** The episode after [r] ([episodeAfter]), or null at the end of the series / when the next one hasn't aired. Blocking. */
+    fun nextEpisode(ctx: Context, r: PlaybackRequest): NextUp? {
+        if (r.type != "episode") return null
+        val (s, next) = episodeAfter(ctx, r.tmdbId, r.season ?: return null, r.episode ?: return null) ?: return null
         val req = r.copy(season = s, episode = next.optInt("episode_number"), episodeTitle = next.optString("name").ifEmpty { null }, startMs = 0)
         return NextUp(req, img(next.optString("still_path"), "w500"), next.optString("overview"), next.optInt("runtime"))
     }
@@ -316,7 +320,7 @@ object PlayFlow {
         }
         if (Looper.myLooper() != Looper.getMainLooper()) return fast()
         ctx.startActivity(DreamPlayerActivity.intentFor(ctx, r))
-        Net.run(fast)
+        Net.runNow(fast)
     }
 
     /** The title's duration from the watch history (0 = unknown): where a resume position falls in the file. */
@@ -346,15 +350,15 @@ object PlayFlow {
         session?.let { if (!it.done) it.cancelled = true } // superseded
         val s = Session(req)
         session = s
-        Net.run {
+        Net.runNow {
             // Instant Play: a link that got ready in the meantime goes to the player now; a lookup for this very
             // title under way is joined by find() below; one for another title is dropped.
-            if (PreResolve.handOver(app, req)) return@run
+            if (PreResolve.handOver(app, req)) return@runNow
             val t0 = SystemClock.elapsedRealtime()
             // Concurrent lookups for the same title share one (a pre-resolve under way, the player's retry).
             val found = if (loose) NativeResolver.findLoose(app, req) else NativeResolver.find(app, req)
             val secs = (SystemClock.elapsedRealtime() - t0) / 100 / 10.0
-            if (s.cancelled || session !== s) return@run
+            if (s.cancelled || session !== s) return@runNow
             if (found != null) {
                 Log.w(TAG, "Play flow: Dream Core stream (${found.service.uppercase()} ${found.quality}) in $secs s")
                 // Nothing passed the user's filters (only a CAM copy, say): played anyway, with a short note.
@@ -365,14 +369,14 @@ object PlayFlow {
                 // Fast start: what the player reads before the first frame goes to disk first, in parallel (bounded).
                 NativeResolver.handing(found)
                 StreamCache.fastStart(app, found.url, emptyMap(), req.startMs, knownDuration(app, req), found.sizeBytes)
-                if (s.cancelled || session !== s) return@run
+                if (s.cancelled || session !== s) return@runNow
                 try {
                     app.startActivity(streamIntent(app, found.url, req, found.sizeBytes))
                 } catch (e: Exception) {
                     Log.w(TAG, "Play flow: couldn't open Dream Player with the Dream Core stream: $e")
                     fail(s, "couldn't open the player: $e")
                 }
-                return@run
+                return@runNow
             }
             when {
                 // Setup isn't finished: say what's missing (Settings has both).

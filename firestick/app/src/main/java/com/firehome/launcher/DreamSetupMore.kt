@@ -59,10 +59,19 @@ object PlaybackPrefs {
 
     val QUALITIES = listOf("4k" to "4K", "1080p" to "1080p", "720p" to "720p")
 
-    fun defaultQuality(ctx: Context) = if (screenIs4k(ctx)) "4k" else "1080p"
+    fun defaultQuality(ctx: Context) = if (DeviceVideo.plays4k(ctx)) "4k" else "1080p"
 
-    /** Maximum Quality: DreamFilters "quality.max" ("4k", "1080p", "720p", "sd"); the screen's best until chosen. */
-    fun quality(ctx: Context): String = DreamFilters.stored(ctx)["quality.max"]?.takeIf { it.isNotEmpty() } ?: defaultQuality(ctx)
+    /** The Maximum Quality choices this stick and TV can play. */
+    fun qualities(ctx: Context) = if (DeviceVideo.plays4k(ctx)) QUALITIES else QUALITIES.filter { it.first != "4k" }
+
+    /**
+     * Maximum Quality: DreamFilters "quality.max" ("4k", "1080p", "720p", "sd"); the screen's best until chosen.
+     * A 4K choice on a stick that can't play 4K reads as 1080p, which is what the resolver applies.
+     */
+    fun quality(ctx: Context): String {
+        val q = DreamFilters.stored(ctx)["quality.max"]?.takeIf { it.isNotEmpty() } ?: defaultQuality(ctx)
+        return if (q == "4k" && !DeviceVideo.plays4k(ctx)) "1080p" else q
+    }
 
     fun qualityLabel(q: String) = QUALITIES.firstOrNull { it.first == q }?.second ?: if (q == "sd") "SD" else q
 
@@ -182,9 +191,35 @@ internal class PlaybackPages(private val ctx: Context, private val ui: SetupUi, 
     private fun app() = ctx.applicationContext
     private val P = PlaybackPrefs
 
-    fun overview(): SetupScreen {
+    /**
+     * Setup's Change Settings: four rows (Picture, Sound, Subtitles, Source Size), each opening a short page of its
+     * own, so no page has to scroll on the TV. Settings shows the whole list at once ([overview]).
+     */
+    fun hub(): SetupScreen {
         P.ensureDefaults(app())
-        val s = SetupScreen(ui, null, null)
+        val s = SetupScreen(ui, "Playback Settings", null)
+        val rows = ScreenRows(s)
+        fun paint() {
+            rows.row("pic", 0) { parts.row(null, chevron = true) { panel.push(overview("pic")) } }
+                .set("Picture", "Maximum quality and AV1 videos", P.qualityLabel(P.quality(app())))
+            rows.row("sound", 8) { parts.row(null, chevron = true) { panel.push(overview("sound")) } }
+                .set("Sound", "Audio language, dubs and Dolby audio", P.audioLabel(app()))
+            rows.row("subs", 8) { parts.row(null, chevron = true) { panel.push(overview("subs")) } }
+                .set("Subtitles", "When they turn on and which language", if (P.subsOn(app())) P.subLabel(P.subLang(app()) ?: "English") else "Off")
+            rows.row("size", 8) { parts.row(null, chevron = true) { panel.push(sizes()) } }
+                .set("Source Size", "Skip files that are too large or too small")
+        }
+        s.onShow = { paint() }
+        s.focus = { rows.get("pic") }
+        return s
+    }
+
+    /** The playback settings: every group ([only] null, Settings), or one group as its own page ("pic", "sound", "subs"). */
+    fun overview(only: String? = null): SetupScreen {
+        P.ensureDefaults(app())
+        val s = SetupScreen(ui, when (only) { "pic" -> "Picture"; "sound" -> "Sound"; "subs" -> "Subtitles"; else -> null }, null)
+        fun on(group: String) = only == null || only == group
+        val all = only == null
         val rows = ScreenRows(s)
         lateinit var paint: () -> Unit
         fun switchRow(key: String, top: Int, value: () -> Boolean, flip: () -> Unit): BrandRow = rows.row(key, top) {
@@ -193,38 +228,46 @@ internal class PlaybackPages(private val ctx: Context, private val ui: SetupUi, 
             r
         }.also { it.sw?.set(value()) }
         paint = {
-            s.view("k:pic", 0) { parts.section("Picture", null) }
-            rows.row("quality", 10) { parts.row(null, chevron = true) { panel.push(qualityChooser()) } }
-                .set("Maximum Quality", if (P.screenIs4k(app())) "Your TV supports 4K" else "Your TV supports up to 1080p", P.qualityLabel(P.quality(app())))
-            switchRow("av1", 8, { P.hideAv1(app()) }) { P.setHideAv1(app(), !P.hideAv1(app())) }
-                .set("Hide AV1 Videos", "Some AV1 videos can restart this Fire TV")
-            s.view("k:sound", 24) { parts.section("Sound", null) }
-            rows.row("audio", 10) { parts.row(null, chevron = true) { panel.push(audioChooser()) } }
+            if (all) s.view("k:pic", 0) { parts.section("Picture", null) }
+            if (on("pic")) rows.row("quality", if (all) 10 else 0) { parts.row(null, chevron = true) { panel.push(qualityChooser()) } }
+                .set("Maximum Quality", if (DeviceVideo.plays4k(app())) "Your Fire Stick and TV can play 4K" else "Your Fire Stick and TV play up to 1080p", P.qualityLabel(P.quality(app())))
+            if (on("pic")) switchRow("av1", 8, { P.hideAv1(app()) }) { P.setHideAv1(app(), !P.hideAv1(app())) }
+                .set("Hide AV1 Videos", "Some AV1 videos can restart this Fire Stick")
+            if (all) s.view("k:sound", 24) { parts.section("Sound", null) }
+            if (on("sound")) rows.row("audio", if (all) 10 else 0) { parts.row(null, chevron = true) { panel.push(audioChooser()) } }
                 .set("Audio Language", "Preferred when a video has several", P.audioLabel(app()))
-            switchRow("dolby", 8, { P.passthrough(app()) }) { P.setPassthrough(app(), !P.passthrough(app())) }
+            // AnimeDubs.kt: a title in another language plays the viewer's dub when a copy has it. Nothing to dub when that language is Japanese.
+            if (!on("sound") || AnimeDubs.want(app()) == "ja") s.hide("dubs")
+            else switchRow("dubs", 8, { AnimeDubs.preferDubs(app()) }) { AnimeDubs.setPreferDubs(app(), !AnimeDubs.preferDubs(app())) }
+                .set(AnimeDubs.settingLabel(app()), "Plays the ${AnimeDubs.langName(AnimeDubs.want(app()))} dub when a copy has one.")
+            if (on("sound")) switchRow("dolby", 8, { P.passthrough(app()) }) { P.setPassthrough(app(), !P.passthrough(app())) }
                 .set("Dolby Audio to Your Soundbar", "Sends Dolby and DTS sound untouched to your soundbar or receiver")
-            s.view("k:subs", 24) { parts.section("Subtitles", null) }
-            switchRow("subs", 10, { P.subsOn(app()) }) { P.setSubsOn(app(), !P.subsOn(app())) }
-                .set("Subtitles", "Turns subtitles on when a movie or show starts")
-            rows.row("sublang", 8) { parts.row(null, chevron = true) { panel.push(subChooser(false)) } }
-                .set("Subtitle Language", null, P.subLabel(P.subLang(app()) ?: "English"))
-            rows.row("sublang2", 8) { parts.row(null, chevron = true) { panel.push(subChooser(true)) } }
-                .set("Second Choice", "Used when the first isn't available", P.subLang(app(), true)?.let { P.subLabel(it) } ?: "None")
-            s.view("k:size", 24) { parts.section("Source Size", null) }
-            rows.row("size", 10) { parts.row(null, chevron = true) { panel.push(sizes()) } }
-                .set("Source Size Limits", "Movies: ${P.sizeSummary(app(), false)} · Episodes: ${P.sizeSummary(app(), true)}")
+            if (all) s.view("k:subs", 24) { parts.section("Subtitles", null) }
+            if (on("subs")) {
+                switchRow("subs", if (all) 10 else 0, { P.subsOn(app()) }) { P.setSubsOn(app(), !P.subsOn(app())) }
+                    .set("Subtitles", "Turns subtitles on when a movie or show starts")
+                rows.row("sublang", 8) { parts.row(null, chevron = true) { panel.push(subChooser(false)) } }
+                    .set("Subtitle Language", null, P.subLabel(P.subLang(app()) ?: "English"))
+                rows.row("sublang2", 8) { parts.row(null, chevron = true) { panel.push(subChooser(true)) } }
+                    .set("Second Choice", "Used when the first isn't available", P.subLang(app(), true)?.let { P.subLabel(it) } ?: "None")
+            }
+            if (all) {
+                s.view("k:size", 24) { parts.section("Source Size", null) }
+                rows.row("size", 10) { parts.row(null, chevron = true) { panel.push(sizes()) } }
+                    .set("Source Size Limits", "Movies: ${P.sizeSummary(app(), false)} · Episodes: ${P.sizeSummary(app(), true)}")
+            }
         }
         s.onShow = { paint() }
         s.onResume = { paint() }
-        s.focus = { rows.get("quality") }
+        s.focus = { rows.get("quality") ?: rows.get("audio") ?: rows.get("subs") }
         return s
     }
 
     private fun qualityChooser(): SetupScreen {
-        val is4k = P.screenIs4k(app())
+        // 4K is only offered when this stick and TV can play it (the Fire TV Stick HD can't).
         return choose("Maximum Quality", "Dream OS plays the best video up to this quality. Choose a lower one if videos pause to load.",
-            listOf(
-                Triple("4k", "4K", if (is4k) "Sharpest picture · needs about 25 Mbps" else "Your TV supports up to 1080p"),
+            listOfNotNull(
+                Triple("4k", "4K", "Sharpest picture · needs about 25 Mbps").takeIf { DeviceVideo.plays4k(app()) },
                 Triple("1080p", "1080p", "Full HD · needs about 8 Mbps"),
                 Triple("720p", "720p", "HD · best for slower connections"),
             ), { P.quality(app()) }) { P.setQuality(app(), it) }
@@ -407,17 +450,18 @@ object SpeedTest {
 internal class SpeedCard(ctx: Context, private val k: PremiumKit, private val settled: () -> Unit) : LinearLayout(ctx) {
     private val Int.dp get() = Ui.dp(context, this)
     private val art = SetupArt(ctx, SetupArt.Kind.SPEED)
-    private val head = k.label("Your Connection", 17f, SetupBrand.TEXT, k.semibold, lines = 2)
-    private val line = k.label("", 14f, SetupBrand.DIM, k.font, lines = 2)
+    private val head = k.label("Your Connection", 17f, SetupBrand.TEXT, k.semibold, lines = 0)
+    private val line = k.label("", 14f, SetupBrand.DIM, k.font, lines = 0).apply { setLineSpacing(3.dp.toFloat(), 1f) }
     private val use: TextView
     private var cancel: AtomicBoolean? = null
     private var anim: ValueAnimator? = null
+    /** The test finished: true when it offers a lower quality to choose, false when nothing needs choosing. */
+    var onResult: ((Boolean) -> Unit)? = null
 
     init {
         orientation = HORIZONTAL
         gravity = Gravity.CENTER_VERTICAL
-        setPadding(14.dp, 12.dp, 18.dp, 12.dp)
-        background = Ui.rounded(ctx, Ui.alpha(Color.WHITE, 0.045f), Ui.R_MD, 1f, Ui.alpha(Color.WHITE, 0.08f))
+        setPadding(4.dp, 4.dp, 4.dp, 4.dp)
         addView(art, LayoutParams(64.dp, 64.dp))
         val col = LinearLayout(ctx).apply { orientation = VERTICAL }
         col.addView(head)
@@ -455,6 +499,7 @@ internal class SpeedCard(ctx: Context, private val k: PremiumKit, private val se
                 if (cancel !== c) return@post
                 if (mbps == null) {
                     if (!c.get() || isAttachedToWindow) { gaugeTo(0f, 400); line.text = "The speed test couldn't run right now. Everything else is ready." }
+                    onResult?.invoke(false)
                     return@post
                 }
                 PlaybackPrefs.setLastSpeed(app, mbps)
@@ -475,6 +520,7 @@ internal class SpeedCard(ctx: Context, private val k: PremiumKit, private val se
                     }
                     use.visibility = VISIBLE
                 }
+                onResult?.invoke(better != null)
             }
         }
     }
@@ -496,7 +542,9 @@ internal class SpeedCard(ctx: Context, private val k: PremiumKit, private val se
  * ([KidsProfiles]) and, optionally, a PIN to leave it (a grown-up profile's PIN). [pins] null = no
  * PIN controls (pages opened without a PIN prompt host).
  */
-internal class ProfilesPages(private val ctx: Context, private val ui: SetupUi, private val panel: SetupPanel, private val pins: PinPrompt?) {
+internal class ProfilesPages(private val ctx: Context, private val ui: SetupUi, private val panel: SetupPanel, private val pins: PinPrompt?,
+                             /** Setup's stage already says what profiles are for: just the profiles and Add a Profile. */
+                             private val compact: Boolean = false) {
     private val k = ui.k
     private val parts = SetupParts(ctx, k)
     private val Int.dp get() = Ui.dp(ctx, this)
@@ -527,14 +575,14 @@ internal class ProfilesPages(private val ctx: Context, private val ui: SetupUi, 
             val all = Profiles.all(app())
             val now = all.joinToString { it.id + it.name + it.emoji + it.color }
             if (now != shape) { if (shape.isNotEmpty()) rows.clear(); shape = now }
-            s.view("k:who", 0) { parts.section("Profiles", null) }
+            if (!compact) s.view("k:who", 0) { parts.section("Profiles", null) }
             for ((i, p) in all.withIndex()) {
-                rows.row("p:${p.id}", if (i == 0) 10 else 8) { parts.row(avatar(p), chevron = true) { panel.push(profile(p.id)) } }
+                rows.row("p:${p.id}", if (i == 0) (if (compact) 0 else 10) else 8) { parts.row(avatar(p), chevron = true) { panel.push(profile(p.id)) } }
                     .set(p.name.ifBlank { "Profile" }, caption(p))
             }
             if (all.size < MAX) rows.row("add", 8) { parts.row(null, chevron = true) { panel.push(addProfile()) } }
                 .set("Add a Profile", "For someone else at home, or a Kids profile")
-            s.view("n", 18) { parts.note("Each profile keeps its own list, history and look. A Kids profile only shows movies and shows up to the rating you choose.", 14f) }
+            if (!compact) s.view("n", 18) { parts.note("Each profile keeps its own list, history and look. A Kids profile only shows movies and shows up to the rating you choose.", 14f) }
         }
         s.onShow = { paint() }
         s.focus = { rows.get("add") ?: SetupScreen.firstFocusable(s.body) }
@@ -553,7 +601,9 @@ internal class ProfilesPages(private val ctx: Context, private val ui: SetupUi, 
     private fun owner(): Profiles.Profile? = Profiles.all(app()).firstOrNull { !KidsProfiles.isKids(app(), it.id) }
 
     private fun profile(id: String): SetupScreen {
-        val s = SetupScreen(ui, null, null)
+        // Compact (setup's stage): the profile's name is the page title and the groups have no headings, so the page
+        // fits one screen.
+        val s = SetupScreen(ui, if (compact) Profiles.all(app()).firstOrNull { it.id == id }?.name?.ifBlank { null } ?: "Profile" else null, null)
         val rows = ScreenRows(s)
         lateinit var paint: () -> Unit
         fun toggle(key: String, top: Int, value: () -> Boolean, flip: (BrandRow) -> Unit): BrandRow = rows.row(key, top) {
@@ -564,8 +614,8 @@ internal class ProfilesPages(private val ctx: Context, private val ui: SetupUi, 
         paint = paint@{
             val p = Profiles.all(app()).firstOrNull { it.id == id } ?: run { panel.pop(); return@paint }
             val kids = KidsProfiles.isKids(app(), id)
-            rows.row("head", 0) { parts.row(avatar(p)) }.set(p.name.ifBlank { "Profile" }, caption(p))
-            s.view("k:kids", 22) { parts.section("Kids", null) }
+            if (!compact) rows.row("head", 0) { parts.row(avatar(p)) }.set(p.name.ifBlank { "Profile" }, caption(p))
+            if (!compact) s.view("k:kids", 22) { parts.section("Kids", null) }
             toggle("kids", 10, { KidsProfiles.isKids(app(), id) }) { _ ->
                 val on = !KidsProfiles.isKids(app(), id)
                 KidsProfiles.setKids(app(), id, on)
@@ -601,7 +651,7 @@ internal class ProfilesPages(private val ctx: Context, private val ui: SetupUi, 
                 } else s.hide("exit")
             } else { s.hide("level"); s.hide("exit") }
             if (pins != null) {
-                s.view("k:pin", 22) { parts.section("Profile", null) }
+                if (!compact) s.view("k:pin", 22) { parts.section("Profile", null) }
                 toggle("pin", 10, { Profiles.hasPin(app(), id) }) { r ->
                     if (Profiles.hasPin(app(), id)) Profiles.setPin(app(), id, null)
                     else pins.setNew(id) { ui.main.post { if (s.alive) { paint(); r.requestFocus() } } }
@@ -656,41 +706,36 @@ internal object SetupIntro {
         "Trakt" to "Only if you link it",
     )
 
-    /** What You'll Need's rows: (name, what it does, "Free" / "Paid" / "Recommended" or ""), in one quiet box. */
+    /**
+     * What You'll Need's rows: (name, what it does, "Free" / "Paid" / "Recommended" or ""). A plain list on the
+     * page (no box): the name over its line, the cost on the right, every line wrapping in full.
+     */
     fun needs(ctx: Context, k: PremiumKit, rows: List<Triple<String, String, String>>): LinearLayout {
         val dp = { v: Int -> Ui.dp(ctx, v) }
-        val box = LinearLayout(ctx).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(dp(18), dp(12), dp(18), dp(12))
-            background = Ui.rounded(ctx, Ui.alpha(Color.WHITE, 0.04f), Ui.R_MD, 1f, Ui.alpha(Color.WHITE, 0.08f))
-        }
+        val box = LinearLayout(ctx).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(6), 0, dp(6), 0) }
         for ((i, r) in rows.withIndex()) {
-            val row = LinearLayout(ctx).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
+            val row = LinearLayout(ctx).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.TOP }
             val text = LinearLayout(ctx).apply { orientation = LinearLayout.VERTICAL }
-            text.addView(k.label(r.first, 15f, SetupBrand.TEXT, k.semibold).apply { maxLines = 1; ellipsize = android.text.TextUtils.TruncateAt.END })
-            text.addView(k.label(r.second, 13f, SetupBrand.DIM, k.font, lines = 2), LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT).apply { topMargin = dp(2) })
+            text.addView(k.label(r.first, 15.5f, SetupBrand.TEXT, k.semibold, lines = 0))
+            text.addView(k.label(r.second, 13.5f, SetupBrand.DIM, k.font, lines = 0).apply { setLineSpacing(dp(2).toFloat(), 1f) },
+                LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT).apply { topMargin = dp(3) })
             row.addView(text, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
-            if (r.third.isNotEmpty()) row.addView(k.label(r.third, 13f, SetupBrand.TEXT, k.medium).apply { maxLines = 1 },
-                LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT).apply { marginStart = dp(16) })
-            box.addView(row, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { if (i > 0) topMargin = dp(10) })
+            if (r.third.isNotEmpty()) row.addView(k.label(r.third, 13.5f, Ui.alpha(Color.WHITE, 0.72f), k.medium, lines = 0),
+                LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT).apply { marginStart = dp(20); topMargin = dp(1) })
+            box.addView(row, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { if (i > 0) topMargin = dp(14) })
         }
         return box
     }
 
+    /** Where information goes: each name in a fixed column, what it's for beside it (lines up like a table). */
     fun list(ctx: Context, k: PremiumKit): LinearLayout {
         val dp = { v: Int -> Ui.dp(ctx, v) }
-        val box = LinearLayout(ctx).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(dp(18), dp(14), dp(18), dp(14))
-            background = Ui.rounded(ctx, Ui.alpha(Color.WHITE, 0.04f), Ui.R_MD, 1f, Ui.alpha(Color.WHITE, 0.08f))
-        }
+        val box = LinearLayout(ctx).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(6), 0, dp(6), 0) }
         for ((i, pair) in PLACES.withIndex()) {
-            val row = LinearLayout(ctx).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
-            row.addView(View(ctx).apply { background = GradientDrawable().apply { shape = GradientDrawable.OVAL; setColor(Ui.alpha(Color.WHITE, 0.55f)) } },
-                LinearLayout.LayoutParams(dp(6), dp(6)))
-            row.addView(k.label(pair.first, 15f, SetupBrand.TEXT, k.semibold), LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT).apply { marginStart = dp(12) })
-            row.addView(k.label(pair.second, 14f, SetupBrand.DIM, k.font, lines = 2), LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f).apply { marginStart = dp(12) })
-            box.addView(row, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { if (i > 0) topMargin = dp(9) })
+            val row = LinearLayout(ctx).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.TOP }
+            row.addView(k.label(pair.first, 15f, SetupBrand.TEXT, k.semibold, lines = 0), LinearLayout.LayoutParams(dp(170), WRAP_CONTENT))
+            row.addView(k.label(pair.second, 15f, SetupBrand.DIM, k.font, lines = 0), LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f).apply { marginStart = dp(16) })
+            box.addView(row, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { if (i > 0) topMargin = dp(12) })
         }
         return box
     }
@@ -707,7 +752,7 @@ object DreamPanelPage {
 
     /** Settings › Sources & Quality. */
     fun openPlayback(a: Activity, onClose: (() -> Unit)? = null) = open(a, SetupArt.Kind.PLAYBACK, "Sources & Quality",
-        "Choose how Dream OS plays your movies and shows: picture quality, languages, subtitles, sound and file sizes.", onClose) { ui, panel ->
+        "Choose how Dream OS plays your movies and shows: picture quality, languages, subtitles, sound and file sizes.", onClose) { ui, panel, _ ->
         PlaybackPages(a, ui, panel).overview()
     }
 
@@ -715,15 +760,18 @@ object DreamPanelPage {
     internal fun openKey(a: Activity, kind: KeyPages.Kind, onClose: (() -> Unit)? = null) = open(a, SetupArt.Kind.ACCOUNTS,
         if (kind == KeyPages.Kind.TMDB) "TMDB Key" else "OMDb Key",
         if (kind == KeyPages.Kind.TMDB) "Every poster, detail and search in Dream OS comes from TMDB, with your own free key."
-        else "A free OMDb key adds Rotten Tomatoes and IMDb scores to every title.", onClose) { ui, panel ->
+        else "A free OMDb key adds Rotten Tomatoes and IMDb scores to every title.", onClose) { ui, panel, _ ->
         KeyPages(a, ui, panel).overview(kind)
     }
 
     /**
      * Opens a page over the current screen in the setup's look: the illustration, title and [note] on the
-     * left, the page's screens ([first]) on the right. Back steps back inside it, then closes.
+     * left, the page's screens ([first]) on the right. Back steps back inside it, then closes. The one shell
+     * for every such Settings page (Accounts, Scrapers, Sources & Quality, keys, Unlock): [first] may add to
+     * the left column below the note.
      */
-    internal fun open(a: Activity, art: SetupArt.Kind, title: String, note: String, onClose: (() -> Unit)? = null, first: (SetupUi, SetupPanel) -> SetupScreen) {
+    internal fun open(a: Activity, art: SetupArt.Kind, title: String, note: String, onClose: (() -> Unit)? = null,
+                      first: (SetupUi, SetupPanel, LinearLayout) -> SetupScreen) {
         if (openPage != null) return
         val k = PremiumKit(a)
         val ui = SetupUi(a, k)
@@ -762,9 +810,10 @@ object DreamPanelPage {
         Ui.unclip(row)
         (a.window.decorView as FrameLayout).addView(root, MATCH_PARENT, MATCH_PARENT)
         openPage = root
+        Ui.onDetach(root) { if (openPage === root) openPage = null } // Activity recreated with it open: it can open again
         root.alpha = 0f
         root.animate().alpha(1f).setDuration(Ui.OVERLAY_IN).setInterpolator(Ui.EASE).start()
         Log.w(SetupBrand.TAG, "Setup: Settings › $title opened")
-        panel.push(first(ui, panel), animate = false)
+        panel.push(first(ui, panel, left), animate = false)
     }
 }

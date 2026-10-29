@@ -107,12 +107,10 @@ object Watched {
             val b = current(ctx)
             if (!f(b)) return@synchronized false
             prefs(ctx).edit().putString("watched" + Profiles.suffix(ctx), b.toJson().toString()).apply()
+            version++ // under the lock: edits come from several threads (history, Trakt, air checks)
             true
         }
-        if (changed) {
-            version++
-            main.post { Availability.watchedChanged() }
-        }
+        if (changed) main.post { Availability.watchedChanged() }
     }
 
     private fun <T> read(ctx: Context, f: (Book) -> T): T = synchronized(lock) { f(current(ctx)) }

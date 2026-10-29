@@ -52,6 +52,55 @@ object NativeResolver {
                          val pack: Boolean = false, val provider: String? = null) {
         /** The audio language the release name says (null: none said, usually the original). */
         val lang: String? by lazy { try { AudioLanguages.fromTrackName(c.torrentName) } catch (e: Exception) { null } }
+        /** Language and verdict together: two separate fields could pair one language with another's verdict. */
+        @Volatile private var audioFor: Pair<String, AnimeDubs.Audio>? = null
+        /** What the name says about a dub in [want] ([AnimeDubs.audio]), kept for the last language asked. */
+        fun audio(want: String): AnimeDubs.Audio {
+            audioFor?.takeIf { it.first == want }?.let { return it.second }
+            return AnimeDubs.audio(c.torrentName, want).also { audioFor = want to it }
+        }
+
+        // The filters and the sort read these on every pass (the sort per comparison): the name is scanned once.
+        @Volatile private var bits = -1
+        private fun bit(f: Int): Boolean {
+            var b = bits
+            if (b < 0) { b = flagsOf(this); bits = b }
+            return b and f != 0
+        }
+        val hevc get() = bit(F_HEVC)
+        val anyHdr get() = bit(F_ANY_HDR)
+        val hdr10 get() = bit(F_HDR10)
+        val dv get() = bit(F_DV)
+        val av1 get() = bit(F_AV1)
+        val avc get() = bit(F_AVC)
+        val threeD get() = bit(F_3D)
+        val upscaled get() = bit(F_UPSCALED)
+        val collection get() = bit(F_COLLECTION)
+        val mp4 get() = bit(F_MP4)
+        val disc get() = bit(F_DISC)
+    }
+
+    private const val F_HEVC = 1
+    private const val F_ANY_HDR = 1 shl 1
+    private const val F_HDR10 = 1 shl 2
+    private const val F_DV = 1 shl 3
+    private const val F_AV1 = 1 shl 4
+    private const val F_AVC = 1 shl 5
+    private const val F_3D = 1 shl 6
+    private const val F_UPSCALED = 1 shl 7
+    private const val F_COLLECTION = 1 shl 8
+    private const val F_MP4 = 1 shl 9
+    private const val F_DISC = 1 shl 10
+
+    private fun flagsOf(p: Parsed): Int {
+        val t = p.text
+        fun f(on: Boolean, bit: Int) = if (on) bit else 0
+        return f(hevc(t), F_HEVC) or f(hdr(t), F_ANY_HDR) or f(has(t, "HDR", "HDR10"), F_HDR10) or
+            f(has(t, "DV", "DOVI", "DOLBY VISION"), F_DV) or f(has(t, "AV1"), F_AV1) or
+            f(has(t, "AVC", "X264", "H264", "H.264"), F_AVC) or f(has(t, "3D"), F_3D) or f(upscaled(t), F_UPSCALED) or
+            f(has(t, "TRILOGY", "DUOLOGY", "QUADRILOGY", "PENTALOGY", "HEXALOGY", "COLLECTION", "SAGA", "BOXSET", "ANTHOLOGY", "COMPLETE"), F_COLLECTION) or
+            f(mp4(p), F_MP4) or
+            f(DISC.containsMatchIn(p.c.torrentName) || has(t, "ISO", "BDMV", "BD25", "BD50", "BD66", "BD100"), F_DISC)
     }
 
     private val links = ConcurrentHashMap<String, Stamped<Found>>()
@@ -61,10 +110,11 @@ object NativeResolver {
     private val inFlight = ConcurrentHashMap<String, Lookup>()
 
     /**
-     * One lookup under way. [purpose] may be raised by a caller that joins it (Play pressed while the
-     * page's ranking runs); [ran] is the purpose the debrid step actually used (null: it never got there).
+     * One lookup under way. [purpose] and [deadline] may be raised by a caller that joins it (Play pressed while
+     * the page's ranking runs: the Play's own budget applies from then); [ran] is the purpose the debrid step
+     * used, fixed by its first round (null: it never got there).
      */
-    private class Lookup(@Volatile var purpose: DebridPurpose) {
+    private class Lookup(@Volatile var purpose: DebridPurpose, @Volatile var deadline: Long) {
         lateinit var task: FutureTask<Found?>
         @Volatile var ran: DebridPurpose? = null
         /** It ended below Play with sources found but none passing the user's filters: a Play re-runs it (it may relax them). */
@@ -138,10 +188,13 @@ object NativeResolver {
             peek(req) ?: run {
                 var res: Found? = null
                 for (attempt in 0..1) {
-                    val mine = Lookup(purpose).also { l -> l.task = FutureTask<Found?> { lookup(app, req, k, deadline, l) } }
+                    val mine = Lookup(purpose, deadline).also { l -> l.task = FutureTask<Found?> { lookup(app, req, k, l) } }
                     val l = inFlight.putIfAbsent(k, mine)
-                        ?: mine.also { Net.run { try { mine.task.run() } finally { inFlight.remove(k, mine) } } }
-                    if (l.purpose < purpose) l.purpose = purpose
+                        ?: mine.also { Net.runNow { try { mine.task.run() } finally { inFlight.remove(k, mine) } } }
+                    if (l.purpose <= purpose) {
+                        l.purpose = purpose
+                        if (l.deadline < deadline) l.deadline = deadline
+                    }
                     res = l.task.get((deadline - SystemClock.elapsedRealtime()).coerceAtLeast(1), TimeUnit.MILLISECONDS)
                     val ran = l.ran
                     // A details page's lookup that found only filtered-out sources: a Play runs its own (it may relax the filters).
@@ -203,9 +256,18 @@ object NativeResolver {
 
     // ---- the lookup ----
 
-    private fun key(r: PlaybackRequest): String {
-        val id = if (r.tmdbId > 0) "${r.tmdbId}" else r.imdb.orEmpty()
-        return if (r.type == "episode") "tv:$id:${r.season}:${r.episode}" else "movie:$id"
+    /** Per title / episode; the same key AnimeDubs records its dub summaries under. */
+    private fun key(r: PlaybackRequest) = AnimeDubs.key(r)
+
+    /**
+     * The release names of [req]'s good copies (no CAM, playable on this stick) for the title page's language pills
+     * ([AnimeDubs.record] → [LangPills]): a dub only counts when Play could pick it.
+     */
+    private fun recordNames(ctx: Context, req: PlaybackRequest, all: List<Parsed>, want: String?) {
+        if (want == null || all.isEmpty()) return
+        val f = looseFilters(ctx)
+        val ep = req.type == "episode"
+        AnimeDubs.record(ctx, key(req), all.filter { !it.cam && allowed(it, f, ep) }.map { it.c.torrentName to it.c.hash }, want)
     }
 
     private fun label(r: PlaybackRequest) =
@@ -213,12 +275,15 @@ object NativeResolver {
 
     private fun now() = SystemClock.elapsedRealtime()
 
-    private fun lookup(ctx: Context, req: PlaybackRequest, k: String, deadline: Long, l: Lookup): Found? {
+    /** A lookup that found nothing: logged, and for a Play its [Miss] kept for PlayFlow. */
+    private fun none(req: PlaybackRequest, k: String, l: Lookup, why: String, miss: Miss? = null): Found? {
+        if (miss != null && l.purpose == DebridPurpose.PLAY) misses[k] = miss
+        Log.w(TAG, "Dream Core: ${label(req)} → nothing ($why)"); return null
+    }
+
+    private fun lookup(ctx: Context, req: PlaybackRequest, k: String, l: Lookup): Found? {
         val t0 = now()
-        fun none(why: String, miss: Miss? = null): Found? {
-            if (miss != null && l.purpose == DebridPurpose.PLAY) misses[k] = miss
-            Log.w(TAG, "Dream Core: ${label(req)} → nothing ($why)"); return null
-        }
+        fun none(why: String, miss: Miss? = null) = none(req, k, l, why, miss)
         val acc = DebridAccounts.get(ctx)
         known = acc?.any == true; checkedAt = now()
         if (acc == null || !acc.any) return none("no debrid account linked")
@@ -229,7 +294,7 @@ object NativeResolver {
         if (l.purpose != DebridPurpose.BROWSE) DreamSubtitles.prefetch(ctx, req, imdb) // alongside the scrape and the service: ready when the stream is
         // The user's installed scrapers are Dream Core's sources.
         if (!Scrapers.active(ctx)) return none("no scraper sources added", Miss.NOTHING)
-        return scraperLookup(ctx, req, k, imdb, deadline, l, acc, t0)
+        return scraperLookup(ctx, req, k, imdb, l, acc, t0)
     }
 
     /** The show's (episodes) or movie's IMDb id: the request's own, else TMDB's external ids. */
@@ -254,6 +319,26 @@ object NativeResolver {
     /** Running and recent scrapes per title / episode ("#quick": the availability checker's quick check). */
     private val gathers = ConcurrentHashMap<String, Stamped<ScraperEngine.Job>>()
     private val parsedMemo = ConcurrentHashMap<String, Parsed>()
+
+    /** Scrapes kept at most (a full scrape holds a few hundred sources); half an hour of browsing quick-checks more. */
+    private const val MAX_GATHERS = 40
+    /** Parsed sources kept (~0.7 KB each); past this the memo starts over. */
+    private const val MAX_PARSED = 4000
+
+    /** Drops the oldest finished scrapes until [n] are left (running ones stay: a lookup is reading them). */
+    private fun keepNewest(n: Int) = synchronized(gathers) {
+        val old = gathers.entries.filter { it.value.value.done }.sortedBy { it.value.at }
+        for (e in old.take((gathers.size - n).coerceAtLeast(0))) gathers.remove(e.key, e.value)
+    }
+
+    /**
+     * Playback started ([ScraperEngine.trimNow]): the parsed copies go (rebuilt on the next ranking) and only the
+     * newest few scrapes stay, the playing title's among them (Change Source reads it).
+     */
+    internal fun trimForPlayback() {
+        parsedMemo.clear()
+        keepNewest(4)
+    }
 
     /** Providers switched or sources installed / removed: earlier scrapes no longer say what the user would get. */
     internal fun scrapersChanged() {
@@ -283,18 +368,22 @@ object NativeResolver {
             val job = ScraperEngine.start(ctx, info, refs, label(req), light, play,
                 timeoutMs = if (light) 5_000 else 20_000, perProviderMs = if (light) 4_000 else 12_000, packs = ep && !light)
             gathers[k] = Stamped(job)
-            if (gathers.size > 40) gathers.entries.removeAll { !it.value.fresh(INDEX_TTL) }
+            if (gathers.size > MAX_GATHERS) gathers.entries.removeAll { !it.value.fresh(INDEX_TTL) }
+            if (gathers.size > MAX_GATHERS) keepNewest(MAX_GATHERS)
             return job
         }
     }
 
-    /** [job]'s torrents as the ranking reads them (hosters need a hoster unlock Dream Core doesn't do yet). */
+    /**
+     * [job]'s torrents as the ranking reads them (hosters need a hoster unlock Dream Core doesn't do yet). Junk
+     * ([JUNK_WORDS]) never gets this far, so it can't be played, listed or counted as Available.
+     */
     private fun parsedOf(job: ScraperEngine.Job, season: Int?, episode: Int?): List<Parsed> {
-        if (parsedMemo.size > 4000) parsedMemo.clear()
+        if (parsedMemo.size > MAX_PARSED) parsedMemo.clear()
         return job.items().mapNotNull { it ->
             val h = it.hash ?: return@mapNotNull null
             parsedMemo.getOrPut("$h|$season|$episode|${it.provider}") { scraped(it, h, season, episode) }
-        }
+        }.filterNot { has(it.text, *JUNK_WORDS) }
     }
 
     private fun merged(job: ScraperEngine.Job, quick: ScraperEngine.Job?, season: Int?, episode: Int?): List<Parsed> {
@@ -314,7 +403,7 @@ object NativeResolver {
             "CAM", "SCR", "TELESYNC", "TS" -> { cam = true; "SD" }
             else -> when { has(text, "2160P", "4K", "UHD") -> "4K"; has(text, "1080P") -> "1080p"; has(text, "720P") -> "720p"; else -> "SD" }
         }
-        cam = cam || has(text, "CAM", "HDCAM", "TS", "HDTS", "TELESYNC", "HDTC", "TELECINE", "SCR", "DVDSCR", "SCREENER")
+        cam = cam || has(text, *CAM_WORDS)
         // A season pack's size is the whole season's: unknown per episode (size limits and the Wi-Fi-friendly rank skip it).
         val bytes = if (i.pack) 0L else i.bytes
         val c = Candidate(hash, i.name, null, null, bytes, quality, i.seeders, season, episode)
@@ -341,7 +430,7 @@ object NativeResolver {
     } catch (e: Exception) { null }
 
     /** Best tier the user's filters can give at all (what "a good result" means for the early exit). */
-    private fun bestTier(f: DreamFilters.Values) = if (f.known) f.cap.coerceAtMost(3) else 0
+    private fun bestTier(f: DreamFilters.Values) = if (f.known) f.cap.coerceAtMost(3) else f.deviceCap
 
     /**
      * Dream Core through the user's scrapers. The scrape streams sources in; a Play doesn't wait for every
@@ -350,26 +439,24 @@ object NativeResolver {
      * the debrid services. Nothing ready yet: the next sources to arrive get their turn (up to three rounds),
      * until the budget ends. The scrape itself runs on and is kept for Change Source.
      */
-    private fun scraperLookup(ctx: Context, req: PlaybackRequest, k: String, imdb: String, deadline: Long, l: Lookup,
+    private fun scraperLookup(ctx: Context, req: PlaybackRequest, k: String, imdb: String, l: Lookup,
                               acc: DebridAccounts.Accounts, t0: Long): Found? {
-        fun none(why: String, miss: Miss? = null): Found? {
-            if (miss != null && l.purpose == DebridPurpose.PLAY) misses[k] = miss
-            Log.w(TAG, "Dream Core: ${label(req)} → nothing ($why)"); return null
-        }
-        val purpose = l.purpose
+        fun none(why: String, miss: Miss? = null) = none(req, k, l, why, miss)
+        // Read live: Play can join a details page's lookup and upgrade it (and its deadline) while it waits ([find]).
         // Only a real Play sets the user's filters aside when nothing passes them (never a pre-resolve: no speculative CAM unlocks).
-        val relaxOk = purpose == DebridPurpose.PLAY
+        fun relaxOk() = l.purpose == DebridPurpose.PLAY
         val ep = req.type == "episode"
         val s = if (ep) req.season else null
         val e = if (ep) req.episode else null
         // Browsing (focus resting on a card): only the quick check (two fast providers); a details page or Play: the full scrape.
-        if (purpose == DebridPurpose.BROWSE) { gather(ctx, req, imdb, play = false, light = true); return null }
-        val job = gather(ctx, req, imdb, play = purpose >= DebridPurpose.LIST)
+        if (l.purpose == DebridPurpose.BROWSE) { gather(ctx, req, imdb, play = false, light = true); return null }
+        val job = gather(ctx, req, imdb, play = l.purpose >= DebridPurpose.LIST)
         // What the quick check already found counts at once (the full scrape adds to it as it comes in).
         val quick = gathers["$k#quick"]?.takeIf { it.fresh(INDEX_TTL) }?.value
         val f = filters(ctx)
         val rt = runtimeFor(ctx, req, f)
         val want = wantLang(ctx)
+        val dub = AnimeDubs.rank(ctx, req)
         val resume = resuming(ctx, req)
         val best = bestTier(f)
         val skip = failed[k]?.let { m -> m.entries.removeAll { now() - it.value > FAILED_TTL }; m.keys.toSet() }.orEmpty()
@@ -378,16 +465,22 @@ object NativeResolver {
         var round = 0
         while (true) {
             var kept: List<Parsed>
+            var all: List<Parsed>
+            val avoid = skip + tried
             while (true) {
                 val v = job.version
-                kept = choose(merged(job, quick, s, e), f, ep, skip + tried, rt, want, resume = resume)
+                all = merged(job, quick, s, e)
+                kept = choose(all, f, ep, avoid, rt, want, resume = resume, dub = dub)
                 val t = now()
-                if (job.done || t >= deadline - DEBRID_RESERVE_MS) break
-                var wake = deadline - DEBRID_RESERVE_MS
-                if (purpose != DebridPurpose.PAGE && kept.isNotEmpty()) {
+                val until = l.deadline - DEBRID_RESERVE_MS
+                if (job.done || t >= until) break
+                var wake = until
+                // A page's lookup checks every 250 ms whether a Play joined it, so that Play never waits on the slowest scraper.
+                if (l.purpose == DebridPurpose.PAGE) wake = minOf(wake, t + 250)
+                if (l.purpose != DebridPurpose.PAGE && kept.isNotEmpty()) {
                     if (round > 0) break // later rounds: whatever new arrives goes at once
                     val since = t - job.startedAt - job.firstMs
-                    val good = kept.any { tier(it.c.quality, f) <= best }
+                    val good = kept.any { !it.cam && tier(it.c.quality, f) <= best } // a CAM never cuts the wait short
                     val grace = if (good) GRACE_GOOD_MS else GRACE_MS
                     if (since >= grace) break
                     wake = minOf(wake, t + (grace - since))
@@ -396,39 +489,44 @@ object NativeResolver {
             }
             // Nothing passes the user's filters once the scrape is in (or the wait is over): a Play relaxes them ([chooseRelaxed]).
             var level = 0
-            if (kept.isEmpty() && relaxOk) chooseRelaxed(merged(job, quick, s, e), f, ep, skip + tried, rt, want, true, resume).let { kept = it.first; level = it.second }
+            if (kept.isEmpty() && relaxOk()) chooseRelaxed(all, f, ep, avoid, rt, want, true, resume, dub).let { kept = it.first; level = it.second }
             if (kept.isEmpty()) {
-                if (job.done || now() >= deadline) {
+                if (job.done || now() >= l.deadline) {
                     val n = job.count
-                    if (purpose < DebridPurpose.PLAY && n > 0 && round == 0) l.strictEmpty = true
-                    return if (purpose == DebridPurpose.PAGE) null
+                    if (l.purpose < DebridPurpose.PLAY && n > 0 && round == 0) l.strictEmpty = true
+                    return if (l.purpose == DebridPurpose.PAGE) null
                     else if (n == 0) {
                         if (job.done && job.failedAll) none("the scrapers didn't answer", Miss.NO_ANSWER)
                         else none("the scrapers found nothing${if (job.done) "" else " yet"}", if (job.done) Miss.NOTHING else null)
                     }
-                    else if (round == 0) none("nothing of $n passes your source filters${if (relaxOk) ", even relaxed" else ""}", if (job.done) Miss.NOTHING else null)
+                    else if (round == 0) none("nothing of $n passes your source filters${if (relaxOk()) ", even relaxed" else ""}", if (job.done) Miss.NOTHING else null)
                     else none("none of ${tried.size} cached", Miss.NOT_READY)
                 }
-                job.await(job.version, deadline)
+                job.await(job.version, l.deadline)
                 continue
             }
             val top = kept.take(TOP)
-            l.ran = purpose
-            val svcs = services ?: services(ctx, acc, purpose).also { services = it }
+            recordNames(ctx, req, all, want)
+            // The debrid step keeps the purpose of its first round: a Play that joins a page's lookup during it gets
+            // this lookup's answer, then runs its own debrid step with every service ([find]).
+            val ran = l.ran ?: l.purpose.also { l.ran = it }
+            val svcs = services ?: services(ctx, acc, ran).also { services = it }
             if (svcs.isEmpty()) {
-                if (purpose == DebridPurpose.PAGE) { Log.w(TAG, "Instant play: ranked ${kept.size} for ${label(req)} (debrid step on Play)"); return null }
+                if (ran == DebridPurpose.PAGE) { Log.w(TAG, "Instant play: ranked ${kept.size} for ${label(req)} (debrid step on Play)"); return null }
                 return none("AllDebrid is at its magnet limit and no other service is linked")
             }
             for (svc in svcs) {
+                val deadline = l.deadline
                 if (now() >= deadline) break
-                val cands = if (purpose == DebridPurpose.AHEAD && svc.key == "rd") top.take(2).map { it.c } else top.map { it.c }
+                val cands = if (ran == DebridPurpose.AHEAD && svc.key == "rd") top.take(2).map { it.c } else top.map { it.c }
                 val found = try { svc.resolve(cands, deadline) } catch (x: Exception) {
                     Log.w(TAG, "Dream Core: ${svc.key.uppercase()} failed (${x.javaClass.simpleName})"); null
                 }
                 if (found == null) { if (svc is AllDebridService && adLimited(acc)) limitNote(ctx, svcs.drop(svcs.indexOf(svc) + 1), svcs.size > 1); continue }
                 links[k] = Stamped(found)
                 if (links.size > 100) links.entries.removeAll { !it.value.fresh(LINK_TTL) }
-                noteRelaxed(req, k, found, kept, level)
+                noteRelaxed(req, k, found, kept, level, f)
+                kept.firstOrNull { it.c.hash == found.hash }?.let { noteAvailable(ctx, k, it) }
                 val from = kept.firstOrNull { it.c.hash == found.hash }?.provider?.substringAfter(':') ?: "?"
                 Log.w(TAG, "Scrapers: ${label(req)} first ready result in ${now() - t0} ms from $from")
                 Log.w(TAG, "Dream Core: ${label(req)} → ${found.service.uppercase()} ${found.quality} ${size(found.sizeBytes)} in ${secs(now() - t0)} " +
@@ -437,11 +535,12 @@ object NativeResolver {
             }
             tried += top.map { it.c.hash }
             round++
-            if (purpose == DebridPurpose.PAGE) { Log.w(TAG, "Instant play: ranked ${kept.size} for ${label(req)} (debrid step on Play)"); return null }
-            if (round >= 3) return none("none of ${tried.size} cached at ${svcs.joinToString("/") { it.key.uppercase() }}", Miss.NOT_READY)
-            if (now() >= deadline) return none("budget over; none of ${tried.size} cached at ${svcs.joinToString("/") { it.key.uppercase() }}")
-            if (job.done && chooseRelaxed(merged(job, quick, s, e), f, ep, skip + tried, rt, want, relaxOk, resume).first.isEmpty())
-                return none("none of ${tried.size} cached at ${svcs.joinToString("/") { it.key.uppercase() }}", Miss.NOT_READY)
+            if (ran == DebridPurpose.PAGE) { Log.w(TAG, "Instant play: ranked ${kept.size} for ${label(req)} (debrid step on Play)"); return null }
+            val at = svcs.joinToString("/") { it.key.uppercase() }
+            if (round >= 3) return none("none of ${tried.size} cached at $at", Miss.NOT_READY)
+            if (now() >= l.deadline) return none("budget over; none of ${tried.size} cached at $at")
+            if (job.done && chooseRelaxed(merged(job, quick, s, e), f, ep, skip + tried, rt, want, relaxOk(), resume, dub).first.isEmpty())
+                return none("none of ${tried.size} cached at $at", Miss.NOT_READY)
         }
     }
 
@@ -458,7 +557,7 @@ object NativeResolver {
         val found = job.count
         val acc = DebridAccounts.get(app)
         if (acc?.any != true || found == 0) return TestOutcome(found, 0, acc?.any == true)
-        val top = choose(parsedOf(job, null, null), LOOSE, false, emptySet()).take(5).map { it.c }
+        val top = choose(parsedOf(job, null, null), looseFilters(app), false, emptySet()).take(5).map { it.c }
         val ready = readyHashes(app, top, (deadline - now()).coerceAtLeast(3_000))?.size
             ?: if (unlock(app, req, top, maxOf(deadline, now() + 4_000), "test") != null) 1 else 0
         return TestOutcome(found, ready, true)
@@ -506,7 +605,8 @@ object NativeResolver {
                 job.awaitDone(now() + 30_000)
                 val ep = req.type == "episode"
                 val fl = filters(app)
-                val ranked = choose(parsedOf(job, if (ep) req.season else null, if (ep) req.episode else null), fl, ep, emptySet(), runtimeFor(app, req, fl), wantLang(app))
+                val ranked = choose(parsedOf(job, if (ep) req.season else null, if (ep) req.episode else null), fl, ep, emptySet(), runtimeFor(app, req, fl), wantLang(app),
+                    dub = AnimeDubs.rank(app, req))
                 progress("${job.count} sources, ${ranked.size} pass your filters; best: " + ranked.take(5).joinToString(" | ") {
                     "${it.provider?.substringAfter(':')} ${it.c.quality}${if (it.pack) " pack" else ""} ${size(it.c.sizeBytes)} ${it.c.seeders}s"
                 })
@@ -525,8 +625,9 @@ object NativeResolver {
      */
     class Listed(val c: Candidate, val tags: List<String>, val outside: Boolean, val cam: Boolean = false)
 
-    /** Search All Sources: every filter off but CAM, discs and archives (always out, see [allowed]); 4K ranked first. */
-    private val LOOSE by lazy { DreamFilters.Values(mapOf("quality.max" to "4k", "quality.min" to "sd", "hide.av1" to "false", "hide.3d" to "false")) }
+    /** Search All Sources: every filter off but Hide CAM Copies, discs, archives and what this stick can't play; best quality first. */
+    private fun looseFilters(ctx: Context) = DreamFilters.Values(mapOf("quality.max" to "4k", "quality.min" to "sd", "hide.av1" to "false", "hide.3d" to "false",
+        "hide.cam" to filters(ctx).hideCam.toString()), DeviceVideo.capIndex(ctx))
 
     /**
      * Blocking. The torrents the user's scrapers find for [req], filtered and ranked exactly as [find] ranks
@@ -553,10 +654,15 @@ object NativeResolver {
             // when nothing passes their filters, shows what a Play falls back to ([chooseRelaxed]).
             val want = wantLang(app)
             val resume = resuming(app, req)
-            val (ranked, level) = if (loose) choose(all, LOOSE, ep, emptySet(), rt, want, RELAX_QUALITY, resume) to 0
-                else chooseRelaxed(all, f, ep, emptySet(), rt, want, true, resume)
+            val dub = AnimeDubs.rank(app, req)
+            val anime = dub != AnimeDubs.RANK_NONE
+            recordNames(app, req, all, want)
+            val (ranked, level) = if (loose) choose(all, looseFilters(app), ep, emptySet(), rt, want, RELAX_QUALITY, resume, dub) to 0
+                else chooseRelaxed(all, f, ep, emptySet(), rt, want, true, resume, dub)
             ranked.sortedBy { it.c.hash in bad }.take(MAX_LISTED).map {
-                Listed(it.c, tags(it.text), (loose || level > 0) && (!allowed(it, f, ep, rt) || (f.hideSd && it.c.quality == "SD")), camGrade(it))
+                // The audio badge ("English Dub", "Dual Audio", "Subtitled") after the picture and sound ones.
+                val audio = want?.let { w -> AnimeDubs.badge(it.c.torrentName, w, anime) }
+                Listed(it.c, tags(it.text) + listOfNotNull(audio),(loose || level > 0) && (!allowed(it, f, ep, rt) || (f.hideSd && it.c.quality == "SD")), it.cam)
             }
         }
     } catch (x: Exception) {
@@ -570,10 +676,6 @@ object NativeResolver {
      */
     class Survey(val total: Int, val quality: Int, val cam: Int, val best: String?, val bestCam: String?)
 
-    /** Camera / screener grade by release name (whole tokens: a title word like "CAMERA" is not CAM). */
-    private fun camGrade(p: Parsed) = p.cam || has(p.text, "HQCAM", "CAMRIP", "CAM-RIP", "HDCAM", "HDTS", "TELESYNC", "HDTC",
-        "TC", "TELECINE", "DVDSCR", "SCREENER", "PDVD", "PREDVD", "HDTSRIP")
-
     private fun source(t: String) = when {
         has(t, "REMUX") -> "Remux"
         has(t, "BLURAY", "BLU-RAY", "BDRIP", "BRRIP") -> "BluRay"
@@ -585,8 +687,8 @@ object NativeResolver {
         else -> null
     }
 
-    private fun camTag(t: String) = listOf("HDCAM", "CAMRIP", "CAM", "HDTS", "TELESYNC", "TS", "HDTC", "TELECINE", "TC", "DVDSCR", "SCREENER", "SCR", "PDVD", "PREDVD")
-        .firstOrNull { has(t, it) } ?: "CAM"
+    private fun camTag(t: String) = listOf("HDCAM", "CAMRIP", "CAM", "HDTS", "TELESYNC", "TS", "HDTC", "TELECINE", "TC", "DVDSCR", "SCREENER", "SCR",
+        "PDVD", "PREDVD", "PRE-DVD", "HQ PRE", "KINORIP").firstOrNull { has(t, it) } ?: "CAM"
 
     /** Blocking. The scrapers' answer for [req] as a [Survey] (kept with the scrape, [INDEX_TTL]); null when they can't answer. */
     internal fun survey(ctx: Context, req: PlaybackRequest, budgetMs: Long = 8_000): Survey? = try {
@@ -598,16 +700,22 @@ object NativeResolver {
         if (imdb == null) null else {
             // The quick check: a full scrape already run for it, else the two fastest providers with short limits.
             val job = gathers[key(req)]?.takeIf { it.fresh(INDEX_TTL) }?.value ?: gather(app, req, imdb, play = false, light = true)
-            job.awaitDone(now() + budgetMs)
+            val until = now() + budgetMs
+            if (job.light) job.awaitDone(until)
+            // A full scrape (a page's pre-resolve) runs up to 20 s: the first real release answers the pill.
+            else while (!job.done) {
+                val v = job.version
+                if (parsedOf(job, if (ep) s else null, if (ep) e else null).any { !it.cam }) break
+                if (!job.await(v, until)) break
+            }
             if (job.count == 0 && (!job.done || job.failedAll)) throw IllegalStateException("the scrapers didn't answer") // asked again later
             val all = parsedOf(job, if (ep) s else null, if (ep) e else null)
-            val (cams, good) = all.partition { camGrade(it) }
+            recordNames(app, req, all, wantLang(app))
+            val (cams, good) = all.partition { it.cam }
             // The best release the user would play: Dolby Vision / HDR ones they hide don't count; within a quality, DV, then HDR first.
             val fl = filters(app)
-            fun dv(p: Parsed) = has(p.text, "DV", "DOVI", "DOLBY VISION")
-            fun hdrOnly(p: Parsed) = has(p.text, "HDR", "HDR10", "HDR10+")
-            fun range(p: Parsed) = when { dv(p) && !fl.hideDv -> "DV"; hdrOnly(p) && !fl.hideHdr -> "HDR"; else -> null }
-            val allowedGood = good.filter { !(fl.hideDv && dv(it)) && !(fl.hideHdr && hdrOnly(it)) }.ifEmpty { good }
+            fun range(p: Parsed) = when { p.dv && !fl.hideDv -> "DV"; p.hdr10 && !fl.hideHdr -> "HDR"; else -> null }
+            val allowedGood = good.filter { !(fl.hideDv && it.dv) && !(fl.hideHdr && it.hdr10) }.ifEmpty { good }
             val top = allowedGood.minByOrNull { qi(it.c.quality) * 10_000_000 + (when (range(it)) { "DV" -> 0; "HDR" -> 1; else -> 2 }) * 1_000_000 - minOf(it.c.seeders, 999_999) }
             val topCam = cams.minByOrNull { qi(it.c.quality) * 1_000_000 - minOf(it.c.seeders, 999_999) }
             Survey(all.size, good.size, cams.size,
@@ -644,15 +752,16 @@ object NativeResolver {
         val app = ctx.applicationContext
         val deadline = now() + budgetMs
         val bad = failed[key(req)]?.keys.orEmpty()
-        val av1 = filters(app).hideAv1
+        val fl = filters(app)
+        val av1 = fl.hideAv1
         val listed = sources(app, req, loose = true, budgetMs = budgetMs / 2)
             .filter { it.c.hash !in bad && !(av1 && "AV1" in it.tags) }.take(TOP * 2)
         val top = listed.map { it.c }
         if (top.isEmpty()) { Log.w(TAG, "Dream Core: ${label(req)} → nothing (loose: the scrapers found nothing playable)"); return null }
         val f = unlock(app, req, top, deadline, "loose") ?: return null
-        // A CAM copy (listed last, so nothing better was ready): PlayFlow says so.
+        // A CAM copy (listed last, so nothing better was ready): PlayFlow says so, unless the viewer lets CAM copies in.
         val k = key(req)
-        if (listed.firstOrNull { it.c.hash == f.hash }?.cam == true) relaxedLinks[k] = Relaxed(f.hash, cam = true) else relaxedLinks.remove(k)
+        if (fl.hideCam && listed.firstOrNull { it.c.hash == f.hash }?.cam == true) relaxedLinks[k] = Relaxed(f.hash, cam = true) else relaxedLinks.remove(k)
         return f
     }
 
@@ -814,6 +923,16 @@ object NativeResolver {
 
     private val CYRILLIC = Regex("[\\u0400-\\u04FF]")
 
+    /**
+     * Camera, telesync, telecine and screener releases, whatever the name calls them. TamilMV's "HQ PreDVD" and
+     * "HQ Pre" are theater recordings sold as 1080p; "KinoRip" is the Czech word for the same.
+     */
+    internal val CAM_WORDS = arrayOf("CAM", "HDCAM", "HQCAM", "CAMRIP", "CAM-RIP", "TS", "HDTS", "TSRIP", "HDTSRIP", "TELESYNC",
+        "TC", "HDTC", "TELECINE", "SCR", "DVDSCR", "HDTSCR", "SCREENER", "PDVD", "PREDVD", "PRE-DVD", "PREDVDRIP", "HQ PRE", "KINORIP")
+
+    /** Not the movie at all: recap and review videos, betting-site ads posing as rips. */
+    private val JUNK_WORDS = arrayOf("RECAP", "REVIEW", "1XBET", "4RABET", "4RABETRIP", "FLIXMOMO")
+
     /** [w] as a whole token in upper-case [t]. */
     private fun has(t: String, vararg w: String) = w.any { word ->
         tokens.getOrPut(word) { Regex("(?<![A-Z0-9])" + Regex.escape(word) + "(?![A-Z0-9])") }.containsMatchIn(t)
@@ -838,16 +957,18 @@ object NativeResolver {
     private val DISC = Regex("(?i)\\.(iso|img|rar|zip|7z|exe)$")
 
     /**
-     * Whether the user would play [p] (their filters; always no CAM/TS/SCR, discs, archives, or episodes over 40 GB).
+     * Whether the user would play [p] (their filters; no CAM/TS/SCR while Hide CAM Copies is on; never discs, archives, or episodes over 40 GB).
      * Size limits: a size range in GB, or "fit my internet speed" (the file's average bitrate over [runtimeSec],
      * the title's running time, must stay under the speed). Season packs carry no per-episode size: sizes don't apply.
      */
     private fun allowed(p: Parsed, f: DreamFilters.Values, ep: Boolean, runtimeSec: Int = 0, relax: Int = 0): Boolean {
-        val c = p.c; val t = p.text
-        if (p.cam && relax < RELAX_QUALITY) return false
+        val c = p.c
+        if (p.cam && f.hideCam && relax < RELAX_QUALITY) return false
         if (c.fileName != null) { if (!DebridFiles.isVideo(c.fileName)) return false }
-        else if (DISC.containsMatchIn(c.torrentName) || has(t, "ISO", "BDMV", "BD25", "BD50", "BD66", "BD100")) return false
+        else if (p.disc) return false
         if (ep && c.sizeBytes > 40 * GB) return false
+        // Above what this stick can decode never plays (a 4K file on the Fire TV Stick HD), so no relaxing lets it in.
+        if (qi(c.quality) < f.deviceCap) return false
         if (relax < RELAX_QUALITY && qi(c.quality) < f.cap) return false
         if (relax < RELAX_SIZE) {
             val r = f.range(ep)
@@ -856,13 +977,13 @@ object NativeResolver {
             if (mbps != null && runtimeSec > 0 && c.sizeBytes > 0 && c.sizeBytes * 8.0 / runtimeSec / 1_000_000.0 > mbps) return false
         }
         // Relaxed or not, what this TV can't show right stays out: HDR / Dolby Vision / 3D the user hides, and AV1 (crashes the stick).
-        return !((relax < RELAX_FORMAT && f.hideHevc && hevc(t)) ||
-            (f.hideHdr && has(t, "HDR", "HDR10")) ||
-            (f.hideDv && has(t, "DV", "DOVI", "DOLBY VISION")) ||
-            (f.hideAv1 && has(t, "AV1")) ||
-            (relax < RELAX_FORMAT && f.hideAvc && has(t, "AVC", "X264", "H264", "H.264")) ||
-            (f.hide3d && has(t, "3D")) ||
-            (relax < RELAX_QUALITY && f.hideUpscaled && upscaled(t)))
+        return !((relax < RELAX_FORMAT && f.hideHevc && p.hevc) ||
+            (f.hideHdr && p.hdr10) ||
+            (f.hideDv && p.dv) ||
+            (f.hideAv1 && p.av1) ||
+            (relax < RELAX_FORMAT && f.hideAvc && p.avc) ||
+            (f.hide3d && p.threeD) ||
+            (relax < RELAX_QUALITY && f.hideUpscaled && p.upscaled))
     }
 
     /** How far a Play may set the user's filters aside when nothing passes them: size limits, then quality / CAM, then codec choices. */
@@ -876,23 +997,37 @@ object NativeResolver {
      * the HEVC / AVC choices. [relaxOk] false (anything but a Play): the user's filters only. The level used is second.
      */
     private fun chooseRelaxed(all: List<Parsed>, f: DreamFilters.Values, ep: Boolean, skip: Set<String>, runtimeSec: Int,
-                              want: String?, relaxOk: Boolean, resume: Boolean = false): Pair<List<Parsed>, Int> {
+                              want: String?, relaxOk: Boolean, resume: Boolean = false, dub: Int = AnimeDubs.RANK_NONE): Pair<List<Parsed>, Int> {
         for (level in 0..(if (relaxOk) RELAX_FORMAT else 0)) {
-            val kept = choose(all, f, ep, skip, runtimeSec, want, level, resume)
+            val kept = choose(all, f, ep, skip, runtimeSec, want, level, resume, dub)
             if (kept.isNotEmpty()) return kept to level
         }
         return emptyList<Parsed>() to 0
     }
 
+    /**
+     * A link was found for a real release (not a CAM copy): its availability pill says Available Now at once
+     * instead of waiting for its next check.
+     */
+    private fun noteAvailable(ctx: Context, k: String, p: Parsed) {
+        if (p.cam) return
+        try {
+            if (Availability.peek(ctx, k)?.status == Availability.Status.AVAILABLE) return
+            val best = listOfNotNull(p.c.quality, source(p.text)).joinToString(" ")
+            Availability.record(ctx, k, Availability.Entry(Availability.Status.AVAILABLE, best, null, System.currentTimeMillis()))
+        } catch (e: Exception) { Log.w(TAG, "Dream Core: availability note failed (${e.javaClass.simpleName})") }
+    }
+
     /** After a link was found: when the filters were relaxed ([level] > 0), the log line and the note PlayFlow shows. */
-    private fun noteRelaxed(req: PlaybackRequest, k: String, found: Found, kept: List<Parsed>, level: Int) {
+    private fun noteRelaxed(req: PlaybackRequest, k: String, found: Found, kept: List<Parsed>, level: Int, f: DreamFilters.Values) {
         if (level <= 0) { relaxedLinks.remove(k); return }
         val p = kept.firstOrNull { it.c.hash == found.hash }
-        val cam = p != null && camGrade(p)
+        val cam = p != null && p.cam
+        // The CAM note only for a viewer who hides CAM copies; one who lets them in hears the general note.
+        relaxedLinks[k] = Relaxed(found.hash, cam && f.hideCam)
         val what = p?.let { if (cam) camTag(it.text) + " " + it.c.quality else listOfNotNull(it.c.quality, source(it.text)).joinToString(" ") } ?: found.quality
         val relaxed = listOf("size", "quality", "formats").take(level).reversed().joinToString(", ")
         Log.w(TAG, "Dream Core: ${label(req)} nothing passes your filters, playing best available ($what) [relaxed: $relaxed]")
-        relaxedLinks[k] = Relaxed(found.hash, cam)
     }
 
     private fun upscaled(t: String) = has(t, "UPSCALE", "UPSCALED", "AI UPSCALED", "AI-UPSCALED", "AIUS")
@@ -903,32 +1038,38 @@ object NativeResolver {
      * (movies up to 25 GB, episodes 6 GB), then the user's HEVC / HDR preference and clean (not dubbed, not
      * upscaled) releases, then an MKV before an MP4, then seeders. [resume]: the MP4 penalty comes right
      * after the quality tier (a resume seeks into the file, and an MP4's index must be read first).
+     * [dub] ([AnimeDubs.rank]): a title in another language with Prefer Dubs on puts copies that say they carry [want] first
+     * within a quality tier (never above a better tier, a real release or the filters); off, anime gets no
+     * language preference, so the clean-release rule keeps undubbed copies ahead.
      */
     private fun choose(all: List<Parsed>, f: DreamFilters.Values, ep: Boolean, skip: Set<String>, runtimeSec: Int = 0, want: String? = null,
-                       relax: Int = 0, resume: Boolean = false): List<Parsed> {
+                       relax: Int = 0, resume: Boolean = false, dub: Int = AnimeDubs.RANK_NONE): List<Parsed> {
         val pass = all.filter { it.c.hash !in skip && allowed(it, f, ep, runtimeSec, relax) }
         // The provider's own rule: SD goes only when something better exists (with CAM copies let in: a real release, not a CAM).
-        val camsIn = relax >= RELAX_QUALITY
-        val list = if (f.hideSd && pass.any { it.c.quality != "SD" && !(camsIn && camGrade(it)) }) pass.filter { it.c.quality != "SD" } else pass
+        val camsIn = !f.hideCam || relax >= RELAX_QUALITY
+        // Hide CAM Copies off: a CAM ranks like any copy, after the real releases of its quality; on (relaxed): after every real release.
+        val camsLast = f.hideCam && camsIn
+        val list = if (f.hideSd && pass.any { it.c.quality != "SD" && !(camsIn && it.cam) }) pass.filter { it.c.quality != "SD" } else pass
         val heavy = if (ep) 6 * GB else 25 * GB
         val preferHdr = f.preferHdr
         val preferHevc = f.preferHevc
         // A preferred audio language other than English (Dream Player's): releases that say it (or MULTI) first.
-        val other = want != null && want != "en"
-        fun langMiss(p: Parsed) = if (!other) 0 else if (p.lang == want || has(p.text, "MULTI", "DUAL")) 0 else 1
+        val other = want != null && want != "en" && dub != AnimeDubs.RANK_PLAIN
+        val dubFirst = dub == AnimeDubs.RANK_DUB && want != null
+        // A copy carries the dub when its name says so or Dream Player heard the language in it before (LangPills.heard).
+        fun dubMiss(p: Parsed) = dubFirst && p.audio(want!!) != AnimeDubs.Audio.DUB && !LangPills.heardIn(p.c.hash, want)
+        fun langMiss(p: Parsed) = if (!other) 0 else if (p.lang == want || has(p.text, "MULTI", "DUAL") || LangPills.heardIn(p.c.hash, want!!)) 0 else 1
         // A film from a scraper never names its file: a collection (which film would play?) goes last.
-        fun sink(p: Parsed) = p.c.sizeBytes > 2 * heavy ||
-            (!ep && has(p.text, "TRILOGY", "DUOLOGY", "QUADRILOGY", "PENTALOGY", "HEXALOGY", "COLLECTION", "SAGA", "BOXSET", "ANTHOLOGY", "COMPLETE"))
-        fun penalty(p: Parsed) = (if (p.dubbed && !other) 2 else 0) + (if (upscaled(p.text)) 2 else 0) +
-            (if (preferHdr && !hdr(p.text)) 1 else 0) + (if (preferHevc && !hevc(p.text)) 1 else 0)
+        fun sink(p: Parsed) = p.c.sizeBytes > 2 * heavy || (!ep && p.collection)
+        fun penalty(p: Parsed) = (if (p.dubbed && !other && !dubFirst) 2 else 0) + (if (p.upscaled) 2 else 0) +
+            (if (preferHdr && !p.anyHdr) 1 else 0) + (if (preferHevc && !p.hevc) 1 else 0)
         // Otherwise equal, an MKV before an MP4: a feature-length MP4's index (the moov, ~10 MB, often at the end of
         // a BluRay encode) costs Dream Player its download plus ~1.5 s of parsing before the first frame (measured
         // 2026-10-25: 4.2 s to the first frame against 2.2 s for an MKV; a resume 8-10 s, 2026-10-26); an MKV's index
         // is tens of KB. Resuming, it outweighs size and preferences (the seek can't start without the index).
-        fun slow(p: Parsed) = mp4(p)
         // CAM copies let in (relaxed): every real release first, then the best CAM (quality, size sanity, seeders).
-        return list.sortedWith(compareBy<Parsed>({ sink(it) }, { camsIn && camGrade(it) }, { langMiss(it) }, { tier(it.c.quality, f) },
-            { resume && slow(it) }, { it.pack }, { it.c.sizeBytes > heavy }, { penalty(it) }, { slow(it) }, { -it.c.seeders }))
+        return list.sortedWith(compareBy<Parsed>({ sink(it) }, { camsLast && it.cam }, { langMiss(it) }, { tier(it.c.quality, f) }, { it.cam }, { dubMiss(it) },
+            { resume && it.mp4 }, { it.pack }, { it.c.sizeBytes > heavy }, { penalty(it) }, { it.mp4 }, { -it.c.seeders }))
     }
 
     /**

@@ -286,6 +286,9 @@ object WatchHistory {
         )
         // The Watched pill (outside [lock]: the ledger reads the history the first time).
         if (progress >= FINISHED) Watched.finished(ctx, base)
+        // A finished episode's Up Next is looked up before taking [lock]: it's TMDB calls, and the Home row reads the
+        // history under the same lock on the main thread.
+        val rolled = if (isShow && progress >= FINISHED) nextEpisode(ctx, base) else null
         synchronized(lock) {
             val list = load(ctx)
             val old = list.firstOrNull { it.key == base.key }
@@ -312,7 +315,7 @@ object WatchHistory {
             when {
                 progress < FINISHED -> list.add(base)
                 !isShow -> list.add(base.copy(hidden = true)) // finished movie: off the row
-                else -> list.add(nextEpisode(ctx, base) ?: base.copy(hidden = true))
+                else -> list.add(rolled?.copy(player = base.player) ?: base.copy(hidden = true))
             }
             save(ctx, list)
             // Fire OS hides Log.d: only the add/finish transitions are worth a visible line, not every poll.
@@ -320,18 +323,9 @@ object WatchHistory {
         }
     }
 
-    /** The episode after [e] as an "Up next" entry, if it exists and has aired. */
+    /** The episode after [e] as an "Up next" entry, if it exists and has aired (the player's rule, [PlayFlow.episodeAfter]). */
     private fun nextEpisode(ctx: Context, e: Entry): Entry? {
-        val today = DreamTime.todayYmd(ctx)
-        fun aired(ep: JSONObject) = ep.optString("air_date").let { it.isNotEmpty() && it != "null" && it <= today }
-        val eps = seasonEpisodes(ctx, e.tmdbId, e.season).orEmpty()
-        var next = eps.firstOrNull { it.optInt("episode_number") == e.episode + 1 }
-        var season = e.season
-        if (next == null) {
-            season = e.season + 1
-            next = seasonEpisodes(ctx, e.tmdbId, season)?.firstOrNull { it.optInt("episode_number") == 1 }
-        }
-        if (next == null || !aired(next)) return null
+        val (season, next) = PlayFlow.episodeAfter(ctx, e.tmdbId, e.season, e.episode) ?: return null
         return e.copy(
             season = season, episode = next.optInt("episode_number"),
             episodeTitle = next.optString("name").ifEmpty { null },
@@ -343,16 +337,14 @@ object WatchHistory {
 
     // ---- TMDB lookups ----
 
-    private val cache = HashMap<String, JSONObject>()
+    /** Parsed details and seasons (a season's JSON runs to tens of KB): the most recent 64, not 200 then a full clear. */
+    private val cache = android.util.LruCache<String, JSONObject>(64)
 
     internal fun tmdb(ctx: Context, path: String, query: String = ""): JSONObject? {
         val url = "https://api.themoviedb.org/3$path?api_key=${Tmdb.key(ctx)}&language=en-US$query"
-        synchronized(cache) { cache[url]?.let { return it } }
+        cache.get(url)?.let { return it }
         val json = try { Net.getJson(url) } catch (e: Exception) { return null }
-        synchronized(cache) {
-            if (cache.size > 200) cache.clear()
-            cache[url] = json
-        }
+        cache.put(url, json)
         return json
     }
 

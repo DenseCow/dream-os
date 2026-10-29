@@ -59,8 +59,21 @@ object AppWatch {
         return null
     }
 
-    /** Called (posted, off the key path) when OK goes down; only looks at tracked apps. */
+    /**
+     * Called when OK goes down; only looks at tracked apps. The tree walk runs on its own thread: on the service's
+     * main thread it held up the key filter, so the next presses in the streaming app waited behind it.
+     */
     fun onOkPressed(service: AccessibilityService) {
+        if (scanning) return
+        scanning = true
+        scanner.execute { try { scan(service) } finally { scanning = false } }
+    }
+
+    @Volatile private var scanning = false
+    private val scanner = java.util.concurrent.ThreadPoolExecutor(0, 1, 30, java.util.concurrent.TimeUnit.SECONDS,
+        java.util.concurrent.LinkedBlockingQueue<Runnable>())
+
+    private fun scan(service: AccessibilityService) {
         val root = service.rootInActiveWindow ?: return
         val pkg = root.packageName?.toString() ?: return
         if (pkg !in PACKAGES) return

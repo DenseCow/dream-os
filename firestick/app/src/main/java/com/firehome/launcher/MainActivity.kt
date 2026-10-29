@@ -77,15 +77,6 @@ class MainActivity : Activity() {
     private var initialFocusDone = false
     private var btnPrimary = 0
     private var btnSecondary = 0
-    /** dream_logo.png is 915x560 but the top bar shows it 50 dp tall at most: decode it subsampled (~0.16 MB, not 2.5 MB). */
-    private val sidebarLogo: android.graphics.Bitmap? by lazy {
-        val opts = android.graphics.BitmapFactory.Options().apply { inJustDecodeBounds = true }
-        android.graphics.BitmapFactory.decodeResource(resources, R.drawable.dream_logo, opts)
-        var sample = 1
-        while (opts.outHeight / (sample * 2) >= 50.dp) sample *= 2
-        android.graphics.BitmapFactory.decodeResource(resources, R.drawable.dream_logo,
-            android.graphics.BitmapFactory.Options().apply { inSampleSize = sample })
-    }
 
     // Current theme, read once per layout build.
     private var textColor = 0
@@ -96,14 +87,13 @@ class MainActivity : Activity() {
     private lateinit var font: Typeface
     private lateinit var fontBold: Typeface
 
-    // Boot loading screen: each step's live label, shown until it's done ("home": Home's first row is on screen).
-    // Paced to fill the ~8 s intro ([BOOT_STEP_MS] each); "apps" and "home" wait for the real work, the rest are ready.
+    // Boot loading screen: only work that really happens before Home shows, each line up until it's done. "apps"
+    // and "profile" finish in onCreate; "home" waits for Home's first row. Dream Core and the account checks start
+    // after the intro on purpose, so no line claims them. Paced to fill the ~8 s intro ([BOOT_STEP_MS] each).
     private val bootTasks = linkedMapOf(
-        "apps" to "Loading your apps\u2026",
-        "accounts" to "Connecting your accounts\u2026",
-        "core" to "Starting Dream Core\u2026",
-        "home" to "Building your Home\u2026",
-        "picks" to "Getting your picks ready\u2026",
+        "apps" to "Loading Your Apps\u2026",
+        "profile" to "Loading Your Profile\u2026",
+        "home" to "Building Your Home\u2026",
     )
     private val bootDone = HashSet<String>()
     private var bootBar: View? = null
@@ -121,7 +111,6 @@ class MainActivity : Activity() {
             override fun homeFree() = resumed && saver == null && splash == null && setup == null && picker == null &&
                 !DreamPlayerActivity.visible && !DreamSaver.dreaming
             override fun setHomeFocusable(on: Boolean) = this@MainActivity.setHomeFocusable(on)
-            override fun runTarget(target: String) = false
             override fun chime() { if (Sounds.noticeOn(this@MainActivity) && !DreamPlayerActivity.visible && saver == null) sounds.notice() }
             override fun resumed() = this@MainActivity.resumed
         })
@@ -159,8 +148,14 @@ class MainActivity : Activity() {
         override fun onReceive(c: Context, i: Intent) {
             appsDirty = true
             setup?.onPackagesChanged()
-            val s = shell ?: return
-            if (resumed && details == null) { apps = Apps.load(this@MainActivity); appsDirty = false; s.appsChanged() }
+            if (shell == null || !resumed || details != null) return
+            // PackageManager reads off the main thread: these broadcasts often come while Home is in use.
+            val app = applicationContext
+            Net.background({ Apps.load(app) }) { list ->
+                val s = shell ?: return@background
+                if (list == null || !resumed || details != null) return@background
+                apps = list; appsDirty = false; s.appsChanged()
+            }
         }
     }
 
@@ -173,6 +168,7 @@ class MainActivity : Activity() {
         DreamTime.addListener(onTimeChanged)
         HomeRedirectService.ensureEnabled(this)
         Net.installHttpCache(this) // conditional TMDB requests after a restart
+        Availability.preload(this) // saved pill answers, read in the background, so cards show pills on their first frame
         // Background trailers (details page) never play under a menu, a sheet, the screensaver or setup.
         HeroTrailer.blocked = { saver != null || menuOverlay != null || splash != null || settingsPage != null || picker != null || setup != null }
         // The ratings prefetch (Ratings.kt) rests while the player, a trailer or the saver is up.
@@ -201,6 +197,7 @@ class MainActivity : Activity() {
         // Recreated without the intro (it only plays once per process): still finish first-run setup.
         if (splash == null && !Profiles.isSetUp(this)) showSetup(firstRun = true)
         bootStep("apps")
+        bootStep("profile") // the profile and its look were read by buildScreen above
         // Slow network: wrap up so the intro still ends on "Loading Complete" (Home's first row usually lands well before).
         handler.postDelayed({ bootTasks.keys.forEach { bootStep(it) } }, 7000)
         DreamNotices.setPresenter(notices)
@@ -212,7 +209,10 @@ class MainActivity : Activity() {
         handler.postDelayed(setupPromptCheck, 2500)
     }
     private val setupPromptCheck = Runnable {
-        if (resumed && splash == null && setup == null && picker == null && saver == null && !DreamPlayerActivity.visible) SetupGate.maybePrompt(this)
+        // Only over a settled Home: never over Settings or one of its full pages (back from Fire Stick settings, say).
+        val pageOpen = settingsPage != null || details != null || menuOverlay != null ||
+            DreamPanelPage.isOpen() || UnlockSettings.isOpen() || AboutPage.isOpen() || UpdatePage.isOpen()
+        if (resumed && splash == null && setup == null && picker == null && saver == null && !pageOpen && !DreamPlayerActivity.visible) SetupGate.maybePrompt(this)
     }
 
     /** [NativeResolver.warm] once the remote has rested [WARM_IDLE_MS] (not mid-scroll), or [WARM_MAX_WAIT_MS] after [since]. */
@@ -224,6 +224,7 @@ class MainActivity : Activity() {
 
     override fun onResume() {
         super.onResume()
+        ScreenCover.screenResumed(this) // the voice hand-off's cover pictures this screen and lifts on its next frame
         // The scraper engine and DNS/TLS to the debrid services ahead of the first lookup (returns at once). Starting
         // Python takes seconds of CPU, which made the boot intro stutter and then the first scroll down Home: it waits
         // for the intro to end and then for the remote to rest (Play starts it on demand if it comes first).
@@ -269,6 +270,8 @@ class MainActivity : Activity() {
     override fun onPause() {
         // Fire OS's Home is bringing up Amazon's launcher: come straight back (before Amazon draws).
         HomeRedirectService.bounceBackIfHome(this)
+        AlexaSearch.onHomePaused() // while Alexa listens: its results are starting; the cover goes up first
+        ScreenCover.screenPaused(this)
         pauseWork()
         super.onPause()
     }
@@ -289,7 +292,10 @@ class MainActivity : Activity() {
 
     // The system binds FireVoiceService, so this process never gets TRIM_MEMORY_UI_HIDDEN: release the
     // GPU cache and spare bitmaps ourselves once Home has been hidden a moment (a quick Home-and-back is free).
-    private val releaseWhenHidden = Runnable { if (!resumed) releaseGraphics() }
+    // Never under a screen cover (the voice hand-off): Home is about to come back, and a full trim takes the cover's window down too.
+    private val releaseWhenHidden: Runnable = object : Runnable {
+        override fun run() { if (ScreenCover.isUp) handler.postDelayed(this, 1500) else if (!resumed) releaseGraphics() }
+    }
 
     override fun onStart() {
         super.onStart()
@@ -305,11 +311,14 @@ class MainActivity : Activity() {
     override fun onTrimMemory(level: Int) {
         super.onTrimMemory(level)
         if (level >= android.content.ComponentCallbacks2.TRIM_MEMORY_UI_HIDDEN && !resumed) releaseGraphics() // in case the system ever sends one
+        else if (level >= android.content.ComponentCallbacks2.TRIM_MEMORY_RUNNING_LOW) { Apps.trim(); ScreenCover.releaseShot() } // low memory while in front
     }
 
     private fun releaseGraphics() {
         try {
             Net.evictMemory() // shown posters stay in their views; the rest reload from the disk cache
+            Apps.trim()
+            ScreenCover.releaseShot()
             // The Fire OS screensaver is our window too: don't pull its renderer out from under it.
             shell?.releaseGraphics()
             // Dream Player is our window too: COMPLETE would destroy its renderer mid-playback, so only purge
@@ -325,7 +334,8 @@ class MainActivity : Activity() {
 
     override fun onDestroy() {
         DreamTime.removeListener(onTimeChanged)
-        handler.removeCallbacks(releaseWhenHidden)
+        // Every delayed step (boot ticker, intro safety net, speculation, setup prompt) dies with this Activity.
+        handler.removeCallbacksAndMessages(null)
         notices.destroy()
         shell?.destroy()
         // Static: mustn't keep this Activity alive (only clear our own, a newer instance may have set its own).
@@ -333,7 +343,7 @@ class MainActivity : Activity() {
         if (AlexaSearch.ui === alexaScreen) AlexaSearch.ui = null
         unregisterReceiver(packageReceiver)
         sounds.release()
-        remote.stop()
+        remote.release()
         airPods.stop()
         unregisterReceiver(airPodsReceiver)
         super.onDestroy()
@@ -365,11 +375,28 @@ class MainActivity : Activity() {
         if (resumed) goHomeTop() else if (intent.getBooleanExtra(EXTRA_HOME_TOP, false)) pendingHomeTop = true
     }
 
+    /**
+     * Closes the option sheet and the cards Settings and Home open over themselves (Weather, AirPods, Phone Remote,
+     * Ad Blocking, Themes, Screen Fit). Without this a Home press closed Settings under an open card, and focus
+     * moved on Home behind it.
+     */
+    private fun closeModals() {
+        while (notices.handleBack()) {} // the renewal sheet, then the Notifications panel
+        closeScreenFit(save = false)
+        closeMenu()
+        closePhoneRemote()
+        closeWeatherPage()
+        closeThemesInfo()
+        closeAdBlock()
+        closeHeadphones(refocus = false)
+    }
+
     /** Set by a Home press that arrived while paused; onResume takes it. */
     private var pendingHomeTop = false
 
     private fun goHomeTop() {
         backToPlayer = false
+        closeModals()
         closeDetails()
         closeSettings()
         shell?.homePressed()
@@ -647,7 +674,6 @@ class MainActivity : Activity() {
             }
         }
         override fun remoteUrl() = remote.url
-        override fun qrBitmap(url: String) = this@MainActivity.qrBitmap(url)
         override fun apps(): List<AppEntry> = apps
         override fun openAccessibilitySettings() {
             try { startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)) } catch (e: Exception) {
@@ -676,7 +702,7 @@ class MainActivity : Activity() {
     private fun askSleepTimer() {
         val choices = listOf(0, 15, 30, 45, 60, 90, 120)
         showMenu("Sleep Timer", choices.map { m ->
-            (if (m == 0) "Off" else if (m < 60) "$m Minutes" else if (m % 60 == 0) "${m / 60} Hour${if (m > 60) "s" else ""}" else "${m / 60} h ${m % 60} min") to {
+            (if (m == 0) "Off" else if (m < 60) "$m Minutes" else if (m % 60 == 0) "${m / 60} Hour${if (m > 60) "s" else ""}" else "${m / 60} Hour ${m % 60} Minutes") to {
                 HomeRedirectService.setSleepTimer(m)
                 showBanner(if (m == 0) "Sleep Timer Off" else "Sleep Timer Set for $m Minutes", R.drawable.ic_moon)
             }
@@ -730,7 +756,7 @@ class MainActivity : Activity() {
         icon.scaleX = 0.6f; icon.scaleY = 0.6f
         icon.animate().scaleX(1f).scaleY(1f).setDuration(500).setInterpolator(OvershootInterpolator(1.6f)).start()
         // Next 12 hours.
-        body.addView(label("NEXT 12 HOURS", 12f, dim, bold = true).apply { letterSpacing = 0.15f; setPadding(0, 24.dp, 0, 10.dp) })
+        body.addView(label("Next 12 Hours", 12f, dim, bold = true).apply { letterSpacing = 0.15f; setPadding(0, 24.dp, 0, 10.dp) })
         body.addView(LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             for (h in f.hours) addView(LinearLayout(context).apply {
@@ -742,14 +768,15 @@ class MainActivity : Activity() {
             }, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
         })
         // Next days with a temperature range bar scaled to the whole week.
-        body.addView(label("5-DAY FORECAST", 12f, dim, bold = true).apply { letterSpacing = 0.15f; setPadding(0, 24.dp, 0, 6.dp) })
+        body.addView(label("5-Day Forecast", 12f, dim, bold = true).apply { letterSpacing = 0.15f; setPadding(0, 24.dp, 0, 6.dp) })
         val weekLow = f.days.minOf { it.lowF }
         val weekHigh = f.days.maxOf { it.highF }.coerceAtLeast(weekLow + 1)
         for (d in f.days) {
-            val track = Ui.keepClip(FrameLayout(this).apply { background = roundedRect(Color.argb(40, 255, 255, 255), 4, null) })
+            val track = Ui.keepClip(FrameLayout(this).apply { background = roundedRect(Color.argb(40, 255, 255, 255), 4) })
             val span = View(this).apply {
                 background = GradientDrawable(GradientDrawable.Orientation.LEFT_RIGHT,
-                    intArrayOf(Color.parseColor("#38BDF8"), Color.parseColor("#FBBF24"))).apply { cornerRadius = 4.dp.toFloat() }
+                    // The day's range in Dream Cinema's neutrals, cooler end dimmer (STANDARDS §2: no other accent colors).
+                    intArrayOf(Color.argb(110, 255, 255, 255), Color.WHITE)).apply { cornerRadius = 4.dp.toFloat() }
             }
             val barW = 220.dp
             val start = ((d.lowF - weekLow) / (weekHigh - weekLow).toFloat() * barW).toInt()
@@ -762,7 +789,7 @@ class MainActivity : Activity() {
                 addView(label(d.label, 18f, white, bold = true), LinearLayout.LayoutParams(150.dp, WRAP_CONTENT))
                 addView(label(d.icon, 24f, white), LinearLayout.LayoutParams(50.dp, WRAP_CONTENT))
                 addView(label(d.summary, 15f, dim), LinearLayout.LayoutParams(170.dp, WRAP_CONTENT))
-                addView(label(if (d.rainPct > 0) "\uD83D\uDCA7 ${d.rainPct}%" else "", 14f, Color.parseColor("#7DD3FC")), LinearLayout.LayoutParams(90.dp, WRAP_CONTENT))
+                addView(label(if (d.rainPct > 0) "\uD83D\uDCA7 ${d.rainPct}%" else "", 14f, dim), LinearLayout.LayoutParams(90.dp, WRAP_CONTENT))
                 addView(label("${d.lowF}\u00b0", 16f, dim).apply { gravity = Gravity.END }, LinearLayout.LayoutParams(50.dp, WRAP_CONTENT).apply { marginEnd = 12.dp })
                 addView(track, LinearLayout.LayoutParams(barW, 8.dp))
                 addView(label("${d.highF}\u00b0", 16f, white, bold = true), LinearLayout.LayoutParams(60.dp, WRAP_CONTENT).apply { marginStart = 12.dp })
@@ -829,8 +856,8 @@ class MainActivity : Activity() {
             window.setBackgroundDrawable(Theme.background(this))
             findViewById<View>(android.R.id.content).visibility = View.VISIBLE
         }
-        v.stop()
-        if (animate) v.animate().alpha(0f).setDuration(400).withEndAction { (v.parent as? ViewGroup)?.removeView(v) }.start()
+        v.stop(keepArt = animate)
+        if (animate) v.animate().alpha(0f).setDuration(400).withEndAction { v.releaseArt(); (v.parent as? ViewGroup)?.removeView(v) }.start()
         else (v.parent as? ViewGroup)?.removeView(v)
         resetIdle()
         if (animate) notices.onHomeBack() // notices that arrived under the screensaver
@@ -856,7 +883,7 @@ class MainActivity : Activity() {
             pendingIntro?.let { handler.postDelayed({ startPendingIntro() }, AUDIO_SETTLE_MS) }
             updateAirPodsStatus()
             airPods.refresh()
-            if (resumed) showBanner("AirPods Connected") else Toast.makeText(c, "\uD83C\uDFA7 AirPods connected", Toast.LENGTH_SHORT).show()
+            if (resumed) showBanner("AirPods Connected") else Toast.makeText(c, "\uD83C\uDFA7 AirPods Connected", Toast.LENGTH_SHORT).show()
         }
     }
 
@@ -886,12 +913,13 @@ class MainActivity : Activity() {
         headphonesOverlay = openModal(panel.view, panel.focusView)
     }
 
-    private fun closeHeadphones() {
+    private fun closeHeadphones(refocus: Boolean = true) {
         val v = headphonesOverlay ?: return
         headphonesOverlay = null
         airPodsPanel?.handleBack()
         airPodsPanel = null
         dismissModal(v)
+        if (!refocus) return
         // One Back closes the card and lands on the AirPods chip it was opened from, ready to move on
         // (posted after dismissModal's own focus step, so this one wins).
         handler.post {
@@ -1000,8 +1028,9 @@ class MainActivity : Activity() {
 
         private fun searchFromRemote(text: String) {
             if (!resumed) startActivity(Intent(this@MainActivity, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
-            closePhoneRemote()
+            closeModals()
             closeDetails()
+            closeSettings()
             showPage(Tab.SEARCH)
             searchInput?.let { it.setText(text); it.setSelection(text.length); it.requestFocus() }
         }
@@ -1030,8 +1059,9 @@ class MainActivity : Activity() {
 
     private fun goHomeFromRemote() {
         if (resumed) {
-            closePhoneRemote()
+            closeModals()
             closeDetails()
+            closeSettings()
             showPage(Tab.HOME, focusContent = true)
         } else {
             startActivity(Intent(this, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
@@ -1135,7 +1165,7 @@ class MainActivity : Activity() {
         refresh = {
             val url = remote.pairingUrl()
             (qr.drawable as? android.graphics.drawable.BitmapDrawable)?.bitmap?.let { old -> qr.setImageDrawable(null); old.recycle() }
-            if (url != null) { qr.setImageBitmap(qrBitmap(url)); qr.visibility = View.VISIBLE } else qr.visibility = View.GONE
+            if (url != null) { qr.setImageDrawable(Qr.drawable(this, url)); qr.visibility = View.VISIBLE } else qr.visibility = View.GONE
             address.text = url ?: "Not Connected to Wi-Fi"
             val n = remote.pairedPhones().size
             val phones = "$n Phone${if (n == 1) "" else "s"} Paired"
@@ -1171,19 +1201,6 @@ class MainActivity : Activity() {
         dismissModal(v)
     }
 
-    /** Renders [text] as a crisp QR bitmap (1 px per module, scaled up with no smoothing by the ImageView). */
-    private fun qrBitmap(text: String): android.graphics.Bitmap {
-        val qr = io.nayuki.qrcodegen.QrCode.encodeText(text, io.nayuki.qrcodegen.QrCode.Ecc.MEDIUM)
-        val scale = 8
-        val bmp = android.graphics.Bitmap.createBitmap(qr.size * scale, qr.size * scale, android.graphics.Bitmap.Config.RGB_565)
-        val px = IntArray(bmp.width * bmp.height)
-        for (y in 0 until bmp.height) for (x in 0 until bmp.width) {
-            px[y * bmp.width + x] = if (qr.getModule(x / scale, y / scale)) Color.BLACK else Color.WHITE
-        }
-        bmp.setPixels(px, 0, bmp.width, 0, 0, bmp.width, bmp.height)
-        return bmp
-    }
-
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
         Ratings.onKey() // the hero's rating lookups wait for the remote to rest
         if (splash != null) return true
@@ -1194,7 +1211,6 @@ class MainActivity : Activity() {
         }
         resetIdle()
         AutoScroll.poke() // a long synopsis eases back to its top and waits for the next rest
-        ScreenCover.refresh(this) // the Home-press cover gets a picture of the screen as it is once it settles
         if (event.action == KeyEvent.ACTION_DOWN && event.repeatCount == 0) {
             PreResolve.keyPressed() // the next pause may be the user's doing
             // Instant Play: the page's stream is looked for once the remote has rested on it a moment.
@@ -1254,11 +1270,11 @@ class MainActivity : Activity() {
 
     // ---- pages ----
 
-    private fun showPage(p: Tab, force: Boolean = false, focusContent: Boolean = false) {
+    private fun showPage(p: Tab, force: Boolean = false, focusContent: Boolean = false, instant: Boolean = false) {
         val s = shell ?: return
         if (appsDirty) { apps = Apps.load(this); appsDirty = false; s.appsChanged() }
         // A forced refresh of "the current page" means the one the shell shows (its own tabs move without us).
-        s.show(if (force && p == page) s.currentTab else p, force, focusContent)
+        s.show(if (force && p == page) s.currentTab else p, force, focusContent, instant)
         page = p
         searchInput = s.searchInput
     }
@@ -1292,7 +1308,6 @@ class MainActivity : Activity() {
         }
     }
 
-    /** Colors the leading action word (or "Loading Complete") so each step reads at a glance. */
     /** The status line with its leading word (or "Loading Complete") in the flowing Dream rainbow, bold. */
     private fun colorizeBoot(view: TextView, text: String, done: Boolean): CharSequence {
         val end = if (done) "Loading Complete".length else text.indexOf(' ').takeIf { it > 0 } ?: text.length
@@ -1428,7 +1443,7 @@ class MainActivity : Activity() {
     private fun stylePill(v: TextView, primary: Boolean) {
         val colors = ColorStateList(
             arrayOf(intArrayOf(android.R.attr.state_focused), IntArray(0)),
-            intArrayOf(Theme.contrastOn(selectColor), Theme.contrastOn(if (primary) btnPrimary else mix(btnSecondary, Color.BLACK, 0.4f))),
+            intArrayOf(Theme.contrastOn(selectColor), Theme.contrastOn(if (primary) btnPrimary else Ui.mix(btnSecondary, Color.BLACK, 0.4f))),
         )
         v.setTextColor(colors)
         v.compoundDrawableTintList = colors
@@ -1534,7 +1549,7 @@ class MainActivity : Activity() {
             if (seasons.size == 1 && next == null) return@background chooseEpisodeIn(t, seasons[0].first)
             val options = ArrayList<Pair<String, () -> Unit>>()
             options += if (next != null) {
-                val verb = if (next.upNext || next.progress <= 0f) "Play next episode" else "Resume episode"
+                val verb = if (next.upNext || next.progress <= 0f) "Play Next Episode" else "Resume Episode"
                 "$verb · S${next.season} E${next.episode}" to { playEpisode(t, next.season, next.episode, next.year, next.imdb) }
             } else {
                 "Play First Episode · S${seasons[0].first} E1" to { playEpisode(t, seasons[0].first, 1) }
@@ -1656,7 +1671,7 @@ class MainActivity : Activity() {
             } catch (e: Exception) {
             }
         }
-        Toast.makeText(this, "Opening ${svc.name} — search for \"${t.name}\"", Toast.LENGTH_LONG).show()
+        Toast.makeText(this, "Opening ${svc.name}. Search for \"${t.name}\" there.", Toast.LENGTH_LONG).show()
         launch(svc.pkg)
     }
 
@@ -1746,46 +1761,90 @@ class MainActivity : Activity() {
 
     // ---- Alexa hand-off (AlexaSearch.kt): Dream Search stays on screen the whole time ----
 
+    /** Dream Search going up for Alexa once its art is in (alexaListening); null once it has. */
+    private var alexaSwitch: Runnable? = null
+
     /** Where the user was when Alexa started listening (to go back if it wasn't a search). */
-    private var alexaPrevAway = false
     private var alexaPrevPage: Tab? = null
+    /** What Alexa's listening closed (a title page, Settings): back on screen if it wasn't a search. */
+    private var alexaPrevTitle: Title? = null
+    private var alexaPrevSettings = false
 
     private val alexaScreen = object : AlexaSearch.Screen {
         override fun isFront() = resumed
         override fun alexaListening(prevPkg: String?) {
             // Setup's voice step shows the test itself; Dream Search stays put underneath.
             if (setup?.alexaListening() == true) return // the cover snapshots the screen itself (ScreenCover)
-            alexaPrevAway = prevPkg != null && prevPkg != packageName
-            alexaPrevPage = if (alexaPrevAway) null else page
-            if (saver != null) closeSaver(animate = false)
-            closeMenu()
-            closePhoneRemote()
-            closeDetails()
-            closeSettings()
-            showPage(Tab.SEARCH, focusContent = true)
-            (searchInput as? QueryField)?.onAlexa?.invoke(true)
+            if (picker != null) return // Who's Watching (and its PIN) stays; it is never searched past
+            alexaPrevPage = shell?.currentTab ?: page // the shell's own tab (Home's Home press moves it without [page])
+            alexaPrevTitle = detailsTitle
+            alexaPrevSettings = settingsPage != null
+            // Dream Search comes up whole in one frame: its art is fetched back first (it lets go of it while
+            // hidden), then the switch is instant (a fade opens on a black page).
+            val ready = shell?.warmArt(Tab.SEARCH) ?: { true }
+            val since = SystemClock.uptimeMillis()
+            val go = Runnable {
+                alexaSwitch = null
+                android.util.Log.w(DreamVoice.TAG, "Dream Search up for Alexa: ${if (ready()) "art in" else "art still loading"} after ${SystemClock.uptimeMillis() - since} ms")
+                if (saver != null) closeSaver(animate = false)
+                closeModals()
+                closeDetails()
+                closeSettings()
+                showPage(Tab.SEARCH, focusContent = true, instant = true)
+                (searchInput as? QueryField)?.onAlexa?.invoke(true)
+                // The hand-off's picture, drawn once the page has settled (focus in), while Alexa listens.
+                handler.postDelayed({ AlexaSearch.prepareCover() }, ALEXA_PREDRAW_MS)
+            }
+            alexaSwitch = go
+            val check = object : Runnable {
+                override fun run() {
+                    if (alexaSwitch !== go) return
+                    if (ready() || SystemClock.uptimeMillis() - since > ALEXA_ART_WAIT_MS) go.run()
+                    else android.view.Choreographer.getInstance().postFrameCallback { run() }
+                }
+            }
+            check.run()
+        }
+
+        /** Alexa moved on before Dream Search was up: it goes up now. */
+        private fun switchNow() { alexaSwitch?.run() }
+
+        override fun alexaSearching(): ScreenCover.Live? {
+            switchNow()
+            return if (setup != null) null else (searchInput as? QueryField)?.onAlexaSearching?.invoke()
+        }
+
+        override fun drawAsSearching(draw: (View?) -> Unit) {
+            if (setup == null) (searchInput as? QueryField)?.drawAsSearching?.invoke(draw)
         }
 
         override fun alexaQuery(q: String) {
+            switchNow()
             if (setup?.alexaHeard(q) == true) return // setup's voice step shows what was heard
             showSearchFor(q) // while hidden: it's on screen with the query the moment it's shown again
         }
 
         override fun alexaCancelled() {
+            val neverUp = alexaSwitch != null
+            alexaSwitch = null
             if (setup?.alexaCancelled() == true) return
+            if (neverUp) { alexaPrevPage = null; alexaPrevTitle = null; alexaPrevSettings = false; return } // nothing moved
             (searchInput as? QueryField)?.onAlexa?.invoke(false)
-            if (alexaPrevAway) moveTaskToBack(true)
-            else alexaPrevPage?.let { if (it != Tab.SEARCH) showPage(it, focusContent = true) }
+            alexaPrevPage?.let { if (it != Tab.SEARCH) showPage(it, focusContent = true) }
+            // "Alexa, what time is it" on a title page or in Settings: that page comes back.
+            if (alexaPrevSettings) showSettings() else alexaPrevTitle?.let { openDetails(it) }
             alexaPrevPage = null
-            alexaPrevAway = false
+            alexaPrevTitle = null
+            alexaPrevSettings = false
         }
     }
 
     /** Dream Search with [q] searched, focus on the results (Alexa's spoken query). */
     private fun showSearchFor(q: String) {
+        if (picker != null) return // Who's Watching (and its PIN) stays; it is never searched past
+        alexaPrevTitle = null; alexaPrevSettings = false // a search: nothing comes back
         if (saver != null) closeSaver(animate = false)
-        closeMenu()
-        closePhoneRemote()
+        closeModals()
         closeDetails()
         closeSettings()
         showPage(Tab.SEARCH, focusContent = true)
@@ -1809,6 +1868,7 @@ class MainActivity : Activity() {
     private fun closeAdBlock() {
         val v = adBlockOverlay ?: return
         adBlockOverlay = null
+        adBlockPanel?.handleBack() // marks it closed: a check still running reports with a banner
         adBlockPanel = null
         dismissModal(v)
     }
@@ -1833,7 +1893,8 @@ class MainActivity : Activity() {
         }
         finishAndRemoveTask()
         // Once Amazon's home is up: end the process (Fire OS restarts the Home service on its own; it stays idle).
-        handler.postDelayed({ android.os.Process.killProcess(android.os.Process.myPid()) }, 800)
+        // Its own Handler: onDestroy clears [handler], and finishAndRemoveTask gets there first.
+        Handler(Looper.getMainLooper()).postDelayed({ android.os.Process.killProcess(android.os.Process.myPid()) }, 800)
     }
 
     /** Amazon's full settings menu, which lives inside its launcher. */
@@ -1959,9 +2020,9 @@ class MainActivity : Activity() {
         isClickable = true
         val onPill = Theme.contrastOn(selectColor)
         val fg = ColorStateList(arrayOf(intArrayOf(android.R.attr.state_focused), IntArray(0)),
-            intArrayOf(onPill, withAlpha(textColor, 0.92f)))
+            intArrayOf(onPill, Ui.alpha(textColor, 0.92f)))
         // Icons rest in the text color (the highlight color is saved for focus).
-        val iconRest = withAlpha(textColor, 0.78f)
+        val iconRest = Ui.alpha(textColor, 0.78f)
         background = StateListDrawable().apply {
             addState(intArrayOf(android.R.attr.state_focused), Ui.rounded(context, selectColor, Ui.R_MD))
             setEnterFadeDuration(120)
@@ -1987,8 +2048,8 @@ class MainActivity : Activity() {
                 isDuplicateParentStateEnabled = true
                 setPadding(7.dp, 7.dp, 7.dp, 7.dp)
                 background = StateListDrawable().apply {
-                    addState(intArrayOf(android.R.attr.state_focused), GradientDrawable().apply { shape = GradientDrawable.OVAL; setColor(withAlpha(onPill, 0.16f)) })
-                    addState(IntArray(0), GradientDrawable().apply { shape = GradientDrawable.OVAL; setColor(withAlpha(textColor, 0.07f)) })
+                    addState(intArrayOf(android.R.attr.state_focused), GradientDrawable().apply { shape = GradientDrawable.OVAL; setColor(Ui.alpha(onPill, 0.16f)) })
+                    addState(IntArray(0), GradientDrawable().apply { shape = GradientDrawable.OVAL; setColor(Ui.alpha(textColor, 0.07f)) })
                 }
             }, LinearLayout.LayoutParams(34.dp, 34.dp).apply { marginEnd = 16.dp })
         } else {
@@ -2009,7 +2070,7 @@ class MainActivity : Activity() {
             textSize = 24f
             includeFontPadding = false
             setTextColor(ColorStateList(arrayOf(intArrayOf(android.R.attr.state_focused), IntArray(0)),
-                intArrayOf(withAlpha(onPill, 0.8f), withAlpha(textColor, 0.3f))))
+                intArrayOf(Ui.alpha(onPill, 0.8f), Ui.alpha(textColor, 0.3f))))
             isDuplicateParentStateEnabled = true
         })
         setOnClickListener { onClick() }
@@ -2023,6 +2084,10 @@ class MainActivity : Activity() {
 
     private var shell: CinemaShell? = null
 
+    private val navTick = android.view.ViewTreeObserver.OnGlobalFocusChangeListener { old, now ->
+        if (old != null && now != null && splash == null && Theme.get(this, Theme.NAV_SOUND) == 1) sounds.tick(keyHeld)
+    }
+
     private fun buildShell() {
         val s = CinemaShell(this, shellHost)
         android.util.Log.w("FireHome", "home shell: ${s.javaClass.simpleName} (${Theme.NAME})")
@@ -2030,9 +2095,8 @@ class MainActivity : Activity() {
         pageHost = s.content
         setContentView(s.root)
         if (details != null) setHomeFocusable(false)
-        s.root.viewTreeObserver.addOnGlobalFocusChangeListener { old, now ->
-            if (old != null && now != null && splash == null && Theme.get(this, Theme.NAV_SOUND) == 1) sounds.tick(keyHeld)
-        }
+        // Once the window is attached this is the window's observer, which outlives the old shell: one listener only.
+        s.root.viewTreeObserver.run { removeOnGlobalFocusChangeListener(navTick); addOnGlobalFocusChangeListener(navTick) }
         WatchHistory.onChanged = onHistoryChanged
         s.show(page, force = true, focusContent = true)
         searchInput = s.searchInput
@@ -2041,7 +2105,6 @@ class MainActivity : Activity() {
 
     private val shellHost = object : HomeShell.Host {
         override fun apps() = this@MainActivity.apps
-        override fun logo() = sidebarLogo
         override fun launch(pkg: String) = this@MainActivity.launch(pkg)
         override fun appMenu(app: AppEntry) = showAppMenu(app)
         override fun titleMenu(t: Title) = showTitleMenu(t)
@@ -2065,8 +2128,6 @@ class MainActivity : Activity() {
         override fun playTrailerFor(t: Title) = this@MainActivity.playTrailerFor(t)
         override fun settings() = showSettings()
         override fun profileMenu() = showProfileMenu()
-        override fun phoneRemote() = showPhoneRemote()
-        override fun weather() = showWeatherPage()
         override fun airPods() = showHeadphones()
         override fun airPodsLabel() = airPodsChipLabel()
         override fun notices() = openNotices()
@@ -2298,8 +2359,10 @@ class MainActivity : Activity() {
         // Source filters are Dream OS's own (DreamFilters), read by Dream Core on the next lookup.
         fun filter(key: String, value: String) { DreamFilters.put(this, key, value); refreshSettings() }
         fun flag(key: String, on: Boolean) = filter(key, if (on) "false" else "true")
-        val qualities = listOf("4k" to "4K", "1080p" to "1080p", "720p" to "720p", "sd" to "SD")
-        val qIdx = qualities.indexOfFirst { it.first == stored["quality.max"] }
+        // No 4K step on sticks that can't play it; a saved 4K there shows as the 1080p it plays at.
+        val plays4k = DeviceVideo.plays4k(this)
+        val qualities = listOf("4k" to "4K", "1080p" to "1080p", "720p" to "720p", "sd" to "SD").filter { plays4k || it.first != "4k" }
+        val qIdx = qualities.indexOfFirst { it.first == stored["quality.max"].let { q -> if (q == "4k" && !plays4k) "1080p" else q } }
         val subLangs = listOfNotNull(stored["subs.lang1"], stored["subs.lang2"]).filter { it.isNotBlank() }.distinct()
         val profile = Profiles.current(this)
         // About's update line: asked again in the background when it's over six hours old (AboutPage, DreamUpdate.status).
@@ -2326,7 +2389,7 @@ class MainActivity : Activity() {
                     closeSettings { DreamPanelPage.openPlayback(this) }
                 },
                 // BackupTransfer.kt: sends everything to a new stick over your home network.
-                I("Back Up Dream OS", null, R.drawable.ic_shield, null, "Move Everything to a New Fire TV Stick") {
+                I("Back Up Dream OS", null, R.drawable.ic_shield, null, "Move Everything to a New Fire Stick") {
                     closeSettings { BackupPage.open(this, restore = false) }
                 },
                 I("Unlock Features", UnlockSettings.value(this), R.drawable.ic_shield, null, "Home Button, Startup, Voice Search and More") {
@@ -2365,6 +2428,11 @@ class MainActivity : Activity() {
                 },
                 I("Subtitles", null, R.drawable.ic_movie, f.subsOn, "Turns On Subtitles in Your Language") { flag("subs.enabled", f.subsOn) },
                 I("Subtitle Languages", subLangs.joinToString(", ").ifEmpty { "English" }, R.drawable.ic_movie, null, "First and Second Choice") { closeSettings { DreamPanelPage.openPlayback(this) } },
+            ) + listOfNotNull(
+                // AnimeDubs.kt: Dream Core's ranking for anime. Not offered when the audio language is Japanese (nothing to dub).
+                if (AnimeDubs.want(this) == "ja") null else I(AnimeDubs.settingLabel(this), null, R.drawable.ic_movie, AnimeDubs.preferDubs(this),
+                    AnimeDubs.settingCaption(this)) { AnimeDubs.setPreferDubs(this, !AnimeDubs.preferDubs(this)); refreshSettings() },
+            ) + listOf(
                 (stored["subs.embedded"] != "false").let { on ->
                     I("Use Subtitles in the Video First", null, R.drawable.ic_movie, on, "Before Downloading Any") { flag("subs.embedded", on) }
                 },
@@ -2382,7 +2450,7 @@ class MainActivity : Activity() {
                 I("Highest Quality", if (qIdx < 0) "Automatic" else qualities[qIdx].second, R.drawable.ic_movie, null, "Hides Anything Better Than This") {
                     filter("quality.max", qualities[if (qIdx < 0) 1 else (qIdx + 1) % qualities.size].first)
                 },
-                I("Hide AV1", null, R.drawable.ic_shield, f.hideAv1, "Some AV1 Videos Restart This Fire TV") { flag("hide.av1", f.hideAv1) },
+                I("Hide AV1", null, R.drawable.ic_shield, f.hideAv1, "Some AV1 Videos Restart This Fire Stick") { flag("hide.av1", f.hideAv1) },
                 I("Hide HEVC (H.265)", null, R.drawable.ic_shield, f.hideHevc) { flag("hide.hevc", f.hideHevc) },
                 I("Hide HDR", null, R.drawable.ic_shield, f.hideHdr, "For TVs Without HDR") { flag("hide.hdr", f.hideHdr) },
                 I("Hide Dolby Vision", null, R.drawable.ic_shield, f.hideDv, "Keeps Files That Also Have HDR") { flag("hide.dv", f.hideDv) },
@@ -2398,7 +2466,7 @@ class MainActivity : Activity() {
                     showBanner("Wallpaper Removed", R.drawable.ic_phone)
                 } else null,
                 I("Screen Fit", ScreenFit.get(this).let { if (it == 0) "Normal" else "$it% Inset" }, R.drawable.ic_tv, null, "Keeps Everything Inside Your TV's Edges") { showScreenFit() },
-                I("Background Trailers", HeroTrailer.label(this), R.drawable.ic_movie, null, "Behind the Featured Title on Home") {
+                I("Background Trailers", HeroTrailer.label(this), R.drawable.ic_movie, null, "Behind the Artwork on Movie and Show Pages") {
                     HeroTrailer.cycle(this); refreshSettings()
                 },
                 I("Navigation Sounds", null, R.drawable.ic_play, navSound, "Soft Ticks as You Move") {
@@ -2418,10 +2486,16 @@ class MainActivity : Activity() {
                 I("New Episode Chime", null, R.drawable.ic_tv, chime, "When a Show You Watch Has a New Episode") {
                     Theme.set(this, Theme.NEW_EP_CHIME, if (chime) 0 else 1); refreshSettings()
                 },
+                // RowMix.animeApart: every row, chart, hero and TMDB query reads it; the rebuild drops rows built the other way.
+                RowMix.animeApart(this).let { on ->
+                    I("Keep Anime in Anime Sections", null, R.drawable.ic_movie, on, "Anime Shows Only on the Anime Page and Its Rows") {
+                        Theme.set(this, Theme.ANIME_APART, if (on) 0 else 1); buildScreen(); refreshSettings()
+                    }
+                },
                 if (hidden.isNotEmpty()) I("Show Hidden Apps", "${hidden.size} Hidden", R.drawable.ic_apps, null) {
                     Apps.saveHidden(this, emptySet()); showPage(page, force = true); refreshSettings()
                 } else null,
-                I("Manage Applications", null, R.drawable.ic_apps, null, "Fire TV's App Settings") { openFireSettings("tv.applications.ApplicationsActivity") },
+                I("Manage Applications", null, R.drawable.ic_apps, null, "Fire Stick's App Settings") { openFireSettings("tv.applications.ApplicationsActivity") },
             )),
             // TimeSettings.kt: every time Dream OS shows follows this zone and clock format (DreamTime).
             PremiumSettings.Section("Time & Region", SettingsGlyph.CLOCK, TimeSettings.settingsItems(this) { refreshSettings() }),
@@ -2442,14 +2516,14 @@ class MainActivity : Activity() {
                 I("System Health", null, R.drawable.ic_info, null, "Storage, Memory and Streaming Status") {
                     closeSettings { showPage(Tab.SYSTEM, focusContent = true) }
                 },
-                I("Sleep Timer", if (sleep > 0) "$sleep Min Left" else "Off", R.drawable.ic_moon, null, "Puts the Fire TV to Sleep Later") { askSleepTimer() },
+                I("Sleep Timer", if (sleep > 0) "$sleep Min Left" else "Off", R.drawable.ic_moon, null, "Puts the Fire Stick to Sleep Later") { askSleepTimer() },
                 I("Screensaver", if (saverIdx == 0) "Off" else "After ${Theme.SAVER_MINUTES[saverIdx]} Min", R.drawable.ic_moon, null, "When Nothing Moves for a While") {
                     Theme.set(this, Theme.SAVER, (saverIdx + 1) % Theme.SAVER_MINUTES.size); refreshSettings()
                 },
                 I("Preview Screensaver", null, R.drawable.ic_moon, null) { closeSettings { showSaver() } },
                 I("My Fire TV", null, R.drawable.ic_tv, null, "Device Info, Updates and Restart") { openFireSettings("tv.device.DeviceActivity") },
                 I("Accessibility", null, R.drawable.ic_info, null) { startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)) },
-                I("All Fire TV Settings", null, R.drawable.ic_settings, null, "The Amazon Menu") { openAmazonSettings() },
+                I("All Fire Stick Settings", null, R.drawable.ic_settings, null, "The Amazon Menu") { openAmazonSettings() },
                 I("Close Dream OS", null, R.drawable.ic_home, null, "Back to the Fire TV Home · Open Dream OS From Your Apps") { closeToAmazonHome() },
             )),
             // Advanced: API keys for title data and ratings.
@@ -2660,7 +2734,7 @@ class MainActivity : Activity() {
             scaleX = 0f
         }
         val track = FrameLayout(this).apply {
-            background = roundedRect(Color.argb(70, 255, 255, 255), 3, null)
+            background = roundedRect(Color.argb(70, 255, 255, 255), 3)
             addView(fill, MATCH_PARENT, MATCH_PARENT)
         }
         val loader = LinearLayout(this).apply {
@@ -2702,7 +2776,6 @@ class MainActivity : Activity() {
             if (Theme.get(this, Theme.INTRO_SOUND) == 1) handler.postDelayed({ sounds.swell() }, 1300)
             bootShown = 0
             bootStart = SystemClock.uptimeMillis()
-            for (k in listOf("accounts", "core", "picks")) bootStep(k) // paced by the ticker, nothing to wait for
             updateBootUi()
             handler.removeCallbacks(bootTicker)
             handler.postDelayed(bootTicker, 900)
@@ -2766,7 +2839,7 @@ class MainActivity : Activity() {
         setTextColor(Color.argb(225, 255, 255, 255))
         setShadowLayer(10f, 0f, 2f, Color.argb(220, 0, 0, 0))
         // Smoked-glass chip with a hairline, neutral like the What's Inside panel (the number carries the color).
-        background = roundedRect(Color.argb(150, 18, 18, 20), 14, null).apply { setStroke(1.dp, Color.argb(34, 255, 255, 255)) }
+        background = roundedRect(Color.argb(150, 18, 18, 20), 14).apply { setStroke(1.dp, Color.argb(34, 255, 255, 255)) }
         setPadding(14.dp, 6.dp, 14.dp, 6.dp)
         alpha = 0f
     }
@@ -2816,20 +2889,10 @@ class MainActivity : Activity() {
 
     // ---- drawing helpers ----
 
-    private fun roundedRect(fill: Int, radiusDp: Int, stroke: Int?) = GradientDrawable().apply {
+    private fun roundedRect(fill: Int, radiusDp: Int) = GradientDrawable().apply {
         cornerRadius = radiusDp.dp.toFloat()
         setColor(fill)
-        if (stroke != null) setStroke(3.dp, stroke)
     }
-
-    private fun withAlpha(color: Int, a: Float) =
-        Color.argb((a * 255).toInt(), Color.red(color), Color.green(color), Color.blue(color))
-
-    private fun mix(a: Int, b: Int, t: Float) = Color.rgb(
-        (Color.red(a) * (1 - t) + Color.red(b) * t).toInt(),
-        (Color.green(a) * (1 - t) + Color.green(b) * t).toInt(),
-        (Color.blue(a) * (1 - t) + Color.blue(b) * t).toInt(),
-    )
 
     private val Int.dp get() = (this * resources.displayMetrics.density).toInt()
 
@@ -2843,8 +2906,8 @@ class MainActivity : Activity() {
         /** Cold start: the intro art fades in this long after Home's first row, or after [ART_WAIT_MS] at most. */
         private const val ART_AFTER_HOME_MS = 300L
         private const val ART_WAIT_MS = 1_200L
-        /** One boot status step (5 steps + the welcome fill the intro). */
-        private const val BOOT_STEP_MS = 1_150L
+        /** One boot status step: 3 steps end on the welcome at ~5.5 s, as the 5 shorter ones did. */
+        private const val BOOT_STEP_MS = 2_300L
         const val EXTRA_SPLASH = "splash"
         const val EXTRA_AMAZON_SETTINGS = "amazon_settings"
         /** A Title as JSON (PlayFlow.openDetails): opens its details page. */
@@ -2857,6 +2920,10 @@ class MainActivity : Activity() {
         const val EXTRA_HOME_TOP = "home_top"
         /** Brought forward by the Alexa hand-off (AlexaSearch drives what shows). */
         const val EXTRA_ALEXA = "alexa"
+        /** Longest wait for Dream Search's art before it goes up for Alexa anyway (Alexa's own bar shows meanwhile). */
+        private const val ALEXA_ART_WAIT_MS = 700L
+        /** From Dream Search going up for Alexa to its "Searching…" picture being drawn ahead. */
+        private const val ALEXA_PREDRAW_MS = 400L
         /** Developer preview: shows the screensaver now (see onNewIntent). */
         const val EXTRA_SAVER = "saver"
         private const val FIRE_SETTINGS = "com.amazon.tv.settings.v2"

@@ -51,6 +51,9 @@ object Trakt {
     private const val PREFS = "trakt"
     /** Home opening syncs at most this often (a finished playback skips the wait). */
     private const val HOME_EVERY_MS = 15 * 60_000L
+    /** Watchlist pages of [WATCHLIST_PAGE] read per type (10,000 titles; past that the sync leaves My List alone). */
+    private const val WATCHLIST_PAGE = 500
+    private const val WATCHLIST_PAGES = 20
     /** Refresh the access token when it has less than this left. */
     private const val REFRESH_AHEAD_MS = 60 * 60_000L
     /** Trakt counts a stop at this percentage or more as watched. */
@@ -371,7 +374,7 @@ object Trakt {
                 .putSecret(keys).toString(), null)
             if (p.code == 401 || p.code == 403) { Log.w(TAG, "Trakt: own app secret refused (${p.code})"); return bad }
             val sealed = Vault.seal(JSONObject().put("id", keys.id).put("secret", keys.secret).toString())
-                ?: return KeyCheck.Failed("Couldn't save the keys on this Fire TV. Try again.")
+                ?: return KeyCheck.Failed("Couldn't save the keys on this Fire Stick. Try again.")
             synchronized(keysLock) {
                 prefs(app).edit().putString(OWN_KEYS, sealed).commit()
                 ownKeys = keys
@@ -743,7 +746,8 @@ object Trakt {
                 if (!r.ok && r.code != 409) Log.w(TAG, "Trakt: queued ${o.optString("op")} not accepted (${r.code}), dropped")
                 if (r.ok) afterOp(ctx, sfx, o)
             }
-        } catch (e: IOException) {
+        } catch (e: Exception) {
+            // Whatever stopped it, what already went out is never sent again.
             allSent = false
         }
         dropFromQueue(ctx, sfx, done)
@@ -807,13 +811,16 @@ object Trakt {
     // Sync
     // =====================================================================================
 
-    /** Home opened: a sync if the last one is old or something was played since. Returns at once. */
+    /** Home opened: a sync if the last one is old or something was played since. Returns at once (the state is read on the sync thread). */
     fun onHomeOpened(ctx: Context) {
         try {
             if (!signedIn(ctx) || syncing.get()) return
-            val st = state(ctx, sfx(ctx))
-            if (!st.optBoolean("dirty") && System.currentTimeMillis() - st.optLong("at", 0) < HOME_EVERY_MS) return
-            sync(ctx, "home")
+            val app = ctx.applicationContext
+            val sfx = sfx(app)
+            syncer.execute {
+                val st = state(app, sfx)
+                if (st.optBoolean("dirty") || System.currentTimeMillis() - st.optLong("at", 0) >= HOME_EVERY_MS) syncNow(app, sfx, "home")
+            }
         } catch (e: Exception) { Log.w(TAG, "Trakt: home sync skipped: ${e.javaClass.simpleName}") }
     }
 
@@ -822,8 +829,10 @@ object Trakt {
         if (!signedIn(ctx)) return
         val app = ctx.applicationContext
         val sfx = sfx(app)
-        if (force) markDirty(app, sfx)
-        syncer.execute { syncNow(app, sfx, reason) }
+        syncer.execute {
+            if (force) markDirty(app, sfx)
+            syncNow(app, sfx, reason)
+        }
     }
 
     /** The last sync couldn't finish (offline, Trakt down); the page says so in plain words. */
@@ -857,7 +866,8 @@ object Trakt {
             }
             // Saved as one: the activity marks move on only once everything they stand for is in.
             synchronized(store) {
-                if (!prefs(app).contains("auth$sfx")) return
+                // Signed out, or another profile took over mid-sync (its pulls were skipped): the marks stay, so the next sync pulls again.
+                if (!prefs(app).contains("auth$sfx") || Profiles.suffix(app) != sfx) return
                 val cur = state(app, sfx)
                 for (k in listOf("shows", "pb", "wl")) st.opt(k)?.let { cur.put(k, it) }
                 cur.put("la", la).put("at", System.currentTimeMillis()).remove("dirty")
@@ -868,7 +878,7 @@ object Trakt {
         } catch (e: Exception) {
             Log.w(TAG, "Trakt: sync ($reason) stopped: ${e.javaClass.simpleName}")
         } finally {
-            lastSyncFailed = !ok
+            lastSyncFailed = !ok && Profiles.suffix(app) == sfx // a sync cut short by a profile switch isn't a failure to show
             syncing.set(false)
             changed()
         }
@@ -997,16 +1007,25 @@ object Trakt {
     private fun syncWatchlist(app: Context, sfx: String, st: JSONObject, la: JSONObject): Int {
         val remote = LinkedHashMap<String, Long>()
         for ((path, type, field) in listOf(Triple("movies", "movie", "movie"), Triple("shows", "tv", "show"))) {
-            val a = getArray(app, sfx, "/sync/watchlist/$path?page=1&limit=500")
-            for (i in 0 until a.length()) {
-                val o = a.optJSONObject(i) ?: continue
-                val id = o.optJSONObject(field)?.optJSONObject("ids")?.optInt("tmdb") ?: 0
-                if (id > 0) remote["$type:$id"] = iso(o.optString("listed_at"))
+            // Every page: a title missing from the read would count as removed on Trakt and leave My List.
+            var page = 1
+            while (page <= WATCHLIST_PAGES) {
+                val a = getArray(app, sfx, "/sync/watchlist/$path?page=$page&limit=$WATCHLIST_PAGE")
+                for (i in 0 until a.length()) {
+                    val o = a.optJSONObject(i) ?: continue
+                    val id = o.optJSONObject(field)?.optJSONObject("ids")?.optInt("tmdb") ?: 0
+                    if (id > 0) remote["$type:$id"] = iso(o.optString("listed_at"))
+                }
+                if (a.length() < WATCHLIST_PAGE) break
+                page++
             }
+            // Past the last page read, the rest is unknown: no two-way sync rather than removals that aren't real.
+            if (page > WATCHLIST_PAGES) { Log.w(TAG, "Trakt: watchlist over ${WATCHLIST_PAGES * WATCHLIST_PAGE} $path, not synced"); return 0 }
         }
         val snap: Set<String>? = st.optJSONArray("wl")?.let { a -> (0 until a.length()).map { a.optString(it) }.toSet() }
         val ledger = st.optJSONObject("ledger") ?: JSONObject()
-        val local = onMain { if (Profiles.suffix(app) != sfx) null else Tmdb.myList(app).map { it.key } } ?: return 0
+        val local = onMain { if (Profiles.suffix(app) != sfx) null else Tmdb.myList(app).map { it.key } }
+            ?: throw IOException("My List not readable for this profile")
         val removedAt = maxOf(iso(la.optJSONObject("movies")?.optString("watchlisted_at").orEmpty()),
             iso(la.optJSONObject("shows")?.optString("watchlisted_at").orEmpty()))
         val addHere = ArrayList<String>()

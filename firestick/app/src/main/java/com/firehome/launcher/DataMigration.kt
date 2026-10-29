@@ -84,6 +84,7 @@ object DataMigration {
             val mac = Mac.getInstance("HmacSHA256").apply { init(k.mac) }
             var count = 0
             val sizes = linkedMapOf<String, Long>()
+            val self = setOf(tmp.canonicalPath, out.canonicalPath)
             tmp.outputStream().buffered().use { raw ->
                 val header = MAGIC.toByteArray() + iv
                 raw.write(header); mac.update(header)
@@ -94,7 +95,8 @@ object DataMigration {
                     for (d in DIRS) {
                         val root = File(data, d)
                         if (!root.isDirectory) continue
-                        root.walkTopDown().filter { it.isFile }.forEach { f ->
+                        // Never the export itself (with no external storage it is written inside files/).
+                        root.walkTopDown().filter { it.isFile && it.canonicalPath !in self }.forEach { f ->
                             z.putNextEntry(ZipEntry(f.relativeTo(data).invariantSeparatorsPath))
                             f.inputStream().use { it.copyTo(z) }
                             z.closeEntry()
@@ -133,6 +135,7 @@ object DataMigration {
         if (!f.exists()) return false
         f.delete()
         ctx.applicationContext.getSharedPreferences("profiles", Context.MODE_PRIVATE).edit().putBoolean("setup_done", false).commit()
+        SetupGate.clearStep(ctx) // the old stick's place in its setup: this one starts at the beginning
         Log.w(TAG, "Migrate: restored from another Fire TV, setup continues")
         return true
     }
@@ -170,7 +173,7 @@ object DataMigration {
         var count = 0
         try {
             src.inputStream().buffered().use { input ->
-                input.skip(headerLen.toLong())
+                if (input.readFully(ByteArray(headerLen)) != headerLen) throw IllegalStateException("file cut short")
                 val cipher = Cipher.getInstance("AES/CTR/NoPadding").apply { init(Cipher.DECRYPT_MODE, k.enc, IvParameterSpec(iv)) }
                 ZipInputStream(CipherInputStream(Limited(input, bodyLen), cipher)).use { z ->
                     while (true) {

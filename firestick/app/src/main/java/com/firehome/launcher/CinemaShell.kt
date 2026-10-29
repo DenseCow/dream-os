@@ -7,7 +7,6 @@ import android.graphics.drawable.LayerDrawable
 import android.graphics.drawable.StateListDrawable
 import android.os.Handler
 import android.os.Looper
-import android.text.format.DateFormat
 import android.view.Gravity
 import android.view.KeyEvent
 import android.view.View
@@ -19,7 +18,6 @@ import android.widget.FrameLayout
 import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.TextView
-import java.util.Date
 
 /**
  * Dream Cinema's home screen.
@@ -162,7 +160,7 @@ class CinemaShell(private val act: Activity, private val host: HomeShell.Host) :
             isClickable = true
             gravity = Gravity.CENTER_VERTICAL
             setPadding(9.dp, 0, 10.dp, 0)
-            compoundDrawablePadding = 7.dp
+            compoundDrawablePadding = 8.dp
             maxWidth = 210.dp
             setCompoundDrawables(airPodsDot, null, null, null)
             // The chip and status colors; focused, the same rainbow light edge as every highlight.
@@ -318,7 +316,7 @@ class CinemaShell(private val act: Activity, private val host: HomeShell.Host) :
             gravity = Gravity.CENTER_VERTICAL
             if (iconOnly) setPadding(10.dp, 0, 10.dp, 0) else setPadding(10.dp, 0, 12.dp, 0)
             isDuplicateParentStateEnabled = true
-            addView(iconView, LinearLayout.LayoutParams(if (iconOnly) 17.dp else 16.dp, if (iconOnly) 17.dp else 16.dp).apply { if (!iconOnly) marginEnd = 7.dp })
+            addView(iconView, LinearLayout.LayoutParams(if (iconOnly) 17.dp else 16.dp, if (iconOnly) 17.dp else 16.dp).apply { if (!iconOnly) marginEnd = 8.dp })
             addView(label)
         }
         val underline = View(act).apply {
@@ -436,14 +434,42 @@ class CinemaShell(private val act: Activity, private val host: HomeShell.Host) :
 
     // ---- pages ----
 
+    override fun warmArt(tab: HomeShell.Tab): () -> Boolean {
+        val k = tabKey(tab)
+        if (k == key) return { true } // on screen already
+        val p = pages[k] ?: build(k).also { pages[k] = it; it.view.visibility = View.INVISIBLE; it.prepare() }
+        if (p.view.parent !== content) { PremiumKit.detach(p.view); content.addView(p.view, MATCH_PARENT, MATCH_PARENT) }
+        offscreenLater.remove(p)?.let { handler.removeCallbacks(it) }
+        Net.rebind(act, p.view)
+        val h = act.resources.displayMetrics.heightPixels
+        // Laid out, its first screen has pictures (a page still fetching its list has none yet), all in and
+        // none still rising in (rows that just arrived fade up).
+        return { p.view.isLaidOut && countArt(p.view, h, missing = false) > 0 && countArt(p.view, h, missing = true) == 0 }
+    }
+
+    /**
+     * Pictures in [v]'s first screen ([h] px) that will show: all of them, or ([missing]) those still loading
+     * plus anything there still fading in.
+     */
+    private fun countArt(v: View, h: Int, missing: Boolean, top: Int = 0): Int {
+        if (v.visibility == View.GONE || top > h) return 0
+        if (v.alpha == 0f || v.width == 0 || v.height == 0) return 0 // kept hidden on purpose, or not laid out
+        if (missing && v.alpha < 0.99f) return 1 // still fading in
+        if (v is android.widget.ImageView) return if (v.tag is String && (!missing || v.drawable == null)) 1 else 0
+        if (v !is android.view.ViewGroup) return 0
+        var n = 0
+        for (i in 0 until v.childCount) { val c = v.getChildAt(i); n += countArt(c, h, missing, top + c.top) }
+        return n
+    }
+
     override fun homePressed() {
         show(HomeShell.Tab.HOME)
         page?.toTop()
         page?.focusFirst()
     }
 
-    override fun show(requested: HomeShell.Tab, force: Boolean, focusContent: Boolean) =
-        showKey(tabKey(requested), force, focusContent)
+    override fun show(requested: HomeShell.Tab, force: Boolean, focusContent: Boolean, instant: Boolean) =
+        showKey(tabKey(requested), force, focusContent, instant)
 
     private fun tabKey(t: HomeShell.Tab) = t.name
 
@@ -456,7 +482,7 @@ class CinemaShell(private val act: Activity, private val host: HomeShell.Host) :
      * short fade (not a detach, re-attach, whole-page measure and re-record of every view, as it was).
      * A hidden page keeps its art for [OFFSCREEN_MS] (back-and-forth decodes nothing), then lets it go.
      */
-    private fun showKey(k: String, force: Boolean = false, focusContent: Boolean = false) {
+    private fun showKey(k: String, force: Boolean = false, focusContent: Boolean = false, instant: Boolean = false) {
         val t0 = android.os.SystemClock.uptimeMillis()
         val cur = page
         if (k == key && cur != null && !force && cur.showing()) {
@@ -481,10 +507,13 @@ class CinemaShell(private val act: Activity, private val host: HomeShell.Host) :
         // once into the layer and the fade only composites it (no per-view alpha passes on the stick's GPU).
         val v = p.view
         v.animate().cancel()
-        v.alpha = 0f
-        v.translationY = 10.dp.toFloat()
         v.visibility = View.VISIBLE
-        v.animate().alpha(1f).translationY(0f).setDuration(PAGE_FADE_MS).setInterpolator(Ui.EASE).withLayer().start()
+        if (instant) { v.alpha = 1f; v.translationY = 0f }
+        else {
+            v.alpha = 0f
+            v.translationY = 10.dp.toFloat()
+            v.animate().alpha(1f).translationY(0f).setDuration(PAGE_FADE_MS).setInterpolator(Ui.EASE).withLayer().start()
+        }
         val tv = android.os.SystemClock.uptimeMillis()
         p.onShow()
         val ts = android.os.SystemClock.uptimeMillis()
@@ -510,6 +539,11 @@ class CinemaShell(private val act: Activity, private val host: HomeShell.Host) :
         p.view.alpha = 1f
         p.view.translationY = 0f
         if (p.view.parent !== content) return
+        releaseArtLater(k, p)
+    }
+
+    /** [p] (hidden) lets go of its art after [OFFSCREEN_MS] unless it's shown before then. */
+    private fun releaseArtLater(k: String, p: CPage) {
         offscreenLater.remove(p)?.let { handler.removeCallbacks(it) }
         offscreenLater[p] = Runnable { offscreenLater.remove(p); if (page !== p && pages[k] === p) p.offscreen() }.also { handler.postDelayed(it, OFFSCREEN_MS) }
     }
@@ -633,6 +667,9 @@ class CinemaShell(private val act: Activity, private val host: HomeShell.Host) :
                 // Once it's laid out (a frame or two on), record its views' display lists in idle time too:
                 // otherwise its first show records the whole page on the switch (~170 ms for Browse).
                 handler.postDelayed({ warm(k, p) }, WARM_DELAY_MS)
+                // Its art (bound so a quick visit shows ready) goes like a hidden page's if it isn't visited: it was
+                // held until the page had been shown and hidden once.
+                releaseArtLater(k, p)
                 // One page per quiet spell: the next waits for its own (its layout lands in a later frame).
                 schedulePrebuild()
             } else if (k == null) prebuildArmed = false
@@ -843,9 +880,9 @@ class CinemaShell(private val act: Activity, private val host: HomeShell.Host) :
 
     companion object {
         /** The tabs, in order, with their line icons. */
-        private val AIRPODS_GREEN = Color.parseColor("#5EE69A")
+        private const val AIRPODS_GREEN = Ui.GREEN_TEXT
         private val AIRPODS_GREEN_DEEP = Color.parseColor("#0B6B38")
-        private val AIRPODS_RED = Color.parseColor("#FF6B81")
+        private const val AIRPODS_RED = Ui.RED_TEXT
         private val AIRPODS_RED_DEEP = Color.parseColor("#B3122E")
         private val TABS = listOf(
             HomeShell.Tab.SEARCH to LineIcon.SEARCH,

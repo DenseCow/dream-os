@@ -18,6 +18,7 @@ struct DreamOSApp: App {
         DreamScrapers.register()
         Wiring.install()
         PillAhead.seed() // the stored pill answers into the cards' memory before Home's first rows draw
+        LanguagePills.warm() // the title pages' saved language answers, read before the first page opens
         EpisodeAlerts.registerBackground() // new-episode alerts: the background look + tap routing (Notices/EpisodeAlerts.swift)
         InstantPlayRefresh.register() // Continue Watching's links kept fresh in the background on Wi-Fi (Shell/InstantPlayRefresh.swift)
     }

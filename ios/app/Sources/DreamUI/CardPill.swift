@@ -12,11 +12,42 @@ import DreamCore
 // Watched pill instead, on the first frame, from the local ledger; no availability lookup is made for it. Personal
 // rows (`live: false`: Continue Watching, New Episodes for You) never show it, nor does a card badged NEW EPISODE.
 
+/// One title's answer, observed on its own: an answer that lands (the look-ahead, another card, the title page)
+/// redraws that title's cards and title page at once, and no other card.
+@MainActor
+@Observable
+final class CardPillSlot {
+    /// nil: not known; .some(nil): asked, no pill.
+    var answer: Availability?? = nil
+    /// A real check answered this session (not just the stored answer from launch): a card needn't ask again.
+    var checked = false
+}
+
 @MainActor
 final class CardPillMemory {
     static let shared = CardPillMemory()
-    /// title key -> the last answer (nil inside: asked, no pill).
-    var answers: [String: Availability?] = [:]
+    /// Title key -> its slot. Not observed itself: a view tracks only the slots it reads.
+    private var slots: [String: CardPillSlot] = [:]
+    private static let cap = 4000
+
+    func slot(_ key: String) -> CardPillSlot {
+        if let s = slots[key] { return s }
+        if slots.count >= Self.cap {
+            slots = slots.filter { $0.value.answer != nil }
+            if slots.count >= Self.cap { slots.removeAll() }
+        }
+        let s = CardPillSlot()
+        slots[key] = s
+        return s
+    }
+
+    func answer(_ key: String) -> Availability?? { slots[key].flatMap { $0.answer } }
+
+    func set(_ key: String, _ a: Availability?, checked: Bool) {
+        let s = slot(key)
+        if s.answer != .some(a) { withAnimation(.easeOut(duration: 0.2)) { s.answer = .some(a) } }
+        if checked && !s.checked { s.checked = true }
+    }
 }
 
 /// The Watched state for views, instant (the local ledger, no network). Reading it in a body redoes that body when
@@ -64,8 +95,9 @@ public struct CardPill: View {
 
     private var shown: Availability? {
         guard live else { return known }
+        // The shared answer first (observed: one landing anywhere redraws this card), then this card's own.
+        if let remembered = CardPillMemory.shared.slot(title.key).answer { return remembered }
         if let answer { return answer }
-        if let remembered = CardPillMemory.shared.answers[title.key] { return remembered }
         if let coming = Self.comingFromDate(title) { return coming }
         return known
     }
@@ -97,9 +129,11 @@ public struct CardPill: View {
                 WatchedLedger.shared.noteAir(show: title.id, s)
             }
             guard !Task.isCancelled, newEpisode || !WatchedLedger.shared.isWatched(title) else { return }
+            // Already checked this session (the look-ahead, another card, the title page): shown from the slot.
+            guard !CardPillMemory.shared.slot(title.key).checked else { return }
             let a = await c.availability(for: title)
             guard !Task.isCancelled else { return }
-            CardPillMemory.shared.answers[title.key] = .some(a)
+            CardPillMemory.shared.set(title.key, a, checked: true)
             if answer != .some(a) { withAnimation(.easeOut(duration: 0.2)) { answer = .some(a) } }
         }
     }

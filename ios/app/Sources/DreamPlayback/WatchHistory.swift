@@ -96,12 +96,6 @@ public final class WatchHistory: @unchecked Sendable {
     /// Everything watched, newest first, finished and removed ones included ("Because You Watched").
     public func recent() -> [Entry] { lock.withLock { load() }.sorted { $0.updatedAt > $1.updatedAt } }
 
-    /// TMDB ids of shows watched recently, newest first, finished ones included (New Episodes).
-    public func recentShowIds() -> [Int] {
-        var seen = Set<Int>()
-        return recent().filter(\.isShow).map(\.title.id).filter { seen.insert($0).inserted }
-    }
-
     /// Whether [e] was really watched, so it may shape recommendations.
     public static func watchedEnough(_ e: Entry) -> Bool { e.upNext || e.progress >= finished || e.positionMs >= meaningfulMs }
 
@@ -233,19 +227,13 @@ public final class WatchHistory: @unchecked Sendable {
         }
     }
 
-    /// The episode after [e] as an "Up Next" entry, if it exists and has aired.
+    /// The episode after [e] as an "Up Next" entry, if it exists and has aired: the player's own pick (`PlayFlow`),
+    /// so a show that skips a season number or starts one past episode 1 stays in Continue Watching.
     private func nextEpisode(_ e: Entry) async -> Entry? {
-        let today = DreamTime.todayYmd()
-        func aired(_ ep: Episode) -> Bool { !ep.airDate.isEmpty && ep.airDate <= today }
-        var season = e.season
-        var next = (try? await Services.shared.catalog.episodes(showId: e.title.id, season: e.season))?.first { $0.number == e.episode + 1 }
-        if next == nil {
-            season = e.season + 1
-            next = (try? await Services.shared.catalog.episodes(showId: e.title.id, season: season))?.first { $0.number == 1 }
-        }
-        guard let n = next, aired(n) else { return nil }
+        guard let n = await PlayFlow.nextEpisode(PlayRequest(title: e.title, season: e.season, episode: e.episode)),
+              let season = n.request.season, let episode = n.request.episode else { return nil }
         var out = e
-        out.season = season; out.episode = n.number; out.episodeTitle = n.name.isEmpty ? nil : n.name
+        out.season = season; out.episode = episode; out.episodeTitle = n.request.episodeName
         out.stillPath = n.stillPath; out.progress = 0; out.positionMs = 0; out.durationMs = Int64(n.runtime) * 60_000; out.upNext = true
         return out
     }
@@ -314,12 +302,6 @@ public final class WatchHistory: @unchecked Sendable {
         }
     }
 
-    /// Strips "S1 E2"-style suffixes and years in brackets from a title (for matching another device's report).
-    public static func cleanTitle(_ raw: String) -> String {
-        raw.replacingOccurrences(of: "\\s*[\\(\\[]\\d{4}[\\)\\]]", with: "", options: .regularExpression)
-            .replacingOccurrences(of: "(?i)\\s*[-:·|,]?\\s*(S(eason)?\\s*\\d+\\s*[:,.·-]?\\s*E(p(isode)?)?\\s*\\d+).*$", with: "", options: .regularExpression)
-            .trimmingCharacters(in: .whitespaces)
-    }
 }
 
 /// `HistoryService` for the app (Continue Watching, Resume, play labels).

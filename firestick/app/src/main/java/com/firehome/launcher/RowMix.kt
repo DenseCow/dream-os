@@ -50,7 +50,7 @@ class RowClaims(private val ctx: android.content.Context? = null, private val an
      * A chart (Top 10) keeps its order and ranks: shown as is, its titles kept out of the rows below. With [n], the
      * first [n] left after the filters, so a chart fetched long (two pages) always fills.
      */
-    fun claim(row: String, list: List<Title>, n: Int = Int.MAX_VALUE): List<Title> = (if (animeOk(row) || ctx == null) list else list.filterNot { RowMix.isAnime(it) }).take(n).let { l ->
+    fun claim(row: String, list: List<Title>, n: Int = Int.MAX_VALUE): List<Title> = (if (animeOk(row) || ctx == null || !RowMix.animeApart(ctx)) list else list.filterNot { RowMix.isAnime(it) }).take(n).let { l ->
         synchronized(owner) {
             if (!RowPaging.foreign(row)) l.forEach { owner.putIfAbsent(it.key, row) }
             l
@@ -223,10 +223,20 @@ object RowMix {
         return t.type == "tv" && (t.lang == "zh" || t.lang == "cn" || t.lang == "ko") && 10762 !in t.genreIds && 10751 !in t.genreIds
     }
 
+    /**
+     * Settings › Keep Anime in Anime Sections (per profile, on by default). Off, anime shows in every row, chart and
+     * genre search like any other title, and no TMDB query leaves it out ([NewReleases.withAnime]).
+     */
+    fun animeApart(ctx: android.content.Context) = Theme.get(ctx, Theme.ANIME_APART) == 1
+
+    /** [t] is anime this profile keeps in the anime sections: left out of a general row, hero or chart. */
+    fun animeHidden(ctx: android.content.Context, t: Title) = isAnime(t) && animeApart(ctx)
+
     /** A row that's about anime by its name, or a personal one ([RowClaims]): it keeps anime. */
-    fun animeRow(row: String) = Regex("(?i)\\banime\\b").containsMatchIn(row) || row.contains("Crunchyroll") ||
+    fun animeRow(row: String) = ANIME_WORD.containsMatchIn(row) || row.contains("Crunchyroll") ||
         PERSONAL.any { row.startsWith(it, ignoreCase = true) }
 
+    private val ANIME_WORD = Regex("(?i)\\banime\\b")
     private val PERSONAL = listOf("Because You Watched", "Top Picks", "Continue Watching", "My List", "Recommended", "More Like")
 
     /** Below this many votes a title in a language the profile doesn't watch in counts as obscure. */
@@ -246,8 +256,9 @@ object RowMix {
         val known = list.filter { it.lang.isNotEmpty() }
         val own = known.groupingBy { it.lang }.eachCount().maxByOrNull { it.value }
             ?.takeIf { known.size >= 4 && it.value * 2 >= known.size }?.key
+        val keepAnime = anime || !animeApart(ctx)
         val ok = list.filter { t ->
-            !t.adult && t.posterPath != null && t.key !in done && (anime || !isAnime(t)) && !poorlyRated(t) &&
+            !t.adult && t.posterPath != null && t.key !in done && (keepAnime || !isAnime(t)) && !poorlyRated(t) &&
                 (t.lang.isEmpty() || t.lang in langs || t.lang == own || widelySeen(t))
         }
         return if (!artFirst) ok else ok.filter { it.backdropPath != null } + ok.filter { it.backdropPath == null }

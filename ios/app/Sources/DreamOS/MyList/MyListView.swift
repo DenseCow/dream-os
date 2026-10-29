@@ -1,17 +1,25 @@
 import SwiftUI
 import DreamCore
 import DreamUI
+import DreamPlayback
 
 /// My List (CinemaMyList.kt): the saved titles, organized. Chips on top (All · Movies · TV Shows, then Recently Added ·
-/// A–Z, kept between visits), then Continue Watching (saved titles part way through), Movies and TV Shows, each a poster
-/// grid headed with its count. Hold a poster to remove it.
+/// A–Z, kept per profile between visits, like the TV's `MyList.view`), then Continue Watching (saved titles part way
+/// through), Movies and TV Shows, each a poster grid headed with its count. Hold a poster to remove it.
 struct MyListView: View {
     @Environment(ShellModel.self) private var shell
     @State private var saved: [Title] = []
     @State private var going: [HistoryEntry] = []
     @State private var loaded = false
-    @AppStorage("DreamOS.myListType") private var type = 0
-    @AppStorage("DreamOS.myListOrder") private var order = 0
+    /// 0 All, 1 Movies, 2 TV Shows.
+    @State private var type = Self.storedType()
+    /// 0 Recently Added, 1 A–Z.
+    @State private var order = Self.storedOrder()
+
+    private static let kinds: [MyList.Kind] = [.all, .movie, .tv]
+    private static func storedType() -> Int { kinds.firstIndex(of: MyList.shared.view.kind) ?? 0 }
+    private static func storedOrder() -> Int { MyList.shared.view.order == .az ? 1 : 0 }
+    private func store() { MyList.shared.view = (Self.kinds[type], order == 1 ? .az : .recent) }
 
     var body: some View {
         GeometryReader { geo in
@@ -36,9 +44,15 @@ struct MyListView: View {
         }
         .background(DreamBackground())
         .toolbar(.hidden, for: .navigationBar)
-        .onAppear { Task { await load() } }
+        // Runs on every appearance and whenever the saved keys change (one load, not two).
         .task(id: shell.myListKeys) { await load() }
         .refreshable { await load() }
+        .onReceive(NotificationCenter.default.publisher(for: .dreamProfileChanged)) { _ in
+            type = Self.storedType(); order = Self.storedOrder()
+            Task { await load() }
+        }
+        // Continue Watching follows progress, episode and Up Next (a resume from here comes back to this page).
+        .onReceive(NotificationCenter.default.publisher(for: .dreamHistoryChanged)) { _ in Task { await load() } }
     }
 
     // MARK: Parts
@@ -47,11 +61,11 @@ struct MyListView: View {
         ScrollView(.horizontal) {
             HStack(spacing: 10) {
                 ForEach(Array(["All", "Movies", "TV Shows"].enumerated()), id: \.offset) { i, l in
-                    Button(l) { withAnimation(Cinema.pageAnimation) { type = i } }.buttonStyle(ChipButtonStyle(selected: type == i))
+                    Button(l) { withAnimation(Cinema.pageAnimation) { type = i }; store() }.buttonStyle(ChipButtonStyle(selected: type == i))
                 }
                 Rectangle().fill(Color.white.opacity(0.22)).frame(width: 1, height: 18).padding(.horizontal, 6)
                 ForEach(Array(["Recently Added", "A–Z"].enumerated()), id: \.offset) { i, l in
-                    Button(l) { withAnimation(Cinema.pageAnimation) { order = i } }.buttonStyle(ChipButtonStyle(selected: order == i))
+                    Button(l) { withAnimation(Cinema.pageAnimation) { order = i }; store() }.buttonStyle(ChipButtonStyle(selected: order == i))
                 }
             }
             .padding(.vertical, 4)

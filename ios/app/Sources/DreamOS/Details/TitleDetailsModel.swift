@@ -2,6 +2,8 @@ import SwiftUI
 import Observation
 import DreamCore
 import DreamUI
+import DreamPlayer
+import DreamContent
 
 /// Everything a title page shows, loaded when it opens: details, scores, availability, the watch history's word on
 /// Play / Resume, My List, and the episodes (the likely season alongside the details, every other season and the
@@ -30,22 +32,35 @@ final class TitleDetailsModel {
 
     static let finished = 0.92
 
-    init(title: Title) { self.title = title }
+    init(title: Title) {
+        self.title = title
+        showSavedLanguagePills() // the saved answer on the first frame
+    }
 
     var isShow: Bool { title.kind == .tv }
     var shown: Title { details?.title ?? title }
 
     func load() async {
+        let c = Services.shared.catalog
+        // The status a card already showed, with its best copy (no network): the first frame has the pill.
+        if availability == nil, let a = await c.availabilityPeek(for: title) { availability = a }
         // Instant Play: only the title page actually opened looks ahead for its likely stream (returns at once).
         Services.shared.lookAhead.titleOpened(title)
-        let c = Services.shared.catalog
         async let mine = Services.shared.myList.contains(title.key)
+        // The fresh status alongside the details, once (the cards' answer shows until it lands, `shownAvailability`);
+        // a real answer goes to every card of this title at once.
+        Task {
+            guard let a = await c.availabilityDetail(for: title) else { return }
+            availability = a
+            CardPills.remember(title.key, a.state)
+        }
         // A watched show: TMDB's air state again when due, so a new episode takes the Watched pill away.
         if isShow, WatchedLedger.shared.needsAirCheck(title.id) {
             let id = title.id
             Task { if let s = await c.showAirState(showId: id) { WatchedLedger.shared.noteAir(show: id, s) } }
         }
         await refreshHistory()
+        showSavedLanguagePills() // a show's up-next episode is known now
         // Instant episodes (owner rule): the likely season (the history's, else Season 1) is fetched alongside the
         // details instead of after them, and a season seen earlier this session shows from memory at once.
         var guessed = false
@@ -58,20 +73,28 @@ final class TitleDetailsModel {
             let d = try await c.details(kind: title.kind, id: title.id)
             details = d
             failed = nil
+            Taste.noteOpened(d.title) // a title page opened: a small taste signal (Taste.swift)
             if isShow, season == 0 || guessed {
                 let best = defaultSeason(d)
                 if best > 0, best != season { season = best }
             }
             if season > 0 { Task { await loadSeason(season); await lookAhead() } }
+            Task { await loadLanguagePills() }
             scores = await c.scores(for: d)
         } catch let e as DreamError {
             failed = e.message
         } catch {
             failed = "Couldn't load this title. Check your internet connection and try again."
         }
-        if let a = await c.availabilityDetail(for: title) { availability = a }
-        else if let s = await c.availability(for: title) { availability = AvailabilityDetail(state: s) }
         inMyList = await mine
+    }
+
+    /// The page's own answer, else what the cards already know for this title (observed: the look-ahead's answer
+    /// shows the moment it lands, and on the first render when it's already in).
+    var shownAvailability: AvailabilityDetail? {
+        if let availability { return availability }
+        if case .some(.some(let s)) = CardPills.observed(title.key) { return AvailabilityDetail(state: s) }
+        return nil
     }
 
     /// Redone whenever the page shows again (a viewing may have ended behind it): Resume never uses a stale spot.
@@ -232,6 +255,43 @@ final class TitleDetailsModel {
     func isUpNext(_ ep: Episode) -> Bool {
         guard let e = history else { return false }
         return e.season == ep.season && e.episode == ep.number
+    }
+
+    // MARK: Language pills (LanguagePills)
+
+    /// For a title in another language than the viewer's: "English Dub Available", or its audio and whether subtitles in
+    /// their language exist, beside the status pill. Empty for their own language or while nothing is known.
+    var languagePills: [LanguagePills.Pill] = []
+
+    /// The viewer's audio language as Dream Core reads release names for it.
+    private var want: String { Labels.normLang(AnimeDubs.want) ?? AnimeDubs.want }
+
+    /// The saved answer for what Play plays (no network), so the page opens with it.
+    func showSavedLanguagePills() {
+        if let p = LanguagePills.pills(AnimeDubs.key(playRequest), original: shown.lang, want: want), p != languagePills { languagePills = p }
+    }
+
+    /// Refreshes behind the saved answer (fire-home LangPills.lookup): the quick check (the availability survey, which
+    /// records the names) when nothing is known or it's older than 6 hours, then the subtitle index when the subtitles
+    /// pill needs it. Nothing known still shows nothing.
+    func loadLanguagePills() async {
+        let r = playRequest, want = want, key = AnimeDubs.key(r)
+        showSavedLanguagePills()
+        guard let orig = LanguagePills.original(shown.lang) else { return }
+        if orig == want { if !languagePills.isEmpty { languagePills = [] }; return }
+        if LanguagePills.needsRefresh(key, want: want) { _ = await Services.shared.playback.survey(r) }
+        LanguagePills.noteTitle(key, want: want, original: orig, spoken: details?.info?.spoken ?? [])
+        LanguagePills.noteViewerSubs(SubtitleIndex.viewerLanguages())
+        if LanguagePills.subtitleToCheck(key, original: orig, want: want), let index = await SubtitleIndex.languages(for: r) {
+            LanguagePills.noteIndex(key, index)
+        }
+        let p = LanguagePills.pills(key, original: orig, want: want) ?? []
+        if p != languagePills { languagePills = p }
+    }
+
+    /// An episode row's compact words ("English Dub", "Japanese Audio"), once Dream Core has read that episode's copies.
+    func languageWords(for ep: Episode) -> String? {
+        LanguagePills.episodeWords(AnimeDubs.key(request(for: ep)), original: shown.lang, want: want)
     }
 
     // MARK: Meta line

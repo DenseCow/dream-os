@@ -16,6 +16,7 @@ struct PlayerScreen: View {
     @State private var tapOffset: Double = 0
     @State private var tapSide = 0
     @State private var tapCommit: Task<Void, Never>?
+    @State private var pauseWait: Task<Void, Never>?
     @State private var flash: Bool?
     @State private var xray = false
     @State private var levels = LevelSwipeStatus()
@@ -76,7 +77,6 @@ struct PlayerScreen: View {
                         .zIndex(11)
                 }
                 if session.phase != .playing { Curtain(session: session, openSources: { sheet = .source }).transition(.opacity).zIndex(12) }
-                if let n = session.sleepCountdown { SleepCard(seconds: n, session: session).zIndex(13) }
             }
             .animation(Self.fade, value: controls)
             .animation(.easeOut(duration: 0.38), value: session.phase)
@@ -90,8 +90,16 @@ struct PlayerScreen: View {
         .onAppear { UIApplication.shared.isIdleTimerDisabled = true }
         .onDisappear { UIApplication.shared.isIdleTimerDisabled = false }
         .onChange(of: paused) { _, p in
-            if p { schedule(Self.pauseCardAfter) { if paused && sheet == nil && !xray { controls = false; pauseCard = true } } }
-            else { pauseCard = false; bump() }
+            // One wait per pause: a pause, play, pause again within 8 s no longer brought the card early.
+            pauseWait?.cancel()
+            if p {
+                pauseWait = Task {
+                    try? await Task.sleep(for: .seconds(Self.pauseCardAfter))
+                    guard !Task.isCancelled, paused, sheet == nil, !xray else { return }
+                    controls = false
+                    pauseCard = true
+                }
+            } else { pauseCard = false; bump() }
         }
         .onChange(of: session.phase) { _, p in if p != .playing { controls = false; pauseCard = false; xray = false } }
         .onChange(of: controls) { _, c in session.controlsShown(c) }
@@ -213,10 +221,6 @@ struct PlayerScreen: View {
         }
     }
 
-    private func schedule(_ seconds: Double, _ f: @escaping @MainActor () -> Void) {
-        Task { try? await Task.sleep(for: .seconds(seconds)); f() }
-    }
-
     private func openSheet(_ k: PlayerSheet) {
         haptic(.light)
         if k == .playPause {
@@ -240,7 +244,7 @@ struct PlayerScreen: View {
 }
 
 enum PlayerSheet: Equatable {
-    case audio, speed, info, episodes, source, sleep
+    case audio, speed, info, episodes, source
     // Actions routed through the same callback.
     case playPause, startOver, nextEpisode
 }
@@ -327,9 +331,9 @@ struct ControlsOverlay: View {
             HStack(alignment: .top, spacing: 14) {
                 TimelineView(.periodic(from: .now, by: 15)) { ctx in
                     VStack(alignment: .trailing, spacing: 4) {
-                        Text(ctx.date.formatted(date: .omitted, time: .shortened)).font(.system(size: 20, weight: .semibold)).monospacedDigit()
+                        Text(DreamTime.formatTime(ctx.date)).font(.system(size: 20, weight: .semibold)).monospacedDigit()
                         if s.duration > 0 {
-                            Text("Ends at " + ctx.date.addingTimeInterval(max(0, s.duration - s.position) / max(0.25, session.speed)).formatted(date: .omitted, time: .shortened))
+                            Text("Ends at " + DreamTime.formatTime(ctx.date.addingTimeInterval(max(0, s.duration - s.position) / max(0.25, session.speed))))
                                 .font(.system(size: 13, weight: .medium)).foregroundStyle(.white.opacity(0.66)).monospacedDigit()
                         }
                     }
@@ -609,7 +613,7 @@ struct PauseCard: View {
     var body: some View {
         let r = session.request
         VStack(alignment: .leading, spacing: 10) {
-            Text("You're Watching").font(.system(size: 13, weight: .bold)).tracking(2.4).textCase(.uppercase)
+            Text("You're Watching").font(.system(size: 13, weight: .bold))
                 .foregroundStyle(.white.opacity(0.62))
             TitleBlock(session: session, logoHeight: 64, titleSize: 32, lines: 2)
             if let line = pauseLine(r), !line.isEmpty {

@@ -63,7 +63,7 @@ struct RealDebrid: DebridAccountsAPI {
         switch r {
         case .waiting: return .waiting
         case .done:
-            DebridLink.finish(link.service, r)
+            await Self.onMain { DebridLink.finish(link.service, r) }
             PendingLinks.shared.drop(link.token)
             await DebridExpiry.accountsChanged()
             return .done
@@ -76,13 +76,17 @@ struct RealDebrid: DebridAccountsAPI {
     func link(_ service: String, apiKey: String) async throws {
         let r = await DebridLink.premiumizeKey(apiKey)
         switch r {
-        case .done: DebridLink.finish(service, r); await DebridExpiry.accountsChanged()
+        case .done: await Self.onMain { DebridLink.finish(service, r) }; await DebridExpiry.accountsChanged()
         case .failed(let m): throw DreamError(m)
         case .waiting: throw DreamError("That key didn't work. Check it and try again.")
         }
     }
 
-    func unlink(_ service: String) async { DebridAccounts.unlink(service); AccountHealth.forget(service) }
+    func unlink(_ service: String) async { await Self.onMain { DebridAccounts.unlink(service) } }
+
+    /// Linking and unlinking run on the main actor, with the pages that read the accounts (`dreamAccountsChanged`
+    /// itself is always posted on the main thread).
+    private static func onMain(_ f: @escaping @MainActor @Sendable () -> Void) async { await MainActor.run(body: f) }
     func makePrimary(_ service: String) async { DebridAccounts.makePrimary(service) }
 
     private static func health(_ h: AccountHealth.Health) -> DebridAccountState.Health {
@@ -90,6 +94,7 @@ struct RealDebrid: DebridAccountsAPI {
         case .ok, .limit: .ok
         case .invalid: .invalid
         case .offline: .offline
+        case .blocked: .blocked
         }
     }
 }

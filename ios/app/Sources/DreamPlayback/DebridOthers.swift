@@ -26,23 +26,9 @@ struct PremiumizeService: DebridService {
     private static let maxHashes = 60
 
     func resolve(_ candidates: [Candidate], deadline: Int64) async -> StreamLink? {
-        let list = Array(candidates.prefix(Self.maxHashes))
-        if list.isEmpty || token.isEmpty { return nil }
-        let t0 = Mono.now()
-        guard let r = try? await DebridHttp.postForm("\(Self.api)/cache/check", list.map { ("items[]", $0.hash) }, bearer: token,
-                                                      timeoutMs: DebridHttp.left(deadline)) else {
-            plog.warning("Premiumize: cache check failed (no answer)"); return nil
-        }
-        let o = r.ok ? r.json() : JV(nil)
-        guard o["status"].string == "success", let flags = o["response"].array else {
-            // Premiumize answers errors with HTTP 200 and status "error" (code "authentication_failed" for a bad token).
-            plog.warning("Premiumize: cache check failed (HTTP \(r.code) \(o["code"].string, privacy: .public))"); return nil
-        }
-        let cached = list.indices.filter { $0 < flags.count && flags[$0].bool }
-        plog.info("Premiumize: \(cached.count) of \(list.count) cached (\(Mono.now() - t0) ms)")
-        for i in cached {
+        for c in await cached(candidates, deadline) {
             if Mono.now() >= deadline { break }
-            if let f = await unlock(list[i], deadline) { return f }
+            if let f = await unlock(c, deadline) { return f }
         }
         return nil
     }
@@ -50,6 +36,20 @@ struct PremiumizeService: DebridService {
     /// The first [limit] cached candidates unlocked side by side (directdl adds nothing to the account).
     func resolveMany(_ candidates: [Candidate], deadline: Int64, limit: Int) async -> [StreamLink] {
         if limit <= 1 { return [await resolve(candidates, deadline: deadline)].compactMap { $0 } }
+        let cached = await cached(candidates, deadline)
+        var out = await Self.unlockMany(Array(cached.prefix(limit)), deadline) { await unlock($0, deadline) }
+        // None of the raced ones opened: the rest in turn, as before.
+        if out.isEmpty {
+            for c in cached.dropFirst(limit) {
+                if Mono.now() >= deadline { break }
+                if let f = await unlock(c, deadline) { out = [f]; break }
+            }
+        }
+        return out
+    }
+
+    /// [candidates] Premiumize has cached, in their order, from one batched check; empty when it didn't answer.
+    private func cached(_ candidates: [Candidate], _ deadline: Int64) async -> [Candidate] {
         let list = Array(candidates.prefix(Self.maxHashes))
         if list.isEmpty || token.isEmpty { return [] }
         let t0 = Mono.now()
@@ -59,19 +59,12 @@ struct PremiumizeService: DebridService {
         }
         let o = r.ok ? r.json() : JV(nil)
         guard o["status"].string == "success", let flags = o["response"].array else {
+            // Premiumize answers errors with HTTP 200 and status "error" (code "authentication_failed" for a bad token).
             plog.warning("Premiumize: cache check failed (HTTP \(r.code) \(o["code"].string, privacy: .public))"); return []
         }
-        let cached = list.indices.filter { $0 < flags.count && flags[$0].bool }
+        let cached = list.indices.filter { $0 < flags.count && flags[$0].bool }.map { list[$0] }
         plog.info("Premiumize: \(cached.count) of \(list.count) cached (\(Mono.now() - t0) ms)")
-        var out = await Self.unlockMany(cached.prefix(limit).map { list[$0] }, deadline) { await unlock($0, deadline) }
-        // None of the raced ones opened: the rest in turn, as before.
-        if out.isEmpty {
-            for i in cached.dropFirst(limit) {
-                if Mono.now() >= deadline { break }
-                if let f = await unlock(list[i], deadline) { out = [f]; break }
-            }
-        }
-        return out
+        return cached
     }
 
     /// [cands] unlocked side by side, the links back in the candidates' order.
@@ -163,24 +156,8 @@ struct TorBoxService: DebridService {
     }
 
     func resolve(_ candidates: [Candidate], deadline: Int64) async -> StreamLink? {
-        let list = Array(candidates.prefix(Self.maxHashes))
-        if list.isEmpty || token.isEmpty { return nil }
-        Self.maybeJanitor(token)
-        let t0 = Mono.now()
-        let body = try? JSONSerialization.data(withJSONObject: ["hashes": list.map(\.hash)])
-        guard let r = try? await DebridHttp.request("\(Self.api)/torrents/checkcached?format=list&list_files=true", method: "POST", bearer: token,
-                                                     body: body, contentType: "application/json", timeoutMs: DebridHttp.left(deadline)) else { return nil }
-        guard r.ok else {
-            // 401/403 with error BAD_TOKEN for a stale token.
-            plog.warning("TorBox: cache check failed (HTTP \(r.code) \(r.json()["error"].string, privacy: .public))"); return nil
-        }
-        let cached = cachedFiles(r.json()["data"])
-        let hits = list.enumerated().filter { cached[$0.element.hash.lowercased()] != nil }
-        plog.info("TorBox: \(hits.count) of \(list.count) cached (\(Mono.now() - t0) ms)")
-        for (_, c) in hits {
+        for c in await fits(candidates, deadline) {
             if Mono.now() >= deadline { break }
-            let files = cached[c.hash.lowercased()] ?? []
-            if !files.isEmpty && DebridFiles.pick(files, c) < 0 { continue } // the pack doesn't hold it
             if let f = await unlock(c, deadline) { return f }
         }
         return nil
@@ -190,20 +167,7 @@ struct TorBoxService: DebridService {
     /// alternate is a torrent kept in the account until `discard` (the winner started) or the janitor.
     func resolveMany(_ candidates: [Candidate], deadline: Int64, limit: Int) async -> [StreamLink] {
         if limit <= 1 { return [await resolve(candidates, deadline: deadline)].compactMap { $0 } }
-        let list = Array(candidates.prefix(Self.maxHashes))
-        if list.isEmpty || token.isEmpty { return [] }
-        Self.maybeJanitor(token)
-        let t0 = Mono.now()
-        let body = try? JSONSerialization.data(withJSONObject: ["hashes": list.map(\.hash)])
-        guard let r = try? await DebridHttp.request("\(Self.api)/torrents/checkcached?format=list&list_files=true", method: "POST", bearer: token,
-                                                     body: body, contentType: "application/json", timeoutMs: DebridHttp.left(deadline)) else { return [] }
-        guard r.ok else { plog.warning("TorBox: cache check failed (HTTP \(r.code) \(r.json()["error"].string, privacy: .public))"); return [] }
-        let cached = cachedFiles(r.json()["data"])
-        let fits = list.filter { c in
-            guard let files = cached[c.hash.lowercased()] else { return false }
-            return files.isEmpty || DebridFiles.pick(files, c) >= 0
-        }
-        plog.info("TorBox: \(fits.count) of \(list.count) cached (\(Mono.now() - t0) ms)")
+        let fits = await fits(candidates, deadline)
         var out = await PremiumizeService.unlockMany(Array(fits.prefix(limit)), deadline) { await unlock($0, deadline) }
         if out.isEmpty {
             for c in fits.dropFirst(limit) {
@@ -230,6 +194,29 @@ struct TorBoxService: DebridService {
             for (h, id) in drop { if await TorBoxService(token: token).delete(id) { DebridLedger.shared.release(scope, [h]); n += 1 } }
             plog.info("TorBox: dropped \(n) alternate\(n == 1 ? "" : "s", privacy: .public)")
         }
+    }
+
+    /// [candidates] TorBox has cached and that hold the wanted file (a pack without the episode is skipped before
+    /// anything is added), in their order, from one batched check; empty when it didn't answer.
+    private func fits(_ candidates: [Candidate], _ deadline: Int64) async -> [Candidate] {
+        let list = Array(candidates.prefix(Self.maxHashes))
+        if list.isEmpty || token.isEmpty { return [] }
+        Self.maybeJanitor(token)
+        let t0 = Mono.now()
+        let body = try? JSONSerialization.data(withJSONObject: ["hashes": list.map(\.hash)])
+        guard let r = try? await DebridHttp.request("\(Self.api)/torrents/checkcached?format=list&list_files=true", method: "POST", bearer: token,
+                                                     body: body, contentType: "application/json", timeoutMs: DebridHttp.left(deadline)) else { return [] }
+        guard r.ok else {
+            // 401/403 with error BAD_TOKEN for a stale token.
+            plog.warning("TorBox: cache check failed (HTTP \(r.code) \(r.json()["error"].string, privacy: .public))"); return []
+        }
+        let cached = cachedFiles(r.json()["data"])
+        let fits = list.filter { c in
+            guard let files = cached[c.hash.lowercased()] else { return false }
+            return files.isEmpty || DebridFiles.pick(files, c) >= 0
+        }
+        plog.info("TorBox: \(fits.count) of \(list.count) cached (\(Mono.now() - t0) ms)")
+        return fits
     }
 
     /// hash -> its files (name, size) from a checkcached reply, in list or object format; uncached hashes are absent.
@@ -321,6 +308,9 @@ actor RDTokens {
     private(set) var refreshedTo: String?
     private var refreshCode: String?
     private var failedAt: Int64 = 0
+    /// The refresh under way: the actor is reentrant across its request, so parallel probes join it instead of each
+    /// sending their own.
+    private var running: Task<String?, Never>?
 
     func current(_ stored: String) -> String { refreshedFrom == stored ? (refreshedTo ?? stored) : stored }
 
@@ -328,6 +318,15 @@ actor RDTokens {
     func refresh(_ acc: DebridAccounts.Accounts, failed: String, timeoutMs: Int) async -> String? {
         let stored = acc.realDebrid ?? ""
         if current(stored) != failed { return current(stored) }
+        if let running { return await running.value }
+        let t = Task { await renew(acc, stored: stored, timeoutMs: timeoutMs) }
+        running = t
+        let fresh = await t.value
+        running = nil
+        return fresh
+    }
+
+    private func renew(_ acc: DebridAccounts.Accounts, stored: String, timeoutMs: Int) async -> String? {
         if failedAt != 0 && Mono.now() - failedAt < 60_000 { return nil }
         let code = (refreshedFrom == stored ? refreshCode : nil) ?? acc.realDebridRefresh
         if acc.realDebridClientId.isEmpty || acc.realDebridSecret.isEmpty || code.isEmpty { return nil }
@@ -370,7 +369,9 @@ struct RealDebridService: DebridService {
     private static let waiting: Set<String> = ["queued", "waiting_files_selection", "magnet_conversion"]
 
     private var stored: String { accounts.realDebrid ?? "" }
-    private var scope: String { DebridLedger.scope("rd", stored) }
+    private var scope: String { DebridLedger.scope("rd", accounts.ledgerId("rd") ?? "") }
+    /// The scope test torrents were kept under before it moved to the client id: swept with the current one.
+    private var tokenScope: String { DebridLedger.scope("rd", stored) }
 
     private final class State: @unchecked Sendable { let lock = NSLock(); var sweptFor = ""; var sweptAt: Int64 = 0 }
     private static let state = State()
@@ -385,7 +386,7 @@ struct RealDebridService: DebridService {
     /// 10 min) are deleted now. In the background.
     func maybeSweep(force: Bool = false) {
         if stored.isEmpty { return }
-        let s = Self.state, scope = scope, now = Mono.now()
+        let s = Self.state, scope = scope, old = tokenScope, now = Mono.now()
         let go = s.lock.withLock { () -> Bool in
             if !force && s.sweptFor == scope && now - s.sweptAt < 3_600_000 { return false }
             s.sweptFor = scope; s.sweptAt = now
@@ -395,13 +396,14 @@ struct RealDebridService: DebridService {
         let me = self
         Task.detached(priority: .utility) {
             let ledger = DebridLedger.shared
-            let left = ledger.owned(scope).filter { wallMs() - $0.value.t > 10 * 60_000 }
+            let scopes = old == scope ? [scope] : [scope, old]
+            let left = scopes.flatMap { sc in ledger.owned(sc).filter { wallMs() - $0.value.t > 10 * 60_000 }.map { (sc, $0.key, $0.value) } }
             var n = 0
-            for (k, o) in left {
+            for (sc, k, o) in left {
                 let id = o.i ?? (k.hasPrefix("id:") ? String(k.dropFirst(3)) : k)
                 guard let r = try? await DebridHttp.request("\(Self.rest)torrents/delete/\(id)", method: "DELETE", bearer: await me.token(), timeoutMs: 8_000) else { continue }
                 // 404: already gone.
-                if r.ok || r.code == 404 { ledger.release(scope, [k]); if r.ok { n += 1 } }
+                if r.ok || r.code == 404 { ledger.release(sc, [k]); if r.ok { n += 1 } }
             }
             if !left.isEmpty { plog.warning("Real-Debrid janitor: removed \(n) leftover test torrent\(n == 1 ? "" : "s", privacy: .public)") }
         }

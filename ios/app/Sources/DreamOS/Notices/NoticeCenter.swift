@@ -163,32 +163,6 @@ final class NoticeCenter: @unchecked Sendable {
 
     /// A banner-only notice has been shown (or dropped): nothing of it is kept.
     func bannerDone(_ key: String) { _ = lock.withLock { transient.remove(key) } }
-
-    // ---- hooks for other parts of Dream OS ----
-
-    /// "AllDebrid", "Premiumize"...
-    static func serviceName(_ s: String) -> String {
-        switch s { case "ad": "AllDebrid"; case "pm": "Premiumize"; case "tb": "TorBox"; case "rd": "Real-Debrid"; default: s }
-    }
-
-    /// Developer preview: a warning, a critical notice and the summary, new keys each time.
-    func demo() {
-        let t = wallNow()
-        post(key: "demo:warn:\(t)", type: .expiry, title: "AllDebrid Premium Ends in 3 Days",
-             body: "Renew by \(DreamTime.format(Date().addingTimeInterval(3 * 86_400), "EEE, MMM d")) to Keep Streaming",
-             severity: .warning, action: .init(label: "Renew", target: "renew:ad"))
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.9) {
-            self.post(key: "demo:crit:\(t)", type: .expiry, title: "Premiumize Premium Expired", body: "Streaming Through AllDebrid Instead",
-                      severity: .critical, action: .init(label: "Renew", target: "renew:pm"))
-        }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.8) {
-            self.post(key: "demo:sum:\(t)", type: .summary, title: "Your Accounts",
-                      body: "Real-Debrid: 5 Days\nPremiumize: 21 Days\nAllDebrid: 76 Days\nTorBox: Renews Automatically", replace: true)
-        }
-    }
-
-    /// Developer: removes the demo notices.
-    func clearDemo() { dismissPrefix("demo:") }
 }
 
 func wallNow() -> Int64 { Int64(Date().timeIntervalSince1970 * 1000) }

@@ -51,7 +51,6 @@ public final class PictureInPicture: NSObject, ObservableObject {
         }
         let source: AVPictureInPictureController.ContentSource
         switch content {
-        case .playerLayer(let l): source = .init(playerLayer: l)
         case .sampleBuffer(let l): source = .init(sampleBufferDisplayLayer: l, playbackDelegate: self); sampleSource = true
         }
         let c = AVPictureInPictureController(contentSource: source)

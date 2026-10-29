@@ -29,8 +29,9 @@ because something broke or looked wrong before. Check new work against the **che
 - **The Watched pill (owner-approved, 2026-10-28)** is the one other pill color: gold text and a drawn gold check
   `#E8C468` on a dark graphite-gold capsule `#2A2412` (92%) with a faint gold edge (`#E8C468` at 34%). Same values on
   the iPhone (`Palette.gold` / `goldFill`, `WatchedPill`). Gold is for this pill only, never another accent.
-- **Icons are drawn, never text.** No "✓", "✔", "•", "!", "✗" characters as icons, and no emoji as UI icons. Use
-  `StatusGlyph` (`BrandRow.Mark.OK / WARN / BUSY / OFF / PICK`) for status marks and `CheckInk` for bare checks.
+- **Icons are drawn, never text.** No "✓", "✔", "•", "!", "✗" characters as icons. Use `StatusGlyph`
+  (`BrandRow.Mark.OK / WARN / BUSY / OFF / PICK`) for status marks and `CheckInk` for bare checks. **Emoji are allowed**
+  (owner, 2026-10-29): notification banner icons, profile avatars and the like are fine; don't replace them.
 - **Illustrations:** Dream OS line art (`SetupArt`, `GlyphPen`): monoline pearl strokes on a dark-glass disc in a thin
   rainbow ring. No glossy, 3D, emoji or sticker styles. Exception: the AirPods-in-case art stays as it is.
 
@@ -52,6 +53,19 @@ because something broke or looked wrong before. Check new work against the **che
   some rows have marks, use `OFF` / `PICK` so rows line up.
 - **Text never breaks badly:** names and titles stay on one line with an ellipsis (no mid-word hyphenation; set
   `hyphenationFrequency = NONE`); captions and poster titles may use two lines; bios end on a full sentence.
+- **Setup text is never cut** (owner, 2026-10-29): in the setup and its shared pages (`SetupUi`, `BrandRow`,
+  `SetupParts`), titles, captions, steps and values wrap in full (`lines = 0`), never a line cap with "…". A
+  scrolling setup list keeps `SetupScreen.LIFT_H` / `LIFT_V` of room so the last pill's glow isn't cut. Check every
+  setup screen at 1080p (960 x 540 dp), the Fire TV Stick HD's size.
+- **Setup's shape** (owner, 2026-10-29; spec in `docs/setup-redesign.md`): every step uses the one frame in
+  `SetupWizard.Frame` (chapter rail, emblem + "Step n of m" + title, one or two sentences, the body, buttons
+  pinned at the bottom). Exactly one primary forward action per screen (never Done beside Continue); focus
+  starts on the likely next action and never on one that starts something unasked (a sign-in, an unlock).
+  Finished tasks (a key check, a sign-in, a repository add, a passed check) return or move on by themselves
+  after the result shows. **Nothing scrolls on a setup step at 1080p**: more than fits becomes its own page
+  (help is a one-step-per-page walkthrough, Change Settings a hub of short pages); only genuinely long choice
+  lists (time zones, languages, all providers) scroll, each on a page of its own. No dropdowns, chips as
+  content, or small targets in clusters: a cycling choice is one row that Left/Right steps through.
 - **Focus can always reach the action.** A long list never traps focus away from Continue / the page's buttons (picking
   an item or Left/Right moves to the action; if everything on a page is informational, focus starts on Continue).
 - **Top tab bar:** no focus bubble; a focused/current tab is its bright, bold label with the rainbow line centered under
@@ -77,7 +91,26 @@ because something broke or looked wrong before. Check new work against the **che
 
 - **Anime only in Anime sections** (the Anime page/chip, Crunchyroll, and personal rows like Continue Watching / My
   List). Every row loader and every Discover query goes through the shared anime filter (`RowMix` / `RowClaims`,
-  `NewReleases.animeClause`, which also excludes TMDB's anime keyword).
+  `NewReleases.animeClause`, which also excludes TMDB's anime keyword). It's a per-profile setting, on by default
+  (Settings › Home & Apps › Keep Anime in Anime Sections, `RowMix.animeApart`): new filter code reads it through
+  `RowMix.animeHidden` / `RowMix.tidy`, never `isAnime` alone. Off, anime shows everywhere like any other title.
+- **Dubs** (`AnimeDubs`): source badges come only from what release names say; no badge when they say nothing.
+  Prefer English Dubs (per profile, on unless the audio language is Japanese) ranks copies carrying the viewer's
+  language first within a quality tier for any title whose original language isn't theirs (anime included), never
+  above a better tier, a real release or the filters. Audio in another language than the viewer's turns subtitles on
+  with a notice unless they chose subtitles in the player for that title.
+- **Language pills** (owner, 2026-10-29; `LangPills`, iPhone `LanguagePills`): on the title page, for every title
+  whose original language isn't the viewer's audio language (their per-profile setting); their own language shows
+  none. Any good copy (no CAM, playable on the device) carrying their language, by its name (DUB, DUAL AUDIO, ENG /
+  ENGLISH as audio, "Kor-Eng", MULTI with ENG) or because Dream Player heard it in that copy or title before: "English
+  Dub Available" (a name says dub, or English isn't among TMDB's spoken languages), else "English Audio Available",
+  green with the status check, and Play picks that copy. None: "<Language> Audio Only" in amber with a drawn speaker (the language the
+  copies name most, else TMDB's original), "<A> and <B> Audio", or "Multi Audio" past two, beside "<Language>
+  Subtitles" with the check (the viewer's subtitle language not already playing, else their audio language) when a
+  release name or Dream Subtitles' index confirms them; a plain "No <Language> Subtitles" only when the index answered
+  without them. Nothing shows until the release names are known (never a guess that later flips); answers are kept
+  (small, capped) so a title page shows them on its first frame and refreshes behind them. Episode rows: "English
+  Dub" / "Japanese Audio" once that episode's copies were read. Informational: never focusable.
 - **Kids profiles:** every row, grid, search and title page applies the profile's rating limit (`KidsFilter`,
   `KidsProfiles`).
 - **Availability pills only on new titles:** movies released (digital or theatrical, US) in the last ~90 days or
@@ -141,6 +174,10 @@ because something broke or looked wrong before. Check new work against the **che
   computed per call, never held in a `val` from class load (the launcher runs for weeks).
 - **Card art never sits blank:** every card passes its next art choices as fallbacks (`CinemaArt.source`); a stalled
   download gives up in 6 s and after 1.5 s of downloading the next choice is asked too (`Net.image`, `HEDGE_MS`).
+- **Covers over other apps show Dream OS, never black** (voice search, 2026-10-29): `ScreenCover` draws the window
+  itself (Fire OS 7 fails `PixelCopy` of a window), and MainActivity's onResume / onPause must keep reporting to it
+  (`screenResumed` / `screenPaused`); without that every cover is the bare black background. Anything that moves
+  under a cover rides on it as a `ScreenCover.Live` twin. Check with `PingReceiver --es voice test`.
 
 ## 7. Building blocks to reuse (don't reinvent)
 
@@ -176,7 +213,7 @@ because something broke or looked wrong before. Check new work against the **che
 ## 9. Checklist for every new screen or feature
 
 - [ ] Black/gray surfaces, rainbow focus, pearl focused rows; no new accent colors.
-- [ ] Drawn icons only (no text check marks or emoji); illustrations in Dream OS line art.
+- [ ] Drawn icons, no text check marks (emoji are allowed); illustrations in Dream OS line art.
 - [ ] Focus every element: nothing clipped (all four sides), nothing cut by the screen edge, nothing overlapping.
 - [ ] Long lists: `softEdges`, `clipViewport`, and focus can always reach the page's action.
 - [ ] Words: Title Case labels, sentence-case descriptions, no hints, no technical terms, no "can't" lists.

@@ -85,7 +85,8 @@ public final class PlayerPresentation {
         // Every change the session publishes (about twice a second while playing) refreshes the mini player's
         // words and line, read on the next turn of the main queue (objectWillChange fires before the change).
         watch = s.objectWillChange.sink { [weak self] _ in
-            Task { @MainActor in self?.queueRefresh() }
+            // Sent on the main thread (the session is main-actor): no Task per change; queueRefresh defers itself.
+            MainActor.assumeIsolated { self?.queueRefresh() }
         }
         if foregroundObserver == nil {
             foregroundObserver = NotificationCenter.default.addObserver(forName: UIApplication.didBecomeActiveNotification,

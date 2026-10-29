@@ -30,6 +30,9 @@ class LineIcon(private val shape: Int) : Drawable() {
         const val HOME = 0; const val FILM = 1; const val TV = 2; const val LIVE = 3; const val APPS = 4
         const val BOOKMARK = 5; const val SEARCH = 6; const val GEAR = 7; const val GAUGE = 8; const val HEADPHONES = 9
         const val BELL = 10; const val CLOCK = 11
+        // Weather (Weather.icon): drawn like the rest, never emoji (STANDARDS §2).
+        const val SUN = 12; const val MOON = 13; const val PARTLY = 14; const val CLOUD = 15; const val FOG = 16
+        const val RAIN = 17; const val SNOW = 18; const val STORM = 19; const val DROP = 20
         private const val STROKE = 1.8f // in grid units
 
         private fun build(shape: Int): Path = Path().apply {
@@ -37,6 +40,20 @@ class LineIcon(private val shape: Int) : Drawable() {
             fun line(x1: Float, y1: Float, x2: Float, y2: Float) { moveTo(x1, y1); lineTo(x2, y2) }
             fun arc(cx: Float, cy: Float, r: Float, start: Float, sweep: Float) =
                 arcTo(RectF(cx - r, cy - r, cx + r, cy + r), start, sweep, true)
+            // A cloud of three lobes on a flat base, about 16 x 11 units, its base at y 18 + [dy].
+            fun cloud(dx: Float, dy: Float) {
+                arc(8.5f + dx, 14.5f + dy, 3.5f, 90f, 180f)
+                arc(12.5f + dx, 11.5f + dy, 4.5f, 190f, 165f)
+                arc(16.5f + dx, 14.5f + dy, 3.5f, 270f, 180f)
+                line(8.5f + dx, 18f + dy, 16.5f + dx, 18f + dy)
+            }
+            fun rays(cx: Float, cy: Float, r1: Float, r2: Float, angles: List<Float>) {
+                for (a in angles) {
+                    val c = cos(Math.toRadians(a.toDouble())).toFloat()
+                    val s = sin(Math.toRadians(a.toDouble())).toFloat()
+                    line(cx + r1 * c, cy + r1 * s, cx + r2 * c, cy + r2 * s)
+                }
+            }
             when (shape) {
                 HOME -> {
                     moveTo(4.5f, 10.2f); lineTo(12f, 4f); lineTo(19.5f, 10.2f); lineTo(19.5f, 19.5f)
@@ -107,6 +124,42 @@ class LineIcon(private val shape: Int) : Drawable() {
                 CLOCK -> {
                     addCircle(12f, 12f, 8.5f, Path.Direction.CW)
                     line(12f, 7.2f, 12f, 12f); line(12f, 12f, 15.4f, 14f)
+                }
+                SUN -> {
+                    addCircle(12f, 12f, 4f, Path.Direction.CW)
+                    rays(12f, 12f, 6.6f, 8.8f, (0 until 8).map { it * 45f })
+                }
+                MOON -> {
+                    // A crescent: the lit edge of a circle, cut by a second one up and to the right.
+                    arc(12f, 12f, 8f, 9.3f, 251.4f)
+                    arcTo(RectF(9f, 2f, 22f, 15f), 222.5f, -175f, false)
+                    close()
+                }
+                PARTLY -> {
+                    addCircle(8.5f, 8.5f, 3f, Path.Direction.CW)
+                    rays(8.5f, 8.5f, 4.8f, 6.2f, listOf(135f, 180f, 225f, 270f, 315f))
+                    cloud(1.5f, 2.5f)
+                }
+                CLOUD -> cloud(0f, 0f)
+                FOG -> { line(5f, 8f, 19f, 8f); line(3.5f, 12f, 20.5f, 12f); line(6f, 16f, 18f, 16f) }
+                RAIN -> {
+                    cloud(0f, -3.5f)
+                    line(8.5f, 17.5f, 7.3f, 20.8f); line(12.5f, 17.5f, 11.3f, 20.8f); line(16.5f, 17.5f, 15.3f, 20.8f)
+                }
+                SNOW -> {
+                    cloud(0f, -3.5f)
+                    addCircle(8.5f, 19f, 0.7f, Path.Direction.CW)
+                    addCircle(12.5f, 20.5f, 0.7f, Path.Direction.CW)
+                    addCircle(16.5f, 19f, 0.7f, Path.Direction.CW)
+                }
+                STORM -> {
+                    cloud(0f, -3.5f)
+                    moveTo(13.2f, 16f); lineTo(10.6f, 19.4f); lineTo(13.2f, 19.4f); lineTo(11f, 22.6f)
+                }
+                DROP -> {
+                    moveTo(12f, 4f); quadTo(6f, 11f, 6f, 14.5f)
+                    arcTo(RectF(6f, 8.5f, 18f, 20.5f), 180f, -180f, false)
+                    quadTo(18f, 11f, 12f, 4f)
                 }
                 GAUGE -> {
                     arc(12f, 13.5f, 8.5f, 140f, 260f)

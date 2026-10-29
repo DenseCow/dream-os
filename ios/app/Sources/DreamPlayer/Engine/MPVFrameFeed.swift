@@ -117,7 +117,6 @@ final class MPVFrameFeed: @unchecked Sendable {
     private var feedStartedAt: CFTimeInterval = 0
     private var framesSent = 0
     /// Frames handed to the layer in this feeding run (diagnostics).
-    var frameCount: Int { lock.withLock { framesSent } }
 
     /// The size frames are drawn at (pixels, even numbers).
     func setSize(width w: Int, height h: Int) {

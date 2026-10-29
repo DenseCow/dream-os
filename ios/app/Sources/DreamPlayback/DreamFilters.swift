@@ -42,9 +42,6 @@ public enum DreamFilters {
         public var cap: Int { DreamFilters.q.firstIndex(of: v["quality.max"] ?? "") ?? 0 }
         /// SD only goes when something better exists.
         public var hideSd: Bool { let s = v["quality.min"] ?? ""; return s.isEmpty ? true : s != "sd" }
-        /// Not an option on iPhone (owner, 2026-10-28): CAM copies are always passed over while a real copy exists; the
-        /// relaxed filters still offer one (with the CAM Only note) when it's all there is.
-        public var hideCam: Bool { true }
         public var hideHdr: Bool { on("hide.hdr", false) }
         public var hideDv: Bool { on("hide.dv", false) }
         public var hideHevc: Bool { on("hide.hevc", false) }
@@ -146,6 +143,9 @@ enum ReleaseLanguage {
         return m
     }()
 
+    /// The language one release-name token names ("ENG" -> "en"); MULTI and DUAL name none.
+    static func tag(_ token: String) -> String? { tags[token.uppercased()].flatMap { $0 == multi ? nil : $0 } }
+
     /// A language from a release name ("Italiano", "ENG 5.1", "Castellano"), or nil.
     static func from(_ name: String) -> String? {
         let tokens = name.uppercased().components(separatedBy: CharacterSet(charactersIn: "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789+").inverted).filter { !$0.isEmpty }
@@ -194,8 +194,6 @@ public enum HDRPreference {
         if !PlaybackPath.shared.unmetered { return "metered or Low Data network" }
         return nil
     }
-    /// HDR copies may go above the cap for this Play.
-    public static var active: Bool { chosen && heldBack == nil }
 }
 
 /// The phone's network path for source choices. Two separate questions:
@@ -429,8 +427,6 @@ public enum CellularSaver {
     }
     private static let session = Session()
 
-    /// The phone is on a metered network right now (cellular, hotspot, Low Data Mode). Not the saver's test.
-    public static var onMeteredNetwork: Bool { !PlaybackPath.shared.unmetered }
     /// The phone is really on mobile data right now (fresh read, held `PlaybackPath.settleMs`): the saver's only test.
     public static var onMobileData: Bool { PlaybackPath.shared.mobileData }
     /// On mobile data by a fresh read but for less than the settle time: the ms left (nil = not on mobile data).
@@ -441,8 +437,6 @@ public enum CellularSaver {
     public static func start() { _ = PlaybackPath.shared }
     /// This session's answer (none until asked).
     public static var answer: Answer { session.lock.withLock { session.answer } }
-    /// Ask Me, on mobile data, not answered this session: the app asks (now, or right before the next Play).
-    public static var needsAnswer: Bool { answer == .none && mode == .ask && onMobileData }
     /// The prompt decision ([why]: where the app would show it), read fresh, with one log line naming the interfaces,
     /// `isExpensive` and `isConstrained`, so a test shows exactly why it asked or didn't. Logs only when Ask Me is
     /// unanswered (the network is then the deciding fact).

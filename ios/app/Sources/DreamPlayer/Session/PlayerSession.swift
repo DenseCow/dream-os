@@ -48,9 +48,6 @@ public final class PlayerSession: ObservableObject {
     @Published public private(set) var link: StreamLink?
     @Published public private(set) var speed: Double = 1
     @Published public private(set) var fill = false
-    /// Sleep timer: when it fires, and the expiry card's countdown (nil = not showing).
-    @Published public private(set) var sleepEndsAt: Date?
-    @Published public private(set) var sleepCountdown: Int?
     /// Bumped on every engine event so views re-read `engine.state`.
     @Published public private(set) var tick = 0
 
@@ -86,9 +83,19 @@ public final class PlayerSession: ObservableObject {
     private var finishedAt: Double = 0
     private var userAudio = false, userText = false, audioApplied = false
     private var seenText = Set<String>()
+    /// Audio in another language than the viewer's (`audioCheck`): the subtitle languages to show, while on for this item.
+    private var autoSubs: [String]?
+    /// "Japanese Audio": the first half of the notice, until the subtitles are settled.
+    private var autoNote: String?
+    /// Dream Subtitles' search for this item has finished (its files, if any, are in the track list).
+    private var subsSettled = false
+    /// A notice already showing at the first frame (a CAM note): this one waits until then.
+    private var noticeAfter = Date.distantPast
     /// The subtitle choices as read when this stream started (Dream Subtitles + "in the video first").
     private var subPrefs: DreamSubtitles.Prefs?
     private var trailerKeys: [String] = []
+    /// Every key the trailer was asked with: Try Again starts over from these (`trailerKeys` is used up by then).
+    private var trailerAllKeys: [String] = []
     private var trailerStart: Double = 0
     private var trailerAdvances = 0
     private var pendingStart: Double = 0
@@ -97,6 +104,8 @@ public final class PlayerSession: ObservableObject {
     // Instant Play's fallback (2026-10-28): links switched to behind the curtain this item, the start watchdog, and
     // whether the current link's start was served from the stream cache (for the log).
     private var fallbacks = 0
+    /// The current link already failed once: a second reason for the same link costs no second quiet retry.
+    private var linkFailed = false
     private var startWatch: Task<Void, Never>?
     private var headStart = false
     static let maxFallbacks = 3
@@ -115,8 +124,6 @@ public final class PlayerSession: ObservableObject {
     private var countdownTask: Task<Void, Never>?
     // Skip
     private var doneIntro = false, doneRecap = false, autoSkipped = false
-    private var sleepChosen = 0
-    private var sleepTask: Task<Void, Never>?
 
     /// Automatic advances in a row ("Are You Still Watching?" after 3); any touch resets it (PlayFlow.autoplayedInARow).
     static var autoplayedInARow = 0
@@ -190,6 +197,8 @@ public final class PlayerSession: ObservableObject {
         endItem()
         self.request = request
         beginItem()
+        // A failure before the first frame falls back (or tries again) from here, not from the item's first start.
+        pendingStart = start
         loadMeta(for: request)
         self.start(link, at: start)
     }
@@ -199,6 +208,7 @@ public final class PlayerSession: ObservableObject {
         endItem()
         isTrailer = true
         trailerKeys = keys
+        trailerAllKeys = keys
         trailerStart = start
         trailerAdvances = 0
         request = PlayRequest(title: title)
@@ -210,6 +220,7 @@ public final class PlayerSession: ObservableObject {
         gen += 1
         phase = .loading
         firstFrame = false
+        retriedFromStart = false
         realWatched = 0
         lastTickPos = -1
         onRow = false
@@ -247,6 +258,7 @@ public final class PlayerSession: ObservableObject {
         itemStartedAt = nil
         doneIntro = false; doneRecap = false; autoSkipped = false
         userAudio = false; userText = false; audioApplied = false; seenText = []; subPrefs = nil
+        autoSubs = nil; autoNote = nil; subsSettled = false; noticeAfter = .distantPast
         lastSaveAt = .distantPast
         loadStartedAt = Date()
         fallbacks = 0
@@ -265,9 +277,11 @@ public final class PlayerSession: ObservableObject {
                                      text: isTrailer ? PlayerPrefs.subLang : DreamSubtitles.preferredText(subs))
         engine.setSpeed(speed)
         loadStartedAt = Date()
+        linkFailed = false
         headStart = !isTrailer && StreamCache.shared.ready(url)
         engine.load(EngineSource(url: url, headers: headers), start: start, autoplay: true)
         Log.player.info("Player: start '\(self.request?.title.name ?? "?", privacy: .public)' at \(Int(start), privacy: .public)s via \(link.service, privacy: .public)\(self.headStart ? ", head start from disk" : "", privacy: .public)")
+        subsSettled = false
         if !isTrailer, let r = request { Task { await self.loadSubtitles(for: r, link: link, prefs: subs) } }
         armStartWatch()
     }
@@ -322,6 +336,8 @@ public final class PlayerSession: ObservableObject {
             let m = await Services.shared.playback.skipMarkers(for: r)
             guard g == self.gen else { return }
             self.markers = m
+            // The credits estimate was made before the real markers came in.
+            self.creditsAt = nil
             let n = await Services.shared.playback.nextEpisode(after: r)
             guard g == self.gen else { return }
             self.next = n
@@ -404,7 +420,7 @@ public final class PlayerSession: ObservableObject {
     /// "Try Again": forget the failed link, look again from the same spot (DreamPlayerActivity.tryAnotherSource).
     public func tryAgain() {
         guard let r = request else { close(); return }
-        if isTrailer, let t = request?.title { playTrailer(of: t, keys: trailerKeys.isEmpty ? [] : trailerKeys); return }
+        if isTrailer, let t = request?.title { playTrailer(of: t, keys: trailerAllKeys); return }
         (Services.shared.playback as? PlaybackExtras)?.forget(r)
         play(r, at: resumeSpot())
     }
@@ -471,6 +487,9 @@ public final class PlayerSession: ObservableObject {
 
     public func pickSubtitles(_ t: PlayerTrack?) {
         userText = true
+        // Kept for this title: automatic subtitles never override it.
+        autoSubs = nil; autoNote = nil
+        if !isTrailer, let r = request { PlayerPrefs.noteSubsChosen(r) }
         if let t {
             engine.select(.text, id: t.id)
             PlayerPrefs.setSubLang(t.language)
@@ -509,7 +528,10 @@ public final class PlayerSession: ObservableObject {
             let text = engine.tracks(.text)
             var fresh = false
             for t in text where seenText.insert(t.id).inserted { fresh = true }
-            guard fresh, let want = PlayerPrefs.subLang else { return }
+            guard fresh else { return }
+            // The audio is in another language: its subtitles stay on.
+            if autoSubs != nil { _ = autoPick(); return }
+            guard let want = PlayerPrefs.subLang else { return }
             let sel = text.first { $0.selected }
             if want == PlayerPrefs.off {
                 if sel != nil { engine.select(.text, id: nil) }
@@ -537,6 +559,12 @@ public final class PlayerSession: ObservableObject {
             applyTrackPrefs()
         case .firstFrame:
             guard !firstFrame else { break }
+            // A late picture from a source that already failed never lifts the error screen.
+            if case .failed = phase {
+                Log.player.info("Player: a first frame after the failure screen ignored")
+                engine.stop()
+                break
+            }
             firstFrame = true
             startWatch?.cancel()
             phase = .playing
@@ -546,6 +574,13 @@ public final class PlayerSession: ObservableObject {
             if !isTrailer, let r = request, let l = link {
                 (Services.shared.playback as? PlaybackExtras)?.started(r, link: l, seconds: secs)
                 if let n = note { show(toast: n, tint: n.contains("CAM") ? Palette.amberText : Color.white.opacity(0.92), seconds: 3.6) }
+                // The languages this copy's audio carries, for the title page's language pills and Dream Core's ranking.
+                let heard = engine.tracks(.audio).filter(\.supported).compactMap {
+                    Labels.normLang($0.language) ?? Labels.normLang($0.title?.components(separatedBy: " · ").first)
+                }
+                LanguagePills.heard(AnimeDubs.key(r), hash: l.hash, langs: Set(heard.map(LanguagePills.plain)))
+                // Audio in another language than the viewer's (a new anime episode in Japanese): its subtitles come on.
+                audioCheck(afterNote: note != nil)
             }
             NowPlaying.update(self)
             pip?.refresh()
@@ -558,10 +593,11 @@ public final class PlayerSession: ObservableObject {
             // the failure screen, like an error.
             if !firstFrame, !isTrailer, state.hasSource {
                 if pendingStart > 0, !retriedFromStart, let l = link, let r = request {
-                    retriedFromStart = true
                     Log.player.error("Player: stream ended before its first frame at \(Int(self.pendingStart), privacy: .public)s; once more from the beginning")
                     pendingStart = 0
                     play(link: l, for: r, at: 0)
+                    // After the call: starting the item resets it for every new item.
+                    retriedFromStart = true
                 } else {
                     Log.player.error("Player: stream ended before its first frame (empty or unreadable file)")
                     handle(.error("This file is damaged or incomplete."))
@@ -577,11 +613,20 @@ public final class PlayerSession: ObservableObject {
                 phase = .failed(title: "Trailer Unavailable", message: "This trailer can't be played right now. Try again in a moment.")
                 break
             }
+            // One failure per link: a file that fails for two reasons (no picture, then a decoder error) spends one
+            // quiet retry, not two.
+            if linkFailed {
+                Log.player.info("Player: a second failure for the same source ignored")
+                break
+            }
+            linkFailed = true
             startWatch?.cancel()
             saveProgress(force: true)
             // Instant Play: the next ready link, silently, while one is left.
             if recover(message) { break }
             if let r = request { (Services.shared.playback as? PlaybackExtras)?.forget(r) }
+            // Stopped, not paused: no sound behind the screen, and no late first frame can lift it.
+            engine.stop()
             phase = .failed(title: "This Title Isn't Available Right Now", message: "Try again in a moment, or choose another source.")
         }
         // Real watching time: only small forward steps while playing count (a seek or skip jumps and adds nothing).
@@ -868,58 +913,6 @@ public final class PlayerSession: ObservableObject {
         play(r)
     }
 
-    // MARK: Sleep timer
-
-    public static let sleepChoices = [0, 15, 30, 45, 60, 90, 120]
-    public static func sleepLabel(_ m: Int) -> String {
-        switch m {
-        case 0: return "Off"
-        case 60: return "1 Hour"
-        case 90: return "1 h 30 min"
-        case 120: return "2 Hours"
-        default: return "\(m) Minutes"
-        }
-    }
-
-    public var sleepMinutesLeft: Int? {
-        guard let e = sleepEndsAt else { return nil }
-        return max(0, Int(e.timeIntervalSinceNow / 60) + 1)
-    }
-
-    public func setSleep(_ minutes: Int) {
-        sleepChosen = minutes
-        armSleep(minutes)
-        show(toast: minutes == 0 ? "Sleep Timer Off" : "Sleep Timer Set for \(minutes) Minutes")
-    }
-
-    private func armSleep(_ minutes: Int) {
-        sleepTask?.cancel()
-        sleepCountdown = nil
-        guard minutes > 0 else { sleepEndsAt = nil; return }
-        let end = Date().addingTimeInterval(Double(minutes) * 60)
-        sleepEndsAt = end
-        sleepTask = Task { [weak self] in
-            try? await Task.sleep(for: .seconds(end.timeIntervalSinceNow))
-            guard let self, !Task.isCancelled else { return }
-            for n in stride(from: 60, through: 1, by: -1) {
-                self.sleepCountdown = n
-                try? await Task.sleep(for: .seconds(1))
-                if Task.isCancelled { return }
-            }
-            self.sleepNow()
-        }
-    }
-
-    public func keepWatching() { armSleep(max(sleepChosen, 90)) }
-
-    public func sleepNow() {
-        sleepTask?.cancel()
-        sleepCountdown = nil
-        sleepEndsAt = nil
-        engine.pause()
-        close()
-    }
-
     // MARK: Toasts
 
     public func show(toast text: String, tint: Color = .white, seconds: Double = 1.9) {
@@ -970,9 +963,9 @@ public final class PlayerSession: ObservableObject {
         appObservers = []
         pip?.invalidate()
         endItem()
-        sleepTask?.cancel()
         engine.shutdown()
         NowPlaying.clear()
+        BackgroundAudio.release()
     }
 
     // MARK: Helpers
@@ -999,7 +992,17 @@ public final class PlayerSession: ObservableObject {
     /// First" is off (DreamSubtitles.kt `preferDownload`); otherwise they're only listed in the menu.
     private func loadSubtitles(for r: PlayRequest, link: StreamLink, prefs p: DreamSubtitles.Prefs) async {
         var files = await DreamSubtitles.fetch(for: r, fileName: link.fileName, prefs: p)
-        guard request == r, self.link == link, !files.isEmpty else { return }
+        // "Use Subtitles in the Video First": the video's own tracks are known once mpv has opened the file. A download
+        // back sooner (cached, a retry) waits for the first frame (at most 30 s), or it would be picked over them.
+        if p.embeddedFirst {
+            var waited = 0
+            while !firstFrame, request == r, self.link == link, waited < 120, !Task.isCancelled {
+                try? await Task.sleep(for: .milliseconds(250)); waited += 1
+            }
+        }
+        guard request == r, self.link == link else { return }
+        defer { subsSettled = true; settleAutoSubs() }
+        guard !files.isEmpty else { return }
         let langs = p.trackLangs
         let hasOwn = engine.tracks(.text).contains { !$0.external && $0.supported && $0.language.map(langs.contains) == true }
         let preferDownload = !(p.embeddedFirst && hasOwn)
@@ -1020,6 +1023,73 @@ public final class PlayerSession: ObservableObject {
                 engine.select(.text, id: t.id)
                 return
             }
+        }
+    }
+
+    // MARK: Audio in another language (fire-home PlayerOverlay.audioCheck)
+
+    /// The picture starts and the audio playing is in another language than the viewer's (a new anime episode in
+    /// Japanese, say), with no track in their language: subtitles in their subtitle language (else their audio
+    /// language) come on, from the video or Dream Subtitles, with a short notice. Nothing when the audio's language is
+    /// unknown, or the viewer chose subtitles in the player for this title. [afterNote]: a notice is showing.
+    private func audioCheck(afterNote: Bool) {
+        guard !isTrailer, let r = request, !userText, !PlayerPrefs.subsChosen(r) else { return }
+        let audio = engine.tracks(.audio)
+        guard let playing = Labels.normLang(audio.first(where: \.selected)?.language) else { return }
+        let want = Labels.normLang(PlayerPrefs.audioLang) ?? PlayerPrefs.deviceLang
+        guard playing != want, !audio.contains(where: { $0.supported && Labels.normLang($0.language) == want }) else { return }
+        let player = PlayerPrefs.subLang == PlayerPrefs.off ? nil : PlayerPrefs.subLang
+        var seen = Set<String>()
+        let langs = ([player].compactMap { $0 } + (subPrefs?.trackLangs ?? []) + [want])
+            .map(DreamSubtitles.trackCode).filter { seen.insert($0).inserted }
+        noticeAfter = afterNote ? Date().addingTimeInterval(3.8) : .distantPast
+        autoSubs = langs
+        autoNote = "\(AnimeDubs.langName(playing)) Audio"
+        Log.player.info("Player: audio is \(playing, privacy: .public), the viewer's is \(want, privacy: .public): subtitles in \(langs.joined(separator: "/"), privacy: .public)")
+        if autoPick() { return }
+        settleAutoSubs()
+    }
+
+    /// Selects the automatic subtitles' track when there is one (says so once); false when none is there yet.
+    @discardableResult
+    private func autoPick() -> Bool {
+        guard let langs = autoSubs else { return false }
+        let text = engine.tracks(.text).filter(\.supported)
+        let sel = text.first { $0.selected && Labels.normLang($0.language).map(langs.contains) == true }
+        var pick = sel
+        if pick == nil {
+            for l in langs {
+                if let t = text.filter({ Labels.normLang($0.language) == l }).sorted(by: { !$0.forced && $1.forced }).first { pick = t; break }
+            }
+        }
+        guard let pick else { return false }
+        if !pick.selected { engine.select(.text, id: pick.id) }
+        if let n = autoNote { say("\(n)  ·  \(AnimeDubs.langName(Labels.normLang(pick.language))) Subtitles On") }
+        autoNote = nil
+        return true
+    }
+
+    /// Dream Subtitles are in (or found nothing): when the automatic subtitles still have no track, it's said once.
+    private func settleAutoSubs() {
+        guard subsSettled, let n = autoNote, let first = autoSubs?.first else { return }
+        let g = gen
+        // mpv lists added files a moment after `addSubtitles`.
+        Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: 1_500_000_000)
+            guard let self, g == self.gen, self.autoNote == n, !self.autoPick() else { return }
+            self.say("\(n)  ·  No \(AnimeDubs.langName(first)) Subtitles Found")
+            self.autoNote = nil
+        }
+    }
+
+    private func say(_ text: String) {
+        let wait = noticeAfter.timeIntervalSinceNow
+        guard wait > 0 else { show(toast: text, tint: Color.white.opacity(0.92), seconds: 3.6); return }
+        let g = gen
+        Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: UInt64(wait * 1_000_000_000))
+            guard let self, g == self.gen else { return }
+            self.show(toast: text, tint: Color.white.opacity(0.92), seconds: 3.6)
         }
     }
 }

@@ -267,7 +267,8 @@ public extension TitleInfo {
         if let t = s?.tomatometer { parts.append("Rotten Tomatoes \(t)%") }
         let im = imdb ?? s?.audienceBadge.flatMap { $0.hasPrefix("IMDb ") ? String($0.dropFirst(5)) : nil }
         if let im, !im.isEmpty, im != "N/A" { parts.append("IMDb \(im)") }
-        if score > 0 && votes >= 20 { parts.append("TMDB " + String(format: "%.1f", score)) }
+        // TMDB's score only after 150 votes, like the meta line's audience badge.
+        if score > 0 && votes >= 150 { parts.append("TMDB " + String(format: "%.1f", score)) }
         return parts.joined(separator: "  ·  ")
     }
 

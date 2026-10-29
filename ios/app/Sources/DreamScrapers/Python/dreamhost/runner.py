@@ -250,37 +250,6 @@ def _norm(items, provider, kind, pack):
     return out
 
 
-def trim():
-    """
-    Dream Player is playing: give back what an idle engine holds. Providers' caches of earlier titles,
-    the idle lanes' threads (a lane starts again on the next scrape) and garbage go; the imported
-    modules stay, so the next Play starts as fast. Skipped (-1) while a scrape runs. Returns the
-    number of objects the collector freed.
-    """
-    import gc
-    with _lock:
-        if _jobs:
-            return -1
-        idle = [lane for lane, ent in _pools.items() if ent[2] <= 0]
-        pools = [_pools.pop(lane) for lane in idle]
-    for ent in pools:
-        try:
-            ent[0].shutdown(wait=False)
-        except Exception:
-            pass
-    for c in list(_classes.values()):
-        if hasattr(c, 'clear_all'):
-            try:
-                c.clear_all()
-            except Exception:
-                pass
-    try:
-        sys._clear_type_cache()
-    except Exception:
-        pass
-    return gc.collect()
-
-
 def cancel(job_id):
     ev = _jobs.get(job_id)
     if ev is not None:

@@ -81,7 +81,8 @@ final class ShellModel {
     // ---- My List ----
 
     func refreshMyList() async {
-        myListKeys = Set(await Services.shared.myList.items().map(\.key))
+        let keys = Set(await Services.shared.myList.items().map(\.key))
+        if keys != myListKeys { myListKeys = keys }
     }
 
     func toggleMyList(_ t: Title) {

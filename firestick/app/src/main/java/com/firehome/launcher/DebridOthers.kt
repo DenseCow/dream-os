@@ -301,16 +301,16 @@ internal class TorBoxService(private val token: String) : DebridService {
  * torrent id is recorded in [DebridLedger] the moment it is added and dropped once deleted; the
  * [janitor] (app start, then hourly) deletes any left over (a cleanup that failed, the app killed
  * mid-lookup). Real-Debrid gives every add its own id, so the user's own torrents are never touched.
+ * The ledger is kept per device client id, which a token refresh doesn't change.
  *
  * The access token lasts about an hour; on a 401 it is refreshed with the user's own device
- * credentials and saved in Dream OS's accounts (DreamAccounts; the provider refreshes its own copy).
+ * credentials and saved in Dream OS's accounts (DreamAccounts; [RealDebridToken]).
  */
 internal class RealDebridService(private val accounts: DebridAccounts.Accounts) : DebridService {
     override val key = "rd"
 
     private companion object {
         const val REST = "https://api.real-debrid.com/rest/1.0/"
-        const val OAUTH = "https://api.real-debrid.com/oauth/v2/token"
         const val BATCH = 3
         const val MAX = 9 // three rounds at most: each try is a torrent added to the account for a moment
         /** Statuses a cached torrent can show for a moment right after the file is selected. */
@@ -339,19 +339,25 @@ internal class RealDebridService(private val accounts: DebridAccounts.Accounts) 
         val now = DebridOthersKit.now()
         if (stored.isBlank() || (!force && sweptFor == stored.hashCode() && now - sweptAt < 3_600_000L)) return
         sweptFor = stored.hashCode(); sweptAt = now
-        val left = DebridLedger.owned(scope).filter { DebridLedger.wall() - it.value.at > 10 * 60_000L }
+        var found = 0
         var n = 0
-        for ((k, o) in left) {
-            val id = o.id ?: k.removePrefix("id:")
-            val r = try { DebridHttp.request("${REST}torrents/delete/$id", "DELETE", token(), timeoutMs = 8_000) } catch (e: Exception) { null } ?: continue
-            // 404: already gone.
-            if (r.ok || r.code == 404) { DebridLedger.release(scope, listOf(k)); if (r.ok) n++ }
+        // Builds before the client-id scope kept the ledger under the access token: its leftovers are swept too.
+        for (sc in listOf(scope, DebridLedger.scope("rd", stored)).distinct()) {
+            val left = DebridLedger.owned(sc).filter { DebridLedger.wall() - it.value.at > 10 * 60_000L }
+            found += left.size
+            for ((k, o) in left) {
+                val id = o.id ?: k.removePrefix("id:")
+                val r = try { DebridHttp.request("${REST}torrents/delete/$id", "DELETE", token(), timeoutMs = 8_000) } catch (e: Exception) { null } ?: continue
+                // 404: already gone.
+                if (r.ok || r.code == 404) { DebridLedger.release(sc, listOf(k)); if (r.ok) n++ }
+            }
         }
-        if (left.isNotEmpty()) Log.w(DebridOthersKit.TAG, "Real-Debrid janitor: removed $n leftover test torrent${if (n == 1) "" else "s"}")
+        if (found > 0) Log.w(DebridOthersKit.TAG, "Real-Debrid janitor: removed $n leftover test torrent${if (n == 1) "" else "s"}")
     }
 
     private val stored = accounts.realDebrid.orEmpty()
-    private val scope = DebridLedger.scope("rd", stored)
+    /** The access token changes on every refresh; the device client id stays for the life of the sign-in. */
+    private val scope = DebridLedger.scope("rd", accounts.realDebridClientId.ifBlank { stored })
 
     private fun token(): String = refreshedTo?.takeIf { refreshedFrom == stored } ?: stored
 
@@ -487,29 +493,52 @@ internal class RealDebridService(private val accounts: DebridAccounts.Accounts) 
             if (token() != failed) return true
             if (DebridOthersKit.now() - refreshFailedAt < 60_000 && refreshFailedAt != 0L) return false
             val code = refreshCode?.takeIf { refreshedFrom == stored } ?: accounts.realDebridRefresh
-            if (accounts.realDebridClientId.isBlank() || accounts.realDebridSecret.isBlank() || code.isBlank()) return false
-            val r = try {
-                DebridHttp.postForm(OAUTH, listOf(
-                    "client_id" to accounts.realDebridClientId, "client_secret" to accounts.realDebridSecret,
-                    "code" to code, "grant_type" to "http://oauth.net/grant_type/device/1.0",
-                ), timeoutMs = DebridHttp.left(deadline))
-            } catch (e: Exception) { null }
-            val o = r?.takeIf { it.ok }?.json()
-            val access = o?.optString("access_token").orEmpty()
-            if (access.isEmpty()) {
+            val r = RealDebridToken.renew(accounts, code, DebridHttp.left(deadline))
+            if (r.code == RealDebridToken.NO_CREDENTIALS) return false
+            val access = r.access
+            if (access == null) {
                 refreshFailedAt = DebridOthersKit.now()
-                Log.w(DebridOthersKit.TAG, "Real-Debrid: token refresh failed (HTTP ${r?.code ?: 0})")
+                Log.w(DebridOthersKit.TAG, "Real-Debrid: token refresh failed (HTTP ${r.code})")
                 return false
             }
-            refreshCode = o?.optString("refresh_token")?.ifEmpty { null } ?: code
+            refreshCode = r.refresh ?: code
             refreshedTo = access
             refreshedFrom = stored
             refreshFailedAt = 0L
-            DreamAccounts.refreshedRealDebrid(access, refreshCode)
             Log.i(DebridOthersKit.TAG, "Real-Debrid: token refreshed (saved in Dream OS)")
             return true
         }
     }
 
     private fun errorOf(r: DebridHttp.Reply) = try { r.json().optString("error") } catch (e: Exception) { "" }
+}
+
+/**
+ * Real-Debrid's access token renewal with the user's own device credentials, shared by the resolver,
+ * Streaming Accounts' check and the premium check. A new token is saved in Dream OS at once.
+ */
+internal object RealDebridToken {
+    private const val OAUTH = "https://api.real-debrid.com/oauth/v2/token"
+    /** [Renewal.code] when the account has no device credentials to renew with. */
+    const val NO_CREDENTIALS = -1
+
+    /** [code]: HTTP status (0 no answer); [access] / [refresh]: the new tokens, null when refused. */
+    class Renewal(val code: Int, val access: String?, val refresh: String?)
+
+    /** Blocking. [code] is the refresh code to use (the saved one by default). */
+    fun renew(acc: DebridAccounts.Accounts, code: String = acc.realDebridRefresh, timeoutMs: Int): Renewal {
+        if (acc.realDebridClientId.isBlank() || acc.realDebridSecret.isBlank() || code.isBlank()) return Renewal(NO_CREDENTIALS, null, null)
+        val r = try {
+            DebridHttp.postForm(OAUTH, listOf(
+                "client_id" to acc.realDebridClientId, "client_secret" to acc.realDebridSecret,
+                "code" to code, "grant_type" to "http://oauth.net/grant_type/device/1.0",
+            ), timeoutMs = timeoutMs)
+        } catch (e: Exception) { null } ?: return Renewal(0, null, null)
+        val o = try { r.takeIf { it.ok }?.json() } catch (e: Exception) { null }
+        val access = o?.optString("access_token").orEmpty()
+        if (access.isEmpty()) return Renewal(r.code, null, null)
+        val refresh = o?.optString("refresh_token")?.ifEmpty { null }
+        DreamAccounts.refreshedRealDebrid(access, refresh)
+        return Renewal(r.code, access, refresh)
+    }
 }

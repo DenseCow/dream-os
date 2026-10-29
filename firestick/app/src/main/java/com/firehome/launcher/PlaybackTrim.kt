@@ -16,7 +16,7 @@ import android.util.Log
  *   checks and sweeps, speculative pre-resolves (PreResolve checks the same; the next episode's prefetch
  *   near the end still runs, from post-play), ratings and the Home row work.
  * - A few seconds after the first frame (once the start has settled), idle memory goes back: decoded images
- *   not on screen (Net's bitmap cache, the hero's baked art), the scraper engine's caches and idle threads
+ *   not on screen (Net's bitmap cache, the hero's baked art, app banners), the scraper engine's caches and idle threads
  *   (Python keeps its modules, so the next Play starts as fast), HWUI's scratch surfaces, then one GC.
  *   PSS before and after goes to the log ("Player: memory trimmed ...").
  *
@@ -43,6 +43,7 @@ object PlaybackTrim {
                 main.post {
                     Net.evictMemory() // views keep the images they show; the rest reload from the disk cache
                     HeroArt.evict()
+                    Apps.trim() // the app banners and icons, decoded again when Home shows them
                     Hwui.trim(ComponentCallbacks2.TRIM_MEMORY_UI_HIDDEN) // GL context and windows stay
                 }
                 ScraperEngine.trimNow()

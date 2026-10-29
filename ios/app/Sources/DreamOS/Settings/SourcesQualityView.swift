@@ -295,6 +295,13 @@ struct SourcesQualityRows: View {
                                        options: PlaybackPrefs.audio.map { .init(id: $0.code, label: $0.name) },
                                        current: { PlaybackPrefs.audioLang }) { PlaybackPrefs.setAudioLang($0) }
                     }
+                    // AnimeDubs (DreamCore): Dream Core's ranking for anime. Not offered when the audio language is Japanese.
+                    if AnimeDubs.offered {
+                        PageRow(title: AnimeDubs.settingLabel, caption: AnimeDubs.settingCaption,
+                                lead: .symbol("person.wave.2"), toggle: AnimeDubs.preferDubs) {
+                            AnimeDubs.preferDubs.toggle(); tick += 1
+                        }
+                    }
                 }
                 .padding(.top, 10)
 

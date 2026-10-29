@@ -65,7 +65,7 @@ object GenreGlyphs {
         val pearl = mix(0xFFFFFFFF.toInt(), tint, 0.08f)
         val light = mix(tint, 0xFFFFFFFF.toInt(), 0.66f)
         val mid = mix(tint, 0xFFFFFFFF.toInt(), 0.40f)
-        val deep = mix(tint, 0xFF2A2340.toInt(), 0.50f)
+        val deep = mix(tint, 0xFF26262A.toInt(), 0.50f) // toward neutral dark gray, never a tint (STANDARDS §2)
         val coral = mix(0xFFFF7A86.toInt(), tint, 0.15f)
     }
 

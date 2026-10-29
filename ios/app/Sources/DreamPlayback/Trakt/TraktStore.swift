@@ -39,7 +39,6 @@ struct TraktItem: Codable, Sendable, Hashable {
         return ["show": ["ids": ["tmdb": tmdb]], "episode": ["season": season, "number": number]]
     }
 
-    var label: String { movie ? "movie:\(tmdb)" : "tv:\(tmdb) S\(season)E\(number)" }
 }
 
 /// A change still to send (fire-home's queue entries): "history", "progress", "wl_add", "wl_remove", "pb_remove".
@@ -136,7 +135,8 @@ final class TraktVault: @unchecked Sendable {
                 let d = (try? JSONSerialization.data(withJSONObject: ["id": k.id, "secret": k.secret])) ?? Data()
                 SecureStore.set(Self.ownKeysKey, String(data: d, encoding: .utf8))
                 ownLoaded = true
-                own = SecureStore.get(Self.ownKeysKey) == nil ? nil : k
+                // A refused write keeps the old value, so compare, not just "something is there".
+                own = SecureStore.get(Self.ownKeysKey) == String(data: d, encoding: .utf8) ? k : nil
                 return own != nil
             }
             SecureStore.set(Self.ownKeysKey, nil)
@@ -170,8 +170,9 @@ final class TraktVault: @unchecked Sendable {
                 tokenCache[pid] = nil
                 return true
             }
-            SecureStore.set(Self.authKey(pid), String(data: d, encoding: .utf8))
-            guard SecureStore.get(Self.authKey(pid)) != nil else { tokenCache[pid] = nil; return false }
+            let text = String(data: d, encoding: .utf8)
+            SecureStore.set(Self.authKey(pid), text)
+            guard SecureStore.get(Self.authKey(pid)) == text else { tokenCache[pid] = nil; return false }
             tokenCache[pid] = t
             return true
         }

@@ -61,6 +61,19 @@ object DebridExpiry {
 
     private fun prefs(ctx: Context) = ctx.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
 
+    /** AllDebrid's AUTH_BLOCKED: the account waits for its owner to approve this new location. */
+    private class Blocked : Exception()
+    private const val BLOCKED = "blocked_"
+
+    /** The last round found [service] blocking this location (cleared by its next good answer). */
+    fun blocked(ctx: Context, service: String) = prefs(ctx).getLong(BLOCKED + service, 0L) > 0
+
+    /** The account check ([AccountHealth.check]) heard the same answer, or a good one. */
+    fun markBlocked(ctx: Context, service: String, on: Boolean) {
+        if (on) prefs(ctx).edit().putLong(BLOCKED + service, System.currentTimeMillis()).apply()
+        else if (blocked(ctx, service)) prefs(ctx).edit().remove(BLOCKED + service).apply()
+    }
+
     fun status(ctx: Context, service: String): Status? = try {
         prefs(ctx).getString(service, null)?.let { JSONObject(it) }?.let {
             Status(service, it.optLong("until"), it.optBoolean("premium"), it.optBoolean("sub"), it.optLong("at"))
@@ -72,6 +85,7 @@ object DebridExpiry {
      * "Premium Ends Tomorrow", "Premium Expired"; null when nothing is known yet.
      */
     fun caption(ctx: Context, service: String): String? {
+        if (blocked(ctx, service)) return "Approve New Location"
         val s = status(ctx, service) ?: return null
         if (s.expired) return if (s.until > 0) "Premium Expired ${dateText(s.until, year = true)}" else "No Premium Plan"
         if (s.until <= 0) return if (s.premium) "Premium Active" else null
@@ -97,8 +111,11 @@ object DebridExpiry {
     fun dateText(at: Long, year: Boolean = false): String =
         DreamTime.fmt(if (year) "MMM d, yyyy" else "EEEE, MMMM d").format(Date(at))
 
-    private fun fingerprint(acc: DebridAccounts.Accounts?): String =
-        Integer.toHexString(listOf(acc?.allDebrid, acc?.premiumize, acc?.torBox, acc?.realDebrid).map { it?.hashCode() ?: 0 }.hashCode())
+    /** Which accounts are linked. Real-Debrid counts by its device client id: its access token changes on every refresh. */
+    private fun fingerprint(acc: DebridAccounts.Accounts?): String {
+        val rd = acc?.realDebrid?.let { acc.realDebridClientId.ifBlank { it } }
+        return Integer.toHexString(listOf(acc?.allDebrid, acc?.premiumize, acc?.torBox, rd).map { it?.hashCode() ?: 0 }.hashCode())
+    }
 
     /**
      * Cheap; call freely from the main thread (Home's resume, the clock tick). Starts a background round
@@ -150,12 +167,22 @@ object DebridExpiry {
             var warned = false
             for (svc in SERVICES) {
                 val token = tokens[svc]
-                if (token.isNullOrBlank()) { p.edit().remove(svc).apply(); continue }
+                if (token.isNullOrBlank()) {
+                    // Disconnected: its plan, its location block and its expiry notices go with it.
+                    if (p.contains(svc) || p.contains(BLOCKED + svc)) {
+                        p.edit().remove(svc).remove(BLOCKED + svc).apply()
+                        DreamNotices.dismissPrefix(app, "expiry:$svc:")
+                    }
+                    continue
+                }
                 asked++
-                val s = try { fetch(svc, token, acc) } catch (e: Exception) {
+                val s = try { fetch(svc, token, acc) } catch (e: Blocked) {
+                    p.edit().putLong(BLOCKED + svc, System.currentTimeMillis()).apply(); null
+                } catch (e: Exception) {
                     Log.w(TAG, "Premium check: ${DreamNotices.serviceName(svc)} failed: ${e.javaClass.simpleName}"); null
                 } ?: continue
                 answered++
+                p.edit().remove(BLOCKED + svc).apply()
                 p.edit().putString(svc, JSONObject().put("until", s.until).put("premium", s.premium).put("sub", s.subscribed).put("at", s.checkedAt).toString()).apply()
                 val days = s.daysLeft()
                 Log.w(TAG, "Premium check: ${DreamNotices.serviceName(svc)} ${if (s.until > 0) "premium until ${dateText(s.until, true)} ($days days)" else if (s.premium) "premium, no end date" else "no premium"}" +
@@ -254,7 +281,12 @@ object DebridExpiry {
             "ad" -> {
                 val r = DebridHttp.get("${AllDebridService.API}user?agent=${AllDebridService.AGENT}", token, 8_000)
                 val j = r.json()
-                if (j.optString("status") != "success") { Log.w(TAG, "Premium check: AllDebrid answered ${r.code} ${j.optJSONObject("error")?.optString("code").orEmpty()}"); return null }
+                if (j.optString("status") != "success") {
+                    val code = j.optJSONObject("error")?.optString("code").orEmpty()
+                    Log.w(TAG, "Premium check: AllDebrid answered ${r.code} $code")
+                    if (code == "AUTH_BLOCKED") throw Blocked()
+                    return null
+                }
                 val u = j.optJSONObject("data")?.optJSONObject("user") ?: return null
                 Status(svc, u.optLong("premiumUntil") * 1000, u.optBoolean("isPremium"), u.optBoolean("isSubscribed"), now)
             }
@@ -292,15 +324,9 @@ object DebridExpiry {
     }
 
     private fun refreshRealDebrid(acc: DebridAccounts.Accounts): String? {
-        val id = acc.realDebridClientId; val secret = acc.realDebridSecret; val refresh = acc.realDebridRefresh
-        if (id.isBlank() || secret.isBlank() || refresh.isBlank()) return null
-        val r = DebridHttp.postForm("https://api.real-debrid.com/oauth/v2/token", listOf(
-            "client_id" to id, "client_secret" to secret, "code" to refresh, "grant_type" to "http://oauth.net/grant_type/device/1.0"), timeoutMs = 8_000)
-        if (!r.ok) { Log.w(TAG, "Premium check: Real-Debrid sign-in renewal refused (${r.code})"); return null }
-        val j = r.json()
-        val access = j.optString("access_token").takeIf { it.isNotBlank() } ?: return null
-        DreamAccounts.refreshedRealDebrid(access, j.optString("refresh_token").takeIf { it.isNotBlank() })
-        return access
+        val r = RealDebridToken.renew(acc, timeoutMs = 8_000)
+        if (r.access == null && r.code != RealDebridToken.NO_CREDENTIALS) Log.w(TAG, "Premium check: Real-Debrid sign-in renewal refused (${r.code})")
+        return r.access
     }
 }
 

@@ -17,6 +17,9 @@ class AppEntry(
     private val pm: PackageManager,
     private val ri: ResolveInfo,
 ) {
+    /** Where the package is installed; it changes when the app is updated. */
+    internal val source: String get() = ri.activityInfo.applicationInfo.sourceDir.orEmpty()
+
     val banner: Drawable? get() = Apps.art(this).banner
     val icon: Drawable get() = Apps.art(this).icon
 
@@ -44,10 +47,10 @@ object Apps {
 
     class Art(val banner: Drawable?, val icon: Drawable)
 
-    /** Largest a banner / icon is ever drawn (px, with the biggest tile size and focus lift). */
-    internal const val BANNER_W = 512
-    internal const val BANNER_H = 288
-    internal const val ICON_PX = 256
+    /** Largest a banner / icon is drawn (px): the Apps grid's 5 columns at 1080p with the focus lift. */
+    internal const val BANNER_W = 384
+    internal const val BANNER_H = 216
+    internal const val ICON_PX = 160
 
     /**
      * Some apps ship 1280x720 banners and 640-2560 px icons (3-25 MB each decoded) for a tile that's
@@ -69,14 +72,15 @@ object Apps {
             d.setBounds(0, 0, w, h)
             d.draw(c)
             d.bounds = old
-            // A banner that fills its whole rectangle is marked opaque, so its card can drop the tile
-            // under it (ArtView) and draws one layer less.
+            // A banner that fills its whole rectangle is kept in RGB_565: half the memory, and opaque, so the
+            // renderer can skip what's under it.
+            var out = bmp
             if (always) {
                 val px = IntArray(w * h)
                 bmp.getPixels(px, 0, w, 0, 0, w, h)
-                if (px.all { it ushr 24 == 0xFF }) bmp.setHasAlpha(false)
+                if (px.all { it ushr 24 == 0xFF }) bmp.copy(android.graphics.Bitmap.Config.RGB_565, false)?.let { out = it; bmp.recycle() }
             }
-            object : android.graphics.drawable.BitmapDrawable(android.content.res.Resources.getSystem(), bmp) {
+            object : android.graphics.drawable.BitmapDrawable(android.content.res.Resources.getSystem(), out) {
                 override fun getIntrinsicWidth() = iw
                 override fun getIntrinsicHeight() = ih
             }.apply { isFilterBitmap = true }
@@ -85,26 +89,52 @@ object Apps {
         }
     }
 
-    // Count-bounded: a Fire TV banner is ~230 KB decoded, an icon 40-150 KB.
-    private val artCache = LruCache<String, Art>(40)
+    /**
+     * Bounded by bytes: 1/32 of the app's heap class, 2 to 8 MB (about 4 MB on a Fire TV Stick HD: some 15 banners
+     * at 166 KB plus icons at 100 KB). Emptied when Home is hidden or memory runs low ([trim]); a card that is
+     * still showing keeps its drawable.
+     */
+    @Volatile private var artCache = cache(4 * 1024 * 1024)
+
+    private fun cache(bytes: Int) = object : LruCache<String, Art>(bytes) {
+        override fun sizeOf(key: String, v: Art) = maxOf(1, artBytes(v.banner) + artBytes(v.icon))
+    }
+
+    private fun artBytes(d: Drawable?): Int = when (d) {
+        null -> 0
+        is android.graphics.drawable.BitmapDrawable -> d.bitmap?.allocationByteCount ?: 0
+        else -> 0 // vector or shape: drawn, nothing decoded
+    }
+
+    /** Sizes the cache from this device's heap class (once, at the first load). */
+    private fun sizeFor(ctx: Context) {
+        if (sized) return
+        sized = true
+        val mb = (ctx.getSystemService(Context.ACTIVITY_SERVICE) as? android.app.ActivityManager)?.memoryClass ?: 128
+        val bytes = (mb * 1024 * 1024 / 32).coerceIn(2 * 1024 * 1024, 8 * 1024 * 1024)
+        if (bytes != artCache.maxSize()) artCache = cache(bytes)
+    }
+    @Volatile private var sized = false
 
     fun art(app: AppEntry): Art = artCache.get(app.pkg) ?: app.loadArt().also { artCache.put(app.pkg, it) }
 
+    /** Home is hidden (Dream Player in front, another app) or memory is low: decoded art goes. */
+    fun trim() = artCache.evictAll()
+
     /** "12 apps, 2.9 MB (banner 320x180 ...)" for the memory report. */
     fun artStats(): String {
-        fun bytes(d: Drawable?): Int = when (d) {
-            null -> 0
-            is android.graphics.drawable.BitmapDrawable -> d.bitmap?.byteCount ?: 0
-            else -> maxOf(0, d.intrinsicWidth) * maxOf(0, d.intrinsicHeight) * 4
-        }
         val all = artCache.snapshot()
-        val total = all.values.sumOf { bytes(it.banner) + bytes(it.icon) }
+        val total = all.values.sumOf { artBytes(it.banner) + artBytes(it.icon) }
         val sizes = all.entries.joinToString(" ") { (k, a) -> "${k.substringAfterLast('.')}=${a.banner?.let { "${it.intrinsicWidth}x${it.intrinsicHeight}" } ?: "-"}/${a.icon.intrinsicWidth}" }
         return "${all.size} apps, ${"%.1f".format(total / 1048576f)} MB [$sizes]"
     }
 
+    /** Each package's install path when its art was cached: an update moves it, and only then is the art dropped. */
+    private val artSource = HashMap<String, String>()
+
+    /** Any thread. */
     fun load(ctx: Context): List<AppEntry> {
-        artCache.evictAll() // a package was added/updated/removed: its art may have changed
+        sizeFor(ctx)
         val pm = ctx.applicationContext.packageManager // not the Activity's: entries outlive a recreate
         val seen = LinkedHashMap<String, AppEntry>()
         for (category in listOf(Intent.CATEGORY_LEANBACK_LAUNCHER, Intent.CATEGORY_LAUNCHER)) {
@@ -120,6 +150,14 @@ object Apps {
                     ri = ri,
                 )
             }
+        }
+        // Only apps that were updated or removed lose their decoded art (every package broadcast used to clear
+        // it all, and each visible banner was decoded again on the UI thread).
+        synchronized(artSource) {
+            val now = seen.mapValues { (_, e) -> e.source }
+            for ((pkg, src) in artSource) if (now[pkg] != src) artCache.remove(pkg)
+            artSource.clear()
+            artSource.putAll(now)
         }
         return seen.values.sortedBy { it.label.lowercase() }
     }

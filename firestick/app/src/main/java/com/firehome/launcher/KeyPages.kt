@@ -16,6 +16,8 @@ internal class KeyPages(
     private val ui: SetupUi,
     private val panel: SetupPanel,
     private val onChange: () -> Unit = {},
+    /** Offer Use the Built-In Key for OMDb (Settings); first-run setup never shows it. */
+    private val builtIn: Boolean = true,
 ) {
     enum class Kind { TMDB, OMDB }
 
@@ -48,21 +50,21 @@ internal class KeyPages(
     fun addRows(s: SetupScreen, rows: ScreenRows, kind: Kind, top: Int) {
         val (v, ok) = value(kind)
         rows.row("key:$kind", top) { parts.row(null, chevron = true) { panel.push(entry(kind)) } }
-            .set(title(kind), if (kind == Kind.TMDB) "Posters, Details and Search" else "Rotten Tomatoes and IMDb Scores",
+            .set(title(kind), if (kind == Kind.TMDB) "Posters, details and search" else "Rotten Tomatoes and IMDb scores",
                 v, if (ok) SetupBrand.GREEN else null, if (ok) BrandRow.Mark.OK else BrandRow.Mark.NONE)
         if (kind == Kind.TMDB) SetupGuide.helpRows(rows, "tmdb", parts, panel, ui, "Get Your Free Key From TMDB", "Keys That Don't Work",
             { SetupGuide.TMDB_STEPS }, SetupGuide.TMDB_TROUBLE, SetupGuide.TMDB_INTRO)
         else SetupGuide.helpRows(rows, "omdb", parts, panel, ui, "Get Your Free Key From OMDb", "Keys and the Activation Email",
             { SetupGuide.OMDB_STEPS }, SetupGuide.OMDB_TROUBLE)
         if (kind == Kind.OMDB) {
-            if (BuildConfig.OMDB_KEY.isNotBlank() && ownOmdb()) rows.row("omdb:builtin", 8) {
+            if (builtIn && BuildConfig.OMDB_KEY.isNotBlank() && ownOmdb()) rows.row("omdb:builtin", 8) {
                 parts.row(null) {
                     Ratings.setOmdbKey(app(), "")
                     Log.w(SetupBrand.TAG, "Setup: OMDb back on the built-in key")
                     onChange()
                     panel.top?.let { if (it.alive) it.onShow() }
                 }
-            }.set("Use the Built-In Key", "Removes Your Own Key From This TV")
+            }.set("Use the Built-In Key", "Removes your own key from this Fire Stick")
             else s.hide("omdb:builtin")
         }
     }
@@ -92,17 +94,16 @@ internal class KeyPages(
     private fun checking(kind: Kind, key: String): SetupScreen {
         val s = SetupScreen(ui, title(kind), null)
         val rows = ScreenRows(s)
-        rows.row("check", 0) { parts.row() }.set("Checking Your Key", "One Moment…", mark = BrandRow.Mark.BUSY)
-        s.bg({ test(kind, key) }) { ok ->
+        rows.row("check", 0) { parts.row() }.set("Checking Your Key", "One moment…", mark = BrandRow.Mark.BUSY)
+        // Saved as soon as it passes, in the background: Back during "Checking Your Key" drops only the page.
+        s.bg({ test(kind, key).also { ok -> if (ok) { if (kind == Kind.TMDB) Tmdb.setKey(app(), key) else Ratings.setOmdbKey(app(), key) } } }) { ok ->
             if (ok) {
-                if (kind == Kind.TMDB) Tmdb.setKey(app(), key) else Ratings.setOmdbKey(app(), key)
                 Log.w(SetupBrand.TAG, "Setup: ${title(kind)} added")
                 onChange()
                 rows.get("check")?.set("Key Added", if (kind == Kind.TMDB) "Posters and details are ready." else "Rotten Tomatoes and IMDb scores are on.",
                     mark = BrandRow.Mark.OK)
-                val done = parts.pill("Done", true) { panel.pop() }
-                s.view("done", 18) { parts.pills(done) }
-                done.requestFocus()
+                // The result shows briefly, then the page goes back by itself: no Done to press.
+                ui.main.postDelayed({ if (s.alive && panel.top === s) panel.pop() }, 1400)
             } else {
                 Log.w(SetupBrand.TAG, "Setup: ${title(kind)} didn't pass its check")
                 rows.get("check")?.set("That Key Didn't Work", "Check it and try again.", mark = BrandRow.Mark.WARN)

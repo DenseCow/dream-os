@@ -47,16 +47,16 @@ class WhatsInside(private val ctx: Context) {
         Feature(FeatureGlyph.PLAYER, "Dream Player", "Custom-built player: Skip Intro, Up Next, resume and Dream Subtitles"),
         Feature(FeatureGlyph.SPARK, "Dream Cinema", "All-new cinematic interface with rainbow glow focus"),
         Feature(FeatureGlyph.AIRPODS, "AirPods Compatibility", "Native AirPods support: pair, connect, Send to iPhone, and pause when they disconnect"),
-        Feature(FeatureGlyph.CLOCK, "Continue Watching", "Seamless pick-up across everything, plus every New Episode"),
+        Feature(FeatureGlyph.CLOCK, "Continue Watching", "Pick up where you left off, plus every new episode"),
         Feature(FeatureGlyph.SEARCH, "Dream Search", "Universal search with the Dream Keyboard and Alexa voice"),
         Feature(FeatureGlyph.PERSON, "Profiles", "Personal profiles, each with its own list, look and PIN"),
-        Feature(FeatureGlyph.SHIELD, "Ad Blocking", "System-wide ad shield across the whole Fire TV"),
+        Feature(FeatureGlyph.SHIELD, "Ad Blocking", "Private DNS for every app on the Fire Stick"),
         Feature(FeatureGlyph.PHONE, "Phone Remote", "Scan the QR code and your phone becomes the remote"),
         Feature(FeatureGlyph.STAR, "Trailers & Ratings", "Cinematic trailers with Rotten Tomatoes and IMDb scores"),
-        Feature(FeatureGlyph.MOON, "Sleep Timer", "Pauses and sleeps the Fire TV when time's up"),
+        Feature(FeatureGlyph.MOON, "Sleep Timer", "Pauses and sleeps the Fire Stick when time's up"),
         Feature(FeatureGlyph.SUN, "Screensaver & Weather", "Cinematic trending art with live clock and weather"),
         Feature(FeatureGlyph.SLIDERS, "Make It Yours", "Screen Fit, sounds and wallpaper now; custom themes coming soon"),
-        Feature(FeatureGlyph.PULSE, "System Health", "Smart self-diagnostics with one-press fixes"),
+        Feature(FeatureGlyph.PULSE, "System Health", "Checks storage, memory and streaming, with one-press fixes"),
     )
 
     private val ink = Theme.get(ctx, Theme.TEXT)
@@ -209,65 +209,63 @@ class WhatsInside(private val ctx: Context) {
         /** Between [Ui.LIFT_ROW] and [Ui.LIFT_PILL]: a wide tile reads as lifted without crowding its neighbours. */
         private const val LIFT = 1.04f
 
-        /** The boot intro's short list: the headline features, each in its own color from Dream Cinema's glow palette. */
+        /**
+         * The boot intro's short list: what Dream OS does that the Fire TV doesn't, each line a plain fact about a
+         * feature that ships today (two lines at most at the panel's width; nothing is cut at 1080p).
+         */
         private val INTRO = listOf(
-            Triple(FeatureGlyph.CORE, "Dream Core Resolver", "Fully custom-built resolver"),
-            Triple(FeatureGlyph.INSTANT, "Instant Play", "Predictive loading, zero wait"),
-            Triple(FeatureGlyph.PLAYER, "Dream Player", "Custom-built cinema player"),
-            Triple(FeatureGlyph.SPARK, "Dream Cinema", "All-new cinematic interface"),
-            Triple(FeatureGlyph.AIRPODS, "AirPods Compatibility", "Native support, Send to iPhone"),
-            Triple(FeatureGlyph.SHIELD, "Ad Blocking", "System-wide ad shield"),
-            Triple(FeatureGlyph.PULSE, "System Health", "Smart self-diagnostics"),
-        )
-        private val INTRO_COLORS = intArrayOf(
-            0xFF2F7BFF.toInt(), 0xFF8B5CFF.toInt(), 0xFFFF3DC8.toInt(), 0xFFFF8A1F.toInt(),
-            0xFFFFD21F.toInt(), 0xFF7CFF4F.toInt(), 0xFF19E3D6.toInt(),
+            Triple(FeatureGlyph.CORE, "Dream Core Resolver", "Streams from your scrapers and debrid"),
+            Triple(FeatureGlyph.INSTANT, "Instant Play", "Finds the stream while you browse"),
+            Triple(FeatureGlyph.PLAYER, "Dream Player", "Skip Intro, Up Next and subtitles"),
+            Triple(FeatureGlyph.CLOCK, "Continue Watching", "Resume where you stopped, Trakt sync"),
+            Triple(FeatureGlyph.AIRPODS, "AirPods", "Battery level and Send to iPhone"),
+            Triple(FeatureGlyph.SHIELD, "Ad Blocking", "Private DNS for apps and websites"),
+            Triple(FeatureGlyph.PHONE, "Phone Remote", "Your phone as remote and keyboard"),
         )
 
         /**
          * "What's Inside" for the boot intro: a slim glass panel on the black left of the artwork (the logo
          * holds the middle), fixed colors like the rest of the intro so it reads the same whatever the theme.
-         * Neutral smoked glass with a hairline, not tinted: on the black logo art only the feature icons
-         * carry color, like the logo's own rainbow. Rows start hidden; [revealIntro] brings them in one by one.
+         * Neutral smoked glass with a hairline and pearl line icons: the loading bar and its rainbow word are
+         * the intro's one accent. Rows start hidden; [revealIntro] brings them in one by one.
          */
         fun intro(ctx: Context): View {
             fun dp(v: Int) = Ui.dp(ctx, v)
             val font = Theme.typeface(ctx)
             val ink = Color.WHITE
             val dim = Color.parseColor("#B4B4BC")
-            fun label(sp: Float, color: Int) = TextView(ctx).apply {
+            fun label(sp: Float, color: Int, lines: Int) = TextView(ctx).apply {
                 textSize = sp; typeface = font; setTextColor(color); includeFontPadding = false
-                maxLines = 1; ellipsize = TextUtils.TruncateAt.END
+                maxLines = lines; ellipsize = TextUtils.TruncateAt.END
+                hyphenationFrequency = android.text.Layout.HYPHENATION_FREQUENCY_NONE
                 setShadowLayer(8f, 0f, 1f, Color.argb(160, 0, 0, 0))
             }
             return LinearLayout(ctx).apply {
                 orientation = LinearLayout.VERTICAL
-                setPadding(dp(16), dp(14), dp(16), dp(14))
+                setPadding(dp(16), dp(14), dp(16), dp(16))
                 background = GradientDrawable(GradientDrawable.Orientation.TL_BR,
                     intArrayOf(Color.argb(170, 30, 30, 33), Color.argb(150, 12, 12, 14))).apply {
                     cornerRadius = dp(18).toFloat()
                     setStroke(dp(1), Color.argb(38, 255, 255, 255))
                 }
                 alpha = 0f
-                addView(label(15f, ink).apply { text = "What's Inside"; typeface = Ui.semibold(font) })
-                addView(label(11f, dim).apply { text = "The full premium streaming package" },
-                    LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT).apply { topMargin = dp(4); bottomMargin = dp(4) })
-                INTRO.forEachIndexed { i, (glyph, title, line) ->
-                    val color = INTRO_COLORS[i % INTRO_COLORS.size]
+                addView(label(15f, ink, 1).apply { text = "What's Inside"; typeface = Ui.semibold(font) },
+                    LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT).apply { bottomMargin = dp(4) })
+                for ((glyph, title, line) in INTRO) {
                     addView(LinearLayout(ctx).apply {
                         orientation = LinearLayout.HORIZONTAL
-                        gravity = Gravity.CENTER_VERTICAL
+                        gravity = Gravity.TOP
                         alpha = 0f
                         addView(FrameLayout(ctx).apply {
-                            background = GradientDrawable().apply { cornerRadius = dp(7).toFloat(); setColor(Ui.alpha(color, 0.18f)) }
-                            addView(ImageView(ctx).apply { setImageDrawable(FeatureGlyph(glyph).apply { setTint(color) }) },
+                            background = GradientDrawable().apply { cornerRadius = dp(7).toFloat(); setColor(Ui.alpha(Color.WHITE, 0.10f)) }
+                            addView(ImageView(ctx).apply { setImageDrawable(FeatureGlyph(glyph).apply { setTint(ink) }) },
                                 FrameLayout.LayoutParams(dp(14), dp(14), Gravity.CENTER))
                         }, LinearLayout.LayoutParams(dp(24), dp(24)).apply { marginEnd = dp(10) })
                         addView(LinearLayout(ctx).apply {
                             orientation = LinearLayout.VERTICAL
-                            addView(label(12.5f, ink).apply { text = title; typeface = Ui.semibold(font) })
-                            addView(label(10.5f, dim).apply { text = line },
-                                LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT).apply { topMargin = dp(2) })
+                            addView(label(13f, ink, 1).apply { text = title; typeface = Ui.semibold(font) })
+                            addView(label(11f, dim, 2).apply { text = line; setLineSpacing(dp(1).toFloat(), 1f) },
+                                LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { topMargin = dp(2) })
                         }, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
                     }, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { topMargin = dp(8) })
                 }

@@ -7,8 +7,6 @@ final class Promise<T: Sendable>: @unchecked Sendable {
     private var done = false
     private var waiters: [UUID: CheckedContinuation<T?, Never>] = [:]
 
-    var isDone: Bool { lock.withLock { done } }
-
     func fulfill(_ v: T) {
         let ws: [CheckedContinuation<T?, Never>] = lock.withLock {
             if done { return [] }
@@ -37,7 +35,9 @@ final class Promise<T: Sendable>: @unchecked Sendable {
                 w?.resume(returning: nil)
             }
         }
-        let finished = lock.withLock { done }
+        // The timer can win by a hair after `fulfill` already ran: the result is in, so it's no timeout.
+        let (finished, r) = lock.withLock { (done, result) }
+        if v == nil && finished { return (r, false) }
         return (v, v == nil && !finished)
     }
 }

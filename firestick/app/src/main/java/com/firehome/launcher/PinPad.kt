@@ -4,7 +4,6 @@ import android.content.Context
 import android.graphics.Color
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
-import android.graphics.drawable.StateListDrawable
 import android.view.Gravity
 import android.view.KeyEvent
 import android.view.View
@@ -217,30 +216,16 @@ class PinPad(
     private fun key(label: String, accent: Boolean, desc: String, onClick: () -> Unit) = TextView(ctx).apply {
         text = label
         textSize = if (label.length == 1 && label[0].isDigit()) 24f else 22f
-        typeface = Typeface.DEFAULT_BOLD
         gravity = Gravity.CENTER
-        setTextColor(Color.WHITE)
         contentDescription = desc
         isFocusable = true
         isClickable = true
-        // Focused key fills with the selection color; idle keys are quiet glass discs.
         typeface = Ui.medium(Typeface.DEFAULT)
         includeFontPadding = false
         setTextColor(android.content.res.ColorStateList(
             arrayOf(intArrayOf(android.R.attr.state_focused), IntArray(0)),
             intArrayOf(PearlFocus.INK, Color.WHITE),
         ))
-        background = StateListDrawable().apply {
-            addState(intArrayOf(android.R.attr.state_focused), GradientDrawable().apply {
-                shape = GradientDrawable.OVAL
-                setColor(select)
-            })
-            addState(IntArray(0), GradientDrawable().apply {
-                shape = GradientDrawable.OVAL
-                setColor(if (accent) Ui.alpha(select, 0.32f) else Color.parseColor("#14FFFFFF"))
-                setStroke(1.dp, if (accent) Ui.alpha(select, 0.6f) else HAIRLINE)
-            })
-        }
         setOnFocusChangeListener { v, has -> Ui.lift(v, has, Ui.LIFT_ICON) }
         // Dream Cinema: a pearl disc under the rainbow border (keys are 64 dp: radius 32).
         cinemaRowFocus(this, 32, if (accent) Ui.alpha(select, 0.32f) else Color.parseColor("#14FFFFFF"), if (accent) Ui.alpha(select, 0.6f) else HAIRLINE)
@@ -258,7 +243,7 @@ class PinPad(
     private val Float.dp get() = this * ctx.resources.displayMetrics.density
 
     companion object {
-        private val ERROR = Color.parseColor("#F87171")
+        private val ERROR = Ui.RED_TEXT // STANDARDS §2 red, light text tint
         private val HAIRLINE = Color.parseColor("#17FFFFFF")
     }
 }

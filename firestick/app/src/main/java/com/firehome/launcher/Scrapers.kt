@@ -339,9 +339,9 @@ object Scrapers {
     private fun settingDefaults(addon: File): Map<String, String> {
         val f = File(addon, "resources/settings.xml").takeIf { it.isFile } ?: return emptyMap()
         val out = LinkedHashMap<String, String>()
-        try {
+        try { f.reader().use { reader ->
             val p = Xml.newPullParser()
-            p.setInput(f.reader())
+            p.setInput(reader)
             var current: String? = null
             while (true) {
                 val ev = p.next()
@@ -355,7 +355,7 @@ object Scrapers {
                     "default" -> current?.let { id -> if (id in out) out[id] = p.nextText().trim() }
                 } else if (ev == XmlPullParser.END_TAG && p.name == "setting") current = null
             }
-        } catch (e: Exception) {
+        } } catch (e: Exception) {
             Log.w(TAG, "Scrapers: ${addon.name} settings unreadable (${e.javaClass.simpleName})")
         }
         return out
@@ -364,9 +364,9 @@ object Scrapers {
     private fun readSettings(f: File): Map<String, String> {
         if (!f.isFile) return emptyMap()
         val out = LinkedHashMap<String, String>()
-        try {
+        try { f.reader().use { reader ->
             val p = Xml.newPullParser()
-            p.setInput(f.reader())
+            p.setInput(reader)
             while (true) {
                 val ev = p.next()
                 if (ev == XmlPullParser.END_DOCUMENT) break
@@ -376,7 +376,7 @@ object Scrapers {
                     out[id] = v ?: p.nextText()
                 }
             }
-        } catch (e: Exception) { }
+        } } catch (e: Exception) { }
         return out
     }
 

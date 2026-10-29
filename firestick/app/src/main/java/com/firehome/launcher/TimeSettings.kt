@@ -23,7 +23,7 @@ import android.widget.TextView
  *
  *  - [settingsItems]: the category's rows for the Cinema / Premium Settings page.
  *  - [open]: the Time Zone page over whatever shows (Settings).
- *  - [picker] / [attach]: the same zone list for any container, e.g. the setup's "Your Time Zone" step.
+ *  - [picker]: the same zone list for any container, e.g. the setup's "Your Time Zone" step.
  *
  * The list: Automatic (the Fire TV's own zone) on top, then a short, friendly list (United States first,
  * then major world cities by region), each with the time there right now. The chosen one has a check.
@@ -31,8 +31,6 @@ import android.widget.TextView
 object TimeSettings {
     private const val TAG = "FireHome"
     private var openPage: View? = null
-
-    fun isOpen() = openPage != null
 
     // ---- Settings rows ----
 
@@ -79,10 +77,6 @@ object TimeSettings {
         return Picker(box, s)
     }
 
-    /** [picker] added to [container]; returns it (focus it with `picker.focus.requestFocus()`). */
-    fun attach(container: ViewGroup, heightDp: Int = 380, onDone: () -> Unit): Picker =
-        picker(container.context, heightDp, onDone).also { container.addView(it.view) }
-
     // ---- the zone screen ----
 
     /** Rows: Automatic, then each region's zones with the time there now. Ticks each minute while showing. */
@@ -113,7 +107,7 @@ object TimeSettings {
             val now = System.currentTimeMillis()
             val sel = selectedKey()
             val dev = DreamTime.detected()
-            val auto = s.row("auto", "Automatic", "Follows Your Fire TV · ${DreamTime.labelFor(dev.id)}",
+            val auto = s.row("auto", "Automatic", "Follows your Fire Stick · ${DreamTime.labelFor(dev.id)}",
                 DreamTime.formatTimeIn(ctx, now, dev), top = 0) { pick(null); paint() }
             check(auto.mark, sel == "auto")
             // A zone set some other way (not in the list) still shows, right under Automatic.
@@ -128,7 +122,7 @@ object TimeSettings {
             var region = ""
             for (c in DreamTime.choices()) {
                 val rg = DreamTime.region(c.id)
-                if (rg != region) { region = rg; s.view("k:$rg", 18) { ui.kicker(rg) } }
+                if (rg != region) { region = rg; s.view("k:$rg", 18) { SetupParts(ctx, k).section(rg, null) } } // Title Case, not tracked capitals
                 val tz = java.util.TimeZone.getTimeZone(c.id)
                 val r = s.row(keyOf(c.id), c.label, DreamTime.offsetText(tz, now), DreamTime.formatTimeIn(ctx, now, tz), top = 6) {
                     pick(c.id); paint()
@@ -172,12 +166,19 @@ object TimeSettings {
         lateinit var root: Root
         var nowLine: TextView? = null
         val onChange: () -> Unit = { nowLine?.text = nowText(a) }
+        // The "It's 6:42 PM" line keeps time with the rows' own minute tick.
+        val tick = object : Runnable {
+            override fun run() {
+                onChange()
+                root.postDelayed(this, 60_000L - System.currentTimeMillis() % 60_000L + 50L)
+            }
+        }
         fun close() {
             val r = root
             if (openPage !== r) return
             openPage = null
             DreamTime.removeListener(onChange)
-            panel.top?.let { it.alive = false; it.onHide() }
+            r.removeCallbacks(tick)
             panel.release()
             r.animate().alpha(0f).setDuration(Ui.OVERLAY_OUT).setInterpolator(Ui.EXIT).withEndAction { (r.parent as? ViewGroup)?.removeView(r) }.start()
             if (back != null && back.isAttachedToWindow) back.requestFocus()
@@ -208,7 +209,9 @@ object TimeSettings {
         Ui.unclip(row) // focused pills and rows lift past their rows: only the screen edge clips
         (a.window.decorView as FrameLayout).addView(root, MATCH_PARENT, MATCH_PARENT)
         openPage = root
+        Ui.onDetach(root) { if (openPage === root) openPage = null } // Activity recreated with it open: it can open again
         DreamTime.addListener(onChange)
+        root.postDelayed(tick, 60_000L - System.currentTimeMillis() % 60_000L + 50L)
         root.alpha = 0f
         root.animate().alpha(1f).setDuration(Ui.OVERLAY_IN).setInterpolator(Ui.EASE).start()
         panel.push(zoneScreen(ui, "Choose Your Time Zone") {

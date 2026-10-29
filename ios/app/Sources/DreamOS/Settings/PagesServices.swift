@@ -17,6 +17,8 @@ struct DebridAccountState: Sendable, Hashable {
         case invalid
         /// The service didn't answer.
         case offline
+        /// The service holds the account on this new network until the owner approves it (AllDebrid's email).
+        case blocked
     }
     /// "ad" | "rd" | "pm" | "tb"
     var service: String

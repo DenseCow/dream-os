@@ -133,19 +133,19 @@ final class ContentCatalog: CatalogService, @unchecked Sendable {
         case .movies, .shows:
             let kind: MediaKind = page == .movies ? .movie : .tv
             let label = kind == .movie ? "Movies" : "TV Shows"
-            let l = try await Tmdb.list("/trending/\(kind.rawValue)/week", type: kind).filter { $0.backdropPath != nil && !RowMix.isAnime($0) }.prefix(6)
+            let l = try await Tmdb.list("/trending/\(kind.rawValue)/week", type: kind).filter { $0.backdropPath != nil && !RowMix.animeHidden($0) && RowMix.released($0) }.prefix(6)
             return await Pages.items(Array(l)) { _ in ("Trending in \(label)", nil, nil) }
         case .service(let svc):
-            let l = await Pages.serviceMixed(svc.name, rating: 7).filter { $0.backdropPath != nil && (svc.name == "Crunchyroll" || !RowMix.isAnime($0)) }.prefix(6)
+            let l = await Pages.serviceMixed(svc.name, rating: 7).filter { $0.backdropPath != nil && RowMix.released($0) && (svc.name == "Crunchyroll" || !RowMix.animeHidden($0)) }.prefix(6)
             return await Pages.items(Array(l)) { _ in ("On \(svc.name)", nil, nil) }
         case .season: return []
         default:
             if let c = Self.chip(page) {
-                let l = try await Discover.list(DFilters(type: c.0, genre: c.2, sort: .popular)).filter { $0.backdropPath != nil && (c.2 == Discover.anime || !RowMix.isAnime($0)) }.prefix(6)
+                let l = try await Discover.list(DFilters(type: c.0, genre: c.2, sort: .popular)).filter { $0.backdropPath != nil && RowMix.released($0) && (c.2 == Discover.anime || !RowMix.animeHidden($0)) }.prefix(6)
                 return await Pages.items(Array(l)) { _ in (c.1, nil, nil) }
             }
             guard let spec = Self.spec(page) else { return [] }
-            let l = await Pages.genreMixed(spec, rating: 7).filter { $0.backdropPath != nil }.prefix(6)
+            let l = await Pages.genreMixed(spec, rating: 7).filter { $0.backdropPath != nil && RowMix.released($0) }.prefix(6)
             return await Pages.items(Array(l)) { _ in (spec.name, nil, nil) }
         }
     }
@@ -162,7 +162,6 @@ final class ContentCatalog: CatalogService, @unchecked Sendable {
 
     func details(kind: MediaKind, id: Int) async throws -> TitleDetails {
         let d = try await Details.fetch(kind, id)
-        Taste.noteOpened(d.title) // a title page opened: a small taste signal (Taste.swift)
         return d
     }
 
@@ -233,8 +232,11 @@ final class ContentCatalog: CatalogService, @unchecked Sendable {
 
     func suggestions(_ query: String) async -> [String] { GenreSearch.suggest(query) }
 
+    /// Search's Trending Now: no anime outside the anime sections, nothing adult, nothing not out yet (fire-home cd3927b).
     func trending() async -> [Title] {
-        Array(((try? await Tmdb.trending()) ?? []).filter { $0.posterPath != nil }.prefix(40))
+        Array(((try? await Tmdb.trending()) ?? []).filter {
+            $0.posterPath != nil && !RowMix.isAnime($0) && !$0.adult && RowMix.released($0)
+        }.prefix(40))
     }
 
     // MARK: browse

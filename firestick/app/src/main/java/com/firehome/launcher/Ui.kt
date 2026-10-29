@@ -115,6 +115,14 @@ object Ui {
     // ---- color helpers (all derived from theme colors) ----
 
     /** [c] with its alpha set to [a] (0..1), whatever it was. */
+    // STANDARDS §2 status colors: the mark or fill, and its lighter tint for text on the dark glass.
+    const val GREEN = 0xFF30D158.toInt()
+    const val GREEN_TEXT = 0xFF6BEB8F.toInt()
+    const val AMBER = 0xFFFFD60A.toInt()
+    const val AMBER_TEXT = 0xFFFFE266.toInt()
+    const val RED = 0xFFFF453A.toInt()
+    const val RED_TEXT = 0xFFFF8178.toInt()
+
     fun alpha(c: Int, a: Float) = Color.argb((a * 255).toInt().coerceIn(0, 255), Color.red(c), Color.green(c), Color.blue(c))
 
     /** [c] with its existing alpha multiplied by [a]. */
@@ -172,50 +180,21 @@ object Ui {
 
     // Resting focus scale per view, so the OK "click" returns to exactly the lifted size.
     private val lifted = WeakHashMap<View, Float>()
-    // Glow depth (translationZ, px) of each focused view, so a glow held back ([dropGlow]) can return.
-    private val glowZ = WeakHashMap<View, Float>()
 
     /** Focus lift: springy scale up (with optional depth) on focus, soft settle back on blur. */
     fun lift(v: View, has: Boolean, scale: Float, zDp: Int = 0) {
         val z = if (zDp > 0) dpf(v.context, zDp.toFloat()) else 0f
         if (has) {
             lifted[v] = scale
-            if (zDp > 0) glowZ[v] = z
             val a = v.animate().scaleX(scale).scaleY(scale).setStartDelay(0).setDuration(FOCUS_IN).setInterpolator(SPRING)
             if (zDp > 0) a.translationZ(z)
             a.start()
         } else {
             lifted.remove(v)
-            glowZ.remove(v)
             val a = v.animate().scaleX(1f).scaleY(1f).setStartDelay(0).setDuration(FOCUS_OUT).setInterpolator(SETTLE)
             if (zDp > 0) a.translationZ(0f)
             a.start()
         }
-    }
-
-    /**
-     * Takes the focus glow (elevation shadow) off [v] and everything under it this very frame.
-     *
-     * A shadow is drawn by the caster's parent at the caster's own alpha: it ignores a fade applied
-     * by an ancestor (rows fade per child, see FlatRow), so while a row fades its lifted card's glow
-     * would stay at full strength and, once the card turns translucent, the shadow's umbra shows
-     * through it as a sharp purple box. Z goes to 0 at once, not animated: any overlap of a shadow
-     * with a translucent card is visible. The lift's own Z animation (queued or running) is replaced
-     * by a no-op on the same animator, so it can't push Z back up; its scale settle runs on untouched.
-     */
-    fun dropGlow(v: View) {
-        if (v.translationZ != 0f || glowZ.containsKey(v)) {
-            v.translationZ = 0f
-            v.animate().translationZ(0f)
-        }
-        if (v is ViewGroup) for (i in 0 until v.childCount) dropGlow(v.getChildAt(i))
-    }
-
-    /** Brings [v]'s glow back after [dropGlow], if it still has focus (a row that finished fading in). */
-    fun restoreGlow(v: View) {
-        val z = glowZ[v] ?: return
-        if (!v.isFocused || v.translationZ == z) return
-        v.animate().translationZ(z).setStartDelay(0).setDuration(FOCUS_IN).setInterpolator(SPRING).start()
     }
 
     private val pressed = WeakHashMap<View, Float>()
@@ -283,6 +262,12 @@ object Ui {
      * parents everywhere under [root] (clipping off on every plain container), while scrollers keep
      * clipping their content at their own edge ([clipSelf]). Content rebuilt later is covered too.
      */
+    /** Runs [then] once when [v] leaves its window (a page's static "open" field must not outlive its Activity). */
+    fun onDetach(v: View, then: () -> Unit) = v.addOnAttachStateChangeListener(object : View.OnAttachStateChangeListener {
+        override fun onViewAttachedToWindow(x: View) {}
+        override fun onViewDetachedFromWindow(x: View) { x.removeOnAttachStateChangeListener(this); then() }
+    })
+
     fun unclip(root: ViewGroup) {
         unclipTree(root)
         val relayout = ViewTreeObserver.OnGlobalLayoutListener { unclipTree(root) }
@@ -415,4 +400,23 @@ object ScreenFit {
         val p = percent.coerceIn(0, MAX) / 100f
         return intArrayOf((dm.widthPixels * p).toInt(), (dm.heightPixels * p).toInt())
     }
+}
+
+/** QR codes: one pixel per module (RGB_565), drawn scaled up with no smoothing so the modules stay crisp. */
+object Qr {
+    /** [text] as a QR bitmap with [border] white modules around it. */
+    fun bitmap(text: String, border: Int = 0): android.graphics.Bitmap {
+        val q = io.nayuki.qrcodegen.QrCode.encodeText(text, io.nayuki.qrcodegen.QrCode.Ecc.MEDIUM)
+        val n = q.size + border * 2
+        val px = IntArray(n * n)
+        for (y in 0 until n) for (x in 0 until n) {
+            val on = x >= border && y >= border && x < n - border && y < n - border && q.getModule(x - border, y - border)
+            px[y * n + x] = if (on) android.graphics.Color.BLACK else android.graphics.Color.WHITE
+        }
+        return android.graphics.Bitmap.createBitmap(n, n, android.graphics.Bitmap.Config.RGB_565).apply { setPixels(px, 0, n, 0, 0, n, n) }
+    }
+
+    /** [bitmap] as a drawable that scales without filtering (an ImageView's own default would blur it). */
+    fun drawable(ctx: Context, text: String, border: Int = 0) =
+        android.graphics.drawable.BitmapDrawable(ctx.resources, bitmap(text, border)).apply { isFilterBitmap = false; setAntiAlias(false) }
 }

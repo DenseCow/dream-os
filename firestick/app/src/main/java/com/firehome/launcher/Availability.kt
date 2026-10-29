@@ -65,7 +65,14 @@ import kotlin.math.ceil
  */
 object Availability {
     private const val TAG = "FireHome"
-    private const val FILE = "availability.json"
+    /** "-2": answers from before "HQ PreDVD" and friends counted as CAM (2026-10-29) are dropped and asked again. */
+    private const val FILE = "availability-2.json"
+    private const val OLD_FILE = "availability.json"
+    /** Show cards' picks and movies' digital release days, so a card's pill shows on its first frame after a restart. */
+    private const val PICKS_FILE = "availability-picks.json"
+    /** At most this many show picks (~150 bytes each) and digital days kept, in memory and on disk. */
+    private const val KEEP_SHOWS = 200
+    private const val KEEP_DIGITAL = 300
     private const val RECENT_DAYS = 90
     private const val AVAILABLE_TTL = 24 * 60 * 60_000L
     private const val OTHER_TTL = 150 * 60_000L
@@ -150,7 +157,8 @@ object Availability {
         val at = e.releaseAt
         if (at > now) {
             val d = Date(at)
-            val thisYear = DreamTime.fmt("yyyy").format(d) == DreamTime.fmt("yyyy").format(Date(now))
+            val year = DreamTime.fmt("yyyy")
+            val thisYear = year.format(d) == year.format(Date(now))
             val date = DreamTime.fmt(if (thisYear) "MMM d" else "MMM d, yyyy").format(d)
             val short = if (thisYear) date else DreamTime.fmt("MMM yyyy").format(d)
             return listOf("Coming $date", short, "Soon").distinct()
@@ -220,7 +228,7 @@ object Availability {
     /** [t]'s target when its digital release is recent or ahead; null otherwise. Blocking (one cached TMDB call). */
     private fun digitalTarget(app: Context, t: Title): Target? {
         if (!mayBeDigitalNew(t)) return null
-        val d = digitalDays[t.id] ?: (try { digitalDate(app, t.id) } catch (e: Exception) { null }).orEmpty().also { digitalDays[t.id] = it }
+        val d = digitalDays[t.id] ?: (try { digitalDate(app, t.id) } catch (e: Exception) { null }).orEmpty().also { digitalDays[t.id] = it; saveSoon(app) }
         return if (recentDigital(d)) movie(t) else null
     }
 
@@ -236,6 +244,7 @@ object Availability {
         synchronized(fileLock) {
             if (loaded) return
             try {
+                File(ctx.applicationContext.filesDir, OLD_FILE).delete()
                 val f = File(ctx.applicationContext.filesDir, FILE)
                 if (f.exists()) {
                     val a = JSONArray(f.readText())
@@ -244,8 +253,57 @@ object Availability {
             } catch (e: Exception) {
                 Log.w(TAG, "Avail: cache unreadable ($e)")
             }
+            loadPicks(ctx.applicationContext.filesDir)
             loaded = true
         }
+    }
+
+    /** Reads the cache file (and the language pills' answers) off the main thread ahead of the first card, so that card's first [peek] doesn't wait on disk. */
+    fun preload(ctx: Context) {
+        LangPills.warm(ctx)
+        if (loaded) return
+        val app = ctx.applicationContext
+        Net.run { ensure(app) }
+    }
+
+    private fun loadPicks(dir: File) {
+        try {
+            val f = File(dir, PICKS_FILE)
+            if (!f.exists()) return
+            val o = JSONObject(f.readText())
+            val a = o.optJSONArray("shows")
+            if (a != null) for (i in 0 until a.length()) {
+                val p = a.optJSONObject(i) ?: continue
+                val id = p.optInt("id").takeIf { it > 0 } ?: continue
+                val t = episode(id, p.optString("n"), p.optString("i").ifEmpty { null }, p.optInt("s"), p.optInt("e"), p.optLong("r"), p.optString("d"))
+                shows.putIfAbsent(id, ShowPick(t, p.optBoolean("u"), p.optLong("a")))
+            }
+            o.optJSONObject("digital")?.let { d -> for (k in d.keys()) k.toIntOrNull()?.let { digitalDays.putIfAbsent(it, d.optString(k)) } }
+        } catch (e: Exception) {
+            Log.w(TAG, "Avail: show picks unreadable ($e)")
+        }
+    }
+
+    private fun savePicks(dir: File) {
+        if (shows.size > KEEP_SHOWS) shows.entries.sortedBy { it.value.at }.take(shows.size - KEEP_SHOWS).forEach { shows.remove(it.key) }
+        if (digitalDays.size > KEEP_DIGITAL) digitalDays.keys.take(digitalDays.size - KEEP_DIGITAL).forEach { digitalDays.remove(it) }
+        val a = JSONArray()
+        for ((id, p) in shows) {
+            val t = p.target ?: continue
+            val r = t.request
+            a.put(JSONObject().put("id", id).put("n", r.title).put("i", r.imdb ?: "").put("s", r.season ?: 0).put("e", r.episode ?: 0)
+                .put("r", t.releaseAt).put("d", t.date).put("u", p.upcoming).put("a", p.at))
+        }
+        val d = JSONObject()
+        // Only real dates: a movie with none yet is asked again next launch (TMDB adds digital dates late).
+        for ((id, day) in digitalDays) if (day.isNotEmpty()) d.put(id.toString(), day)
+        writeAtomically(File(dir, PICKS_FILE), JSONObject().put("shows", a).put("digital", d).toString())
+    }
+
+    private fun writeAtomically(f: File, text: String) {
+        val tmp = File(f.parentFile, f.name + ".tmp")
+        tmp.writeText(text)
+        if (!tmp.renameTo(f)) throw java.io.IOException("couldn't replace ${f.name}")
     }
 
     private fun save(ctx: Context) = synchronized(fileLock) {
@@ -254,9 +312,8 @@ object Availability {
             if (keep.size < cache.size) { val ks = keep.map { it.key }.toSet(); cache.keys.retainAll(ks) }
             val a = JSONArray().apply { keep.forEach { put(it.value.toJson(it.key)) } }
             val dir = ctx.applicationContext.filesDir
-            val tmp = File(dir, "$FILE.tmp")
-            tmp.writeText(a.toString())
-            tmp.renameTo(File(dir, FILE))
+            writeAtomically(File(dir, FILE), a.toString())
+            savePicks(dir)
         } catch (e: Exception) {
             Log.w(TAG, "Avail: cache not saved ($e)")
         }
@@ -701,18 +758,33 @@ object Availability {
         val pill = Pill(ctx)
         followWatched(pill, t)
         place(frame, slot, pill)
+        ensure(ctx)
+        val now = System.currentTimeMillis()
         val known = shows[t.id]
-        if (known != null && System.currentTimeMillis() - known.at < SHOW_TTL) { known.target?.let { bindShow(pill, it, known.upcoming) }; return null }
+        if (known != null && now - known.at < SHOW_TTL) { known.target?.let { bindShow(pill, it, known.upcoming) }; return null }
+        // An older pick (an earlier run): its pill on the first frame while its episode still counts, then asked again.
+        val provisional = known?.takeIf { holds(it, now) }?.target
+        provisional?.let { bindShow(pill, it, known.upcoming) }
         // Once the card is on screen: one TMDB details call (cached), the episode's own check only for one out this week.
         pill.whenShown {
             val app = ctx.applicationContext
             Net.background({ showTarget(app, t) }) { s ->
+                if (s == null && provisional != null) return@background // no answer: the pick shown stays, asked again next time
                 val d = s ?: ShowPick(null, false)
                 shows[t.id] = d
-                d.target?.let { bindShow(pill, it, d.upcoming) }
+                saveSoon(app)
+                val tg = d.target
+                if (tg != null) bindShow(pill, tg, d.upcoming) else if (provisional != null) pill.bind("none:${t.id}", null)
             }
         }
         return null
+    }
+
+    /** [p] still describes its show today: an upcoming episode still ahead, or an aired one still new ([recentEpisode]). */
+    private fun holds(p: ShowPick, now: Long): Boolean {
+        val t = p.target ?: return false
+        return if (p.upcoming) (if (t.releaseAt > 0) t.releaseAt > now else t.date.length == 10 && t.date > day(0))
+            else recentEpisode(t.releaseAt, t.date, now)
     }
 
     /** A show card's pick: [target] the episode its pill follows (null: none), [upcoming] answered here (no lookup). */
@@ -810,7 +882,16 @@ object Availability {
 
     // ---- dates ----
 
-    private fun day(offset: Int): String = DreamTime.ymdPlus(offset)
+    /** [day]'s answers for the current minute: every card bind asks for the same few offsets (a formatter each). */
+    private class Days(val minute: Long) { val ymd = ConcurrentHashMap<Int, String>() }
+    @Volatile private var days = Days(-1)
+
+    /** "yyyy-MM-dd" today + [offset] days in the viewer's zone; at most a minute behind a midnight or a zone change. */
+    private fun day(offset: Int): String {
+        val minute = System.currentTimeMillis() / 60_000L
+        val d = days.takeIf { it.minute == minute } ?: Days(minute).also { days = it }
+        return d.ymd.getOrPut(offset) { DreamTime.ymdPlus(offset) }
+    }
 
     /** The start of a date-only day in the viewer's chosen zone (the date itself never shifts). */
     internal fun midnight(date: String): Long = try { DreamTime.fmt("yyyy-MM-dd").parse(date)?.time ?: 0L } catch (e: Exception) { 0L }
@@ -869,10 +950,23 @@ object Availability {
         private var anim: ValueAnimator? = null
         /** The gold Watched look ([watched]): it replaces whatever status the pill would say. */
         private var isWatched = false
+        /** A language pill ([language]): a pill of its own, never bound to a title's status. */
+        private var lang: LangPills.Pill? = null
 
         init {
             visibility = View.GONE
             importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_YES
+        }
+
+        /**
+         * The title page's language pills ([LangPills]), in the status pills' look: audio in amber with a speaker
+         * ("Korean Audio Only"), a dub or subtitles found in green with the check ("English Dub Available", "English
+         * Subtitles"), no subtitles found plain (graphite edge, gray words, no disc). Static; null hides it.
+         */
+        fun language(p: LangPills.Pill?) {
+            lang = p
+            anim?.let { anim = null; it.cancel() }
+            settle()
         }
 
         /**
@@ -897,7 +991,7 @@ object Availability {
             // Another title (the banner's next episode): no transition, that's not a status change.
             anim?.let { anim = null; it.cancel() }
             entry = e
-            contentDescription = e?.let { labels(it, dated).first() }
+            contentDescription = e?.let { words(it).first() }
             settle()
         }
 
@@ -906,7 +1000,7 @@ object Availability {
             if (e == null && was == null) return
             if (e != null && was != null && e.status == was.status && labels(e, dated) == labels(was, dated)) { entry = e; if (anim == null) drawn = e; return }
             entry = e
-            contentDescription = e?.let { labels(it, dated).first() }
+            contentDescription = e?.let { words(it).first() }
             anim?.let { anim = null; it.cancel() }
             if (isWatched || was == null || e == null || !isAttachedToWindow || windowVisibility != View.VISIBLE || !isShown) { settle(); return }
             // A live change: the old words fade, the new ones (and the width) come in, one glow pulse in the new color.
@@ -941,13 +1035,21 @@ object Availability {
             contentAlpha = 1f
             glow = 0f
             scaleX = 1f; scaleY = 1f
-            visibility = if (entry == null && !isWatched) View.GONE else View.VISIBLE
-            contentDescription = if (isWatched) WATCHED else entry?.let { labels(it, dated).first() }
+            visibility = if (entry == null && !isWatched && lang == null) View.GONE else View.VISIBLE
+            contentDescription = lang?.labels?.first() ?: if (isWatched) WATCHED else entry?.let { words(it).first() }
             requestLayout()
             invalidate()
         }
 
         override fun availChanged(key: String, e: Entry) = show(e)
+
+        /** [labels] for the entry last asked about: measuring and the content description reuse them. */
+        private var wordsFor: Entry? = null
+        private var wordsCache: List<String> = emptyList()
+        private fun words(e: Entry): List<String> {
+            if (e !== wordsFor) { wordsCache = labels(e, dated); wordsFor = e }
+            return wordsCache
+        }
 
         private var onShown: (() -> Unit)? = null
 
@@ -992,6 +1094,15 @@ object Availability {
         private fun watchedWidth() = checkPadS + checkBox + checkGap + textPaint.measureText(WATCHED) + padE
 
         override fun onMeasure(widthSpec: Int, heightSpec: Int) {
+            lang?.let { p ->
+                // The longest words that fit whole (with the disc unless it's the plain one); none: no pill.
+                val max = room(widthSpec)
+                bare = p.kind == LangPills.Kind.NO_SUBS
+                label = p.labels.firstOrNull { (if (bare) bareWidth(it) else widthFor(it)) <= max } ?: ""
+                if (label.isEmpty()) { setMeasuredDimension(0, 0); return }
+                setMeasuredDimension(ceil(if (bare) bareWidth(label) else widthFor(label)).toInt(), ceil(pillH).toInt())
+                return
+            }
             if (isWatched) {
                 // "Watched" beside its check; no room: the word alone; still none: no pill (never the check alone).
                 val max = room(widthSpec)
@@ -1007,7 +1118,7 @@ object Availability {
             val max = room(widthSpec)
             // The longest words that fit whole beside the disc (text is never cut); then the shortest words
             // alone; nothing fits: no pill at all (never an icon-only pill).
-            val all = labels(e, dated)
+            val all = words(e)
             val withDisc = all.firstOrNull { widthFor(it) <= max }
             val alone = if (withDisc == null) all.firstOrNull { bareWidth(it) <= max } else null
             label = withDisc ?: alone ?: ""
@@ -1026,6 +1137,7 @@ object Availability {
         }
 
         override fun onDraw(c: Canvas) {
+            lang?.let { drawLanguage(c, it); return }
             if (isWatched) { drawWatched(c); return }
             val e = drawn ?: return
             if (label.isEmpty() || width <= 0) return
@@ -1086,6 +1198,54 @@ object Availability {
             c.drawText(label, x, base, textPaint)
         }
 
+        /** A language pill: the status glass; amber with a speaker, green with the check, or plain. */
+        private fun drawLanguage(c: Canvas, p: LangPills.Pill) {
+            if (label.isEmpty() || width <= 0) return
+            val st = if (p.kind == LangPills.Kind.AUDIO) Status.CAM else Status.AVAILABLE
+            val r = height / 2f
+            rect.set(hair / 2, hair / 2, width - hair / 2, height - hair / 2)
+            c.drawRoundRect(rect, r, r, glass)
+            if (bare) {
+                line.color = PLAIN_EDGE
+                c.drawRoundRect(rect, r, r, line)
+            } else {
+                wash.color = fade(st.color, 0.09f)
+                c.drawRoundRect(rect, r, r, wash)
+                line.color = fade(st.color, 0.36f)
+                c.drawRoundRect(rect, r, r, line)
+            }
+            val cy = height / 2f
+            if (!bare) {
+                val cx = padS + glyph / 2
+                val u = glyph / 2
+                disc.color = st.color
+                c.drawCircle(cx, cy, u, disc)
+                ink.color = INK
+                if (p.kind == LangPills.Kind.AUDIO) drawSpeaker(c, cx, cy, u) else drawGlyph(c, Status.AVAILABLE, cx, cy, u)
+            }
+            textPaint.color = if (bare) PLAIN_TEXT else st.tint
+            val x = if (bare) padE else padS + glyph + gap
+            c.drawText(label, x, cy - (textPaint.ascent() + textPaint.descent()) / 2, textPaint)
+        }
+
+        /** A speaker knocked out of the disc: the box, the cone and one sound arc. */
+        private fun drawSpeaker(c: Canvas, cx: Float, cy: Float, u: Float) {
+            ink.style = Paint.Style.FILL
+            path.reset()
+            path.moveTo(cx - 0.56f * u, cy - 0.18f * u)
+            path.lineTo(cx - 0.30f * u, cy - 0.18f * u)
+            path.lineTo(cx + 0.02f * u, cy - 0.46f * u)
+            path.lineTo(cx + 0.02f * u, cy + 0.46f * u)
+            path.lineTo(cx - 0.30f * u, cy + 0.18f * u)
+            path.lineTo(cx - 0.56f * u, cy + 0.18f * u)
+            path.close()
+            c.drawPath(path, ink)
+            ink.style = Paint.Style.STROKE
+            ink.strokeWidth = u * 0.17f
+            rect.set(cx - 0.20f * u, cy - 0.40f * u, cx + 0.60f * u, cy + 0.40f * u)
+            c.drawArc(rect, -50f, 100f, false, ink)
+        }
+
         /** The knocked-out glyph inside the disc (radius [u]): a check, a video camera, a clock. */
         private fun drawGlyph(c: Canvas, st: Status, cx: Float, cy: Float, u: Float) {
             path.reset()
@@ -1126,6 +1286,9 @@ object Availability {
             const val GOLD = 0xFFE8C468.toInt()
             const val WATCHED_FILL = 0xEB2A2412.toInt()
             const val WATCHED = "Watched"
+            /** The plain language pill ("No English Subtitles"): a graphite edge and light gray words. */
+            const val PLAIN_EDGE = 0x47FFFFFF
+            const val PLAIN_TEXT = 0xFFC4C4CA.toInt()
             fun fade(color: Int, f: Float) = (color and 0xFFFFFF) or ((Color.alpha(color) * f.coerceIn(0f, 1f)).toInt() shl 24)
             fun ease(x: Float): Float { val v = 1f - x.coerceIn(0f, 1f); return 1f - v * v * v }
         }
@@ -1158,13 +1321,18 @@ object Availability {
             addView(pill, LayoutParams(WRAP_CONTENT, WRAP_CONTENT))
             addView(note, LayoutParams(WRAP_CONTENT, WRAP_CONTENT).apply { marginStart = Ui.dp(ctx, 12) })
             followWatched(pill, t)
+            ensure(ctx) // the picks and digital days below come from the same file
             if (watched) { pill.watched(true); render(null) }
             // Only a new movie (out in the last RECENT_DAYS days, or still to come) has a status; a catalog one has none.
             if (t.type == "movie") {
                 if (!watched) cardTarget(t)?.let { start(it, null) } ?: run {
-                    // In theaters months ago, on digital only recently: still new (digitalTarget).
-                    val app = ctx.applicationContext
-                    Net.background({ digitalTarget(app, t) }) { tg -> if (tg != null && key == null) start(tg, null) }
+                    // In theaters months ago, on digital only recently: still new (digitalTarget). Known from its card: at once.
+                    val day = digitalDays[t.id]
+                    if (day != null) { if (mayBeDigitalNew(t) && recentDigital(day)) start(movie(t), null) }
+                    else {
+                        val app = ctx.applicationContext
+                        Net.background({ digitalTarget(app, t) }) { tg -> if (tg != null && key == null) start(tg, null) }
+                    }
                 }
             }
             else { showLine(); Watched.checkShow(ctx, t.id) }
@@ -1180,33 +1348,55 @@ object Availability {
             want(context, target, front = true, page = true)
         }
 
-        /** A show: the latest episode (if new) and the next one's time, from TMDB and TVmaze in the background. */
+        /**
+         * A show: the latest episode (if new) and the next one's time. The card's pick (or TMDB with the air times
+         * already known) puts the pill up first; TVmaze's exact times only refine the note after.
+         */
         private fun showLine() {
             val app = context.applicationContext
-            Net.background({
-                val d = WatchHistory.details(app, "tv", t.id) ?: return@background null
-                val air = try { AirTimes.info(app, t.id) } catch (e: Exception) { null }
-                val imdb = d.optJSONObject("external_ids")?.optString("imdb_id")?.takeIf { it.startsWith("tt") }
-                val last = NewEpisodes.Ep.fromTmdb(d.optJSONObject("last_episode_to_air"))?.let { e ->
-                    air?.prev?.takeIf { e.same(it.season, it.number) }?.let { e.withAt(it.at) } ?: e
-                }
-                val next = NewEpisodes.Ep.fromTmdb(d.optJSONObject("next_episode_to_air"))?.let { e ->
-                    air?.next?.takeIf { e.same(it.season, it.number) }?.let { e.withAt(it.at) } ?: e
-                }
-                val recent = last?.takeIf { recentEpisode(it.at, it.airDate) } // aired in the last EPISODE_DAYS days
-                // "Next Episode: S2 · E7 · Friday at 9:00 PM"; a premiere, or an announced season with a date: "New Season: Season 3 · March 4".
-                val nextWords = next?.takeIf { !it.aired() }?.let { e ->
-                    val w = if (e.at > 0) AirTimes.label(e.at) else Upcoming.dayWords(e.airDate)
-                    if (e.number == 1) "New Season: Season ${e.season} · $w" else "Next Episode: S${e.season} · E${e.number} · $w"
-                } ?: newSeason(d, last?.season ?: 0)
-                if (nextWords != null) Log.w(TAG, "Upcoming: ${t.name}: \"$nextWords\"" + if ((next?.at ?: 0L) > 0) " (tvmaze time)" else "")
-                Triple(recent?.let { episode(t.id, t.name, imdb, it.season, it.number, it.at, it.airDate) }, recent, nextWords)
-            }) { res ->
-                if (res == null || !isAttachedToWindow && parent == null) return@background
-                val (target, ep, nextWords) = res
-                if (target != null && ep != null) start(target, nextWords ?: "S${ep.season} · E${ep.number}")
-                else if (nextWords != null) { fixedNote = nextWords; render(null) }
+            val now = System.currentTimeMillis()
+            shows[t.id]?.takeIf { !it.upcoming && holds(it, now) }?.target?.let { tg ->
+                start(tg, "S${tg.request.season} · E${tg.request.episode}")
             }
+            Net.background({ showStatus(app, exact = false) }) { res ->
+                if (res == null || !isAttachedToWindow && parent == null) return@background
+                showResult(res)
+                Net.background({ showStatus(app, exact = true) }) { full -> if (full != null && (isAttachedToWindow || parent != null)) showResult(full) }
+            }
+        }
+
+        private class ShowStatus(val target: Target?, val ep: NewEpisodes.Ep?, val nextWords: String?)
+
+        /** Blocking. TMDB's details (cached) with TVmaze's times: [exact] asks TVmaze, else only what it already told. */
+        private fun showStatus(app: Context, exact: Boolean): ShowStatus? {
+            val d = WatchHistory.details(app, "tv", t.id) ?: return null
+            val imdb = d.optJSONObject("external_ids")?.optString("imdb_id")?.takeIf { it.startsWith("tt") }
+            val air = if (!exact) AirTimes.peek(t.id)
+                else try { AirTimes.info(app, t.id, imdb, d.optJSONObject("external_ids")?.optInt("tvdb_id")) } catch (e: Exception) { null }
+            val last = NewEpisodes.Ep.fromTmdb(d.optJSONObject("last_episode_to_air"))?.let { e ->
+                air?.prev?.takeIf { e.same(it.season, it.number) }?.let { e.withAt(it.at) } ?: e
+            }
+            val next = NewEpisodes.Ep.fromTmdb(d.optJSONObject("next_episode_to_air"))?.let { e ->
+                air?.next?.takeIf { e.same(it.season, it.number) }?.let { e.withAt(it.at) } ?: e
+            }
+            val recent = last?.takeIf { recentEpisode(it.at, it.airDate) } // aired in the last EPISODE_DAYS days
+            // "Next Episode: S2 · E7 · Friday at 9:00 PM"; a premiere, or an announced season with a date: "New Season: Season 3 · March 4".
+            val nextWords = next?.takeIf { !it.aired() }?.let { e ->
+                val w = if (e.at > 0) AirTimes.label(e.at) else Upcoming.dayWords(e.airDate)
+                if (e.number == 1) "New Season: Season ${e.season} · $w" else "Next Episode: S${e.season} · E${e.number} · $w"
+            } ?: newSeason(d, last?.season ?: 0)
+            if (exact && nextWords != null) Log.w(TAG, "Upcoming: ${t.name}: \"$nextWords\"" + if ((next?.at ?: 0L) > 0) " (tvmaze time)" else "")
+            return ShowStatus(recent?.let { episode(t.id, t.name, imdb, it.season, it.number, it.at, it.airDate) }, recent, nextWords)
+        }
+
+        private fun showResult(res: ShowStatus) {
+            val target = res.target
+            val ep = res.ep
+            if (target != null && ep != null) { start(target, res.nextWords ?: "S${ep.season} · E${ep.number}"); return }
+            // No new episode after all (an earlier pick showed one): the pill goes.
+            val had = key != null
+            if (had) { key = null; pill.bind("none:${t.id}", null) }
+            if (had || res.nextWords != null) { fixedNote = res.nextWords; render(null) }
         }
 
         private fun render(e: Entry?) {

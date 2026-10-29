@@ -5,6 +5,7 @@ import android.os.SystemClock
 import android.util.Log
 import org.json.JSONArray
 import org.json.JSONObject
+import java.io.IOException
 import java.net.HttpURLConnection
 import java.net.URL
 import java.text.SimpleDateFormat
@@ -31,6 +32,8 @@ object AirTimes {
     private const val INFO_TTL = 3 * 60 * 60_000L
     private const val MISS_RETRY_MS = 7 * 24 * 60 * 60_000L
     private const val GAP_MS = 550L
+    /** Full episode lists kept in memory (a long-running show's is ~100 KB): the shows looked at most recently. */
+    private const val MAX_SCHEDULES = 24
 
     /** One episode's exact instant (epoch ms). */
     class Air(val season: Int, val number: Int, val at: Long)
@@ -66,7 +69,7 @@ object AirTimes {
             schedules[tmdbId]?.takeIf { System.currentTimeMillis() - it.fetchedAt < INFO_TTL }?.let { return it.eps }
             val app = ctx.applicationContext
             val maze = mazeId(app, tmdbId, null, null) ?: return null
-            val a = fetch("$API/shows/$maze/episodes")?.let { try { JSONArray(it) } catch (e: Exception) { null } }
+            val a = tryFetch("$API/shows/$maze/episodes")?.let { try { JSONArray(it) } catch (e: Exception) { null } }
                 ?: return schedules[tmdbId]?.eps
             val eps = (0 until a.length()).mapNotNull { i ->
                 val o = a.optJSONObject(i) ?: return@mapNotNull null
@@ -75,6 +78,7 @@ object AirTimes {
                     o.optString("airdate").takeIf { it.length == 10 }.orEmpty(), exact(o))
             }
             schedules[tmdbId] = Schedule(eps, System.currentTimeMillis())
+            trimSchedules()
             return eps
         }
     }
@@ -90,7 +94,8 @@ object AirTimes {
         memory[tmdbId]?.takeIf { System.currentTimeMillis() - it.fetchedAt < INFO_TTL }?.let { return it }
         val app = ctx.applicationContext
         val maze = synchronized(lockFor(tmdbId)) { mazeId(app, tmdbId, imdb, tvdb) } ?: return null
-        val o = get("$API/shows/$maze?embed%5B%5D=previousepisode&embed%5B%5D=nextepisode") ?: return memory[tmdbId]
+        val o = tryFetch("$API/shows/$maze?embed%5B%5D=previousepisode&embed%5B%5D=nextepisode")
+            ?.let { try { JSONObject(it) } catch (e: Exception) { null } } ?: return memory[tmdbId]
         val emb = o.optJSONObject("_embedded")
         val info = Info(air(emb?.optJSONObject("previousepisode")), air(emb?.optJSONObject("nextepisode")), System.currentTimeMillis())
         memory[tmdbId] = info
@@ -131,19 +136,42 @@ object AirTimes {
         var im = imdb?.takeIf { it.startsWith("tt") }
         var tv = tvdb?.takeIf { it > 0 }
         if (im == null && tv == null) {
-            val ext = WatchHistory.tmdb(app, "/tv/$tmdbId/external_ids", "")
-            im = ext?.optString("imdb_id")?.takeIf { it.startsWith("tt") }
-            tv = ext?.optInt("tvdb_id")?.takeIf { it > 0 }
+            // TMDB didn't answer: nothing is known yet, so no miss is recorded.
+            val ext = WatchHistory.tmdb(app, "/tv/$tmdbId/external_ids", "") ?: return null
+            im = ext.optString("imdb_id").takeIf { it.startsWith("tt") }
+            tv = ext.optInt("tvdb_id").takeIf { it > 0 }
         }
-        val found = (im?.let { get("$API/lookup/shows?imdb=$it") } ?: tv?.let { get("$API/lookup/shows?thetvdb=$it") })?.optInt("id")?.takeIf { it > 0 }
+        // Only TVmaze's own "no such show" (404) is a miss kept for a week; no answer at all asks again next time.
+        val body = try {
+            im?.let { fetch("$API/lookup/shows?imdb=$it") } ?: tv?.let { fetch("$API/lookup/shows?thetvdb=$it") }
+        } catch (e: Exception) {
+            Log.w(TAG, "Airtime: TVmaze unavailable (${e.javaClass.simpleName})")
+            return null
+        }
+        val found = body?.let { try { JSONObject(it) } catch (e: Exception) { null } }?.optInt("id")?.takeIf { it > 0 }
         p.edit().putInt("m$tmdbId", found ?: -1).putLong("t$tmdbId", System.currentTimeMillis()).apply()
         return found
     }
 
-    /** A TVmaze GET as a JSON object. Null on 404 or failure. */
-    private fun get(url: String): JSONObject? = fetch(url)?.let { try { JSONObject(it) } catch (e: Exception) { null } }
+    /** At most [MAX_SCHEDULES] lists: expired ones go first, then the oldest. */
+    private fun trimSchedules() {
+        if (schedules.size <= MAX_SCHEDULES) return
+        val now = System.currentTimeMillis()
+        schedules.entries.removeAll { now - it.value.fetchedAt >= INFO_TTL }
+        val over = schedules.size - MAX_SCHEDULES
+        if (over > 0) schedules.entries.sortedBy { it.value.fetchedAt }.take(over).forEach { schedules.remove(it.key) }
+    }
 
-    /** A TVmaze GET (redirects followed), at least [GAP_MS] after the last one: the body, null on 404 or failure. */
+    /** [fetch], with no answer logged and read as null. */
+    private fun tryFetch(url: String): String? = try { fetch(url) } catch (e: Exception) {
+        Log.w(TAG, "Airtime: TVmaze unavailable (${e.javaClass.simpleName})")
+        null
+    }
+
+    /**
+     * A TVmaze GET (redirects followed), at least [GAP_MS] after the last one: the body, or null when TVmaze
+     * says 404. Throws when TVmaze can't be reached or answers with another error.
+     */
     private fun fetch(url: String): String? {
         synchronized(gate) {
             val wait = lastCallAt + GAP_MS - SystemClock.elapsedRealtime()
@@ -151,15 +179,15 @@ object AirTimes {
             lastCallAt = SystemClock.elapsedRealtime()
         }
         val c = URL(url).openConnection() as HttpURLConnection
-        return try {
+        try {
             c.connectTimeout = 6_000
             c.readTimeout = 8_000
             c.instanceFollowRedirects = true
             c.setRequestProperty("User-Agent", "DreamOS")
-            if (c.responseCode !in 200..299) null else c.inputStream.bufferedReader().use { it.readText() }
-        } catch (e: Exception) {
-            Log.w(TAG, "Airtime: TVmaze unavailable (${e.javaClass.simpleName})")
-            null
+            val code = c.responseCode
+            if (code == 404) return null
+            if (code !in 200..299) throw IOException("HTTP $code")
+            return c.inputStream.bufferedReader().use { it.readText() }
         } finally {
             c.disconnect()
         }

@@ -269,6 +269,8 @@ struct SearchView: View {
     /// Debounced: a search runs once typing rests for a moment; an older answer never replaces a newer one. TMDB's
     /// plain title search answers first (Top Results and the suggestions), then the whole search (a person, a genre).
     private func run(_ q: String) async {
+        // A search cut short by the next keystroke left this on: "Searching…" stayed under a one-letter query for good.
+        searching = false
         guard !q.isEmpty else { results = SearchResults(titles: []); quick = []; genreHint = []; searched = ""; return }
         let c = Services.shared.catalog
         // Genre names suggest at once.

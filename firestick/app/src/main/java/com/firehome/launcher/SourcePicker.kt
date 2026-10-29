@@ -155,7 +155,9 @@ object SourcePicker {
         val nameWords = words(name).toSet()
         val have = if (title.isEmpty()) 1f else title.count { it in nameWords } / title.size.toFloat()
         if (req.type == "episode" && req.season != null && req.episode != null) {
-            val se = Regex("""(?i)(?<![a-z0-9])s(\d{1,2})[ ._-]*e(\d{1,3})(?:[ ._-]*-?[ ._-]*e?(\d{1,3}))?""").find(name)
+            // A second episode needs a dash or another "e" (S01E01-03, S01E01-E03, S01E01E02): "S01E02.1080p" is
+            // episode 2, not episodes 2 to 108.
+            val se = Regex("""(?i)(?<![a-z0-9])s(\d{1,2})[ ._-]*e(\d{1,3})(?:(?:[ ._]*-[ ._]*e?|[ ._-]*e)(\d{1,3})(?![0-9]))?""").find(name)
                 ?: Regex("""(?i)(?<![0-9])(\d{1,2})x(\d{2,3})(?![0-9])""").find(name)
             if (se != null) {
                 val s = se.groupValues[1].toInt()
@@ -349,7 +351,12 @@ object SourcePicker {
             if (!loose) {
                 // Every source, with the usual filters set aside for this one search.
                 val all = plainRow("Search All Sources", "Includes Ones Your Source Settings Usually Hide")
-                list.addView(all); r += all; a[all] = { val h = host; dismiss(); main.postDelayed({ open(h, loose = true) }, 400) }
+                list.addView(all); r += all; a[all] = {
+                    val h = host
+                    dismiss()
+                    // Not onto a player that closed meanwhile: a sheet that never attaches would take its next keys.
+                    main.postDelayed({ if (h.overlayRoot.isAttachedToWindow) open(h, loose = true) }, 400)
+                }
             }
             val again = plainRow("Find Another Source", "Dream OS Picks the Best One, From Where You Are")
             list.addView(again); r += again; a[again] = { findAnother() }

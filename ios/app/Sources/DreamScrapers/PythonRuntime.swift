@@ -9,14 +9,16 @@ import os
 enum PythonRuntime {
     static let log = Logger(subsystem: "com.dreamos", category: "Scrapers")
 
+    /// Held through the whole start; `stateLock` only guards the two flags, so readers never wait out the start.
     private static let lock = NSLock()
+    private static let stateLock = NSLock()
     nonisolated(unsafe) private static var failure: String?
     nonisolated(unsafe) private static var started = false
 
     /// Python is up.
-    static var isStarted: Bool { lock.withLock { started } }
+    static var isStarted: Bool { stateLock.withLock { started } }
     /// Python couldn't start here (logged once); scrapes then find nothing.
-    static var startFailure: String? { lock.withLock { failure } }
+    static var startFailure: String? { stateLock.withLock { failure } }
 
     /// Our Python code (shims, runner, bridge) inside the app.
     static var codeDir: URL? { Bundle.module.url(forResource: "Python", withExtension: nil) }
@@ -26,10 +28,10 @@ enum PythonRuntime {
     static func start() -> Bool {
         lock.lock()
         defer { lock.unlock() }
-        if started { return true }
-        if failure != nil { return false }
+        if isStarted { return true }
+        if startFailure != nil { return false }
         guard let home = DreamPythonStdlib.home, let code = codeDir else {
-            failure = "missing files"
+            stateLock.withLock { failure = "missing files" }
             log.error("Scrapers: python files missing from the app")
             return false
         }
@@ -39,7 +41,14 @@ enum PythonRuntime {
         let caches = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first
             ?? URL(fileURLWithPath: NSTemporaryDirectory())
         let pycache = caches.appendingPathComponent("pycache", isDirectory: true)
-        try? FileManager.default.createDirectory(at: pycache, withIntermediateDirectories: true)
+        // The bytecode cache mirrors source paths, and the app's path changes with every install: an older install's
+        // tree would stay forever.
+        let marker = pycache.appendingPathComponent(".bundle")
+        if (try? String(contentsOf: marker, encoding: .utf8)) != Bundle.main.bundlePath {
+            try? FileManager.default.removeItem(at: pycache)
+            try? FileManager.default.createDirectory(at: pycache, withIntermediateDirectories: true)
+            try? Bundle.main.bundlePath.write(to: marker, atomically: true, encoding: .utf8)
+        }
         // Python's ssl has no system certificate store on iOS: the bundled certifi list.
         setenv("SSL_CERT_FILE", home.appendingPathComponent("site-packages/certifi/cacert.pem").path, 1)
         setenv("PYTHONIOENCODING", "utf-8", 1)
@@ -55,11 +64,11 @@ enum PythonRuntime {
         if rc != 0 {
             let why = err.map { String(cString: $0) } ?? "code \(rc)"
             free(err)
-            failure = why
+            stateLock.withLock { failure = why }
             log.error("Scrapers: python couldn't start (\(why, privacy: .public))")
             return false
         }
-        started = true
+        stateLock.withLock { started = true }
         log.info("Scrapers: python started in \(Int(Date().timeIntervalSince(t0) * 1000)) ms")
         return true
     }
