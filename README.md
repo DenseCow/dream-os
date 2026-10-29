@@ -90,8 +90,8 @@ how to build it from source. The app file, **Dream.ipa**, is on the
 | Fire TV Stick HD | AFTSS | Fire OS 7.7.1.7 (Android 9) | 1080p |
 | iPhone Air | | iOS 27.2 (needs iOS 17 or later) | |
 
-- **Fire TV Stick HD:** its video decoders stop at 1920x1088 and it outputs 1080p, so Dream OS picks 1080p copies
-  on it automatically. It has about 1 GB of memory, so
+- **Fire TV Stick HD:** its video decoders stop at 1920x1088 and it outputs 1080p, so set
+  Maximum Quality to 1080p during setup (4K copies won't play on it). It has about 1 GB of memory, so
   [debloating](INSTALL-FIRESTICK.md#recommended-debloat-your-fire-stick) is strongly recommended.
 - **Other Fire TV models and Fire OS versions are untested.** Fire TV devices running Vega OS can't install Dream OS
   at all, because they only install apps from the Amazon Appstore.

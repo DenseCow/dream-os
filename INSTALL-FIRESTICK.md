@@ -31,8 +31,8 @@ Dream OS has been tested on two Fire Sticks:
 | Fire TV Stick 4K Max (1st gen, 2021) | AFTKA | Fire OS 7.7.1.3 (Android 9) | 4K with HDR and Dolby Vision |
 | Fire TV Stick HD | AFTSS | Fire OS 7.7.1.7 (Android 9) | 1080p |
 
-- **Fire TV Stick HD:** its video decoders stop at 1920x1088 and it outputs 1080p, so Dream OS picks 1080p copies
-  on it automatically. It has about 1 GB of memory, so [debloating](#recommended-debloat-your-fire-stick) is
+- **Fire TV Stick HD:** its video decoders stop at 1920x1088 and it outputs 1080p, so set
+  Maximum Quality to 1080p during setup (4K copies won't play on it). It has about 1 GB of memory, so [debloating](#recommended-debloat-your-fire-stick) is
   strongly recommended.
 - **Other Fire TV models and Fire OS versions are untested.** They may not work or may behave differently,
   for example Fire OS 8 on newer sticks. The optional Home screen steps rely on Fire OS 7 behavior and are the
