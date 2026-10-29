@@ -18,12 +18,12 @@ Please read this before installing or using Dream OS.
 
 Dream OS hosts, stores and distributes **no** movies, shows or streams, and includes **no** sources. It has no
 servers. Out of the box it can't play anything: it shows information from TMDB, and plays only what the viewer's
-own debrid accounts and the scraper repositories the viewer chooses to add return. The developers don't provide,
+own accounts and the scraper repositories the viewer chooses to add return. The developers don't provide,
 recommend or control any scraper repository.
 
 ## Your Responsibility
 
-You bring your own TMDB key, debrid accounts and scraper repositories. You are responsible for how you use Dream
+You bring your own TMDB key, accounts and scraper repositories. You are responsible for how you use Dream
 OS and for following the laws of your country and the terms of every service you connect to it. Don't use Dream
 OS to access content you don't have the right to watch.
 
@@ -117,7 +117,7 @@ this project.
 
 Dream OS keeps your keys, accounts, profiles and watch history on your device and sends nothing to the
 developer. It has no analytics, tracking or crash reporting. It connects directly to the services you set up
-(TMDB, OMDb, Trakt, your debrid services and your scraper repositories) and to a few free public services for
+(TMDB, OMDb, Trakt, your other accounts and your scraper repositories) and to a few free public services for
 extras: TVmaze (air times), TheIntroDB, AniSkip, ARM and Kitsu (skip markers), OpenSubtitles (subtitles),
 trailer streams from the video host TMDB lists, Cloudflare (only when you run the speed test), and on the Fire Stick
 Open-Meteo for the weather (using an approximate location from your internet address via ipwho.is or GeoJS) and
