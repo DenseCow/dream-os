@@ -54,7 +54,10 @@ because something broke or looked wrong before. Check new work against the **che
 - **Text never breaks badly:** names and titles stay on one line with an ellipsis (no mid-word hyphenation; set
   `hyphenationFrequency = NONE`); captions and poster titles may use two lines; bios end on a full sentence.
 - **Setup text is never cut** (owner, 2026-10-29): in the setup and its shared pages (`SetupUi`, `BrandRow`,
-  `SetupParts`), titles, captions, steps and values wrap in full (`lines = 0`), never a line cap with "…". A
+  `SetupParts`), titles, captions, steps and values wrap in full (`lines = 0`), never a line cap with "…".
+  `k.label`'s default is one line with an ellipsis, so every label on a setup-reachable page (guides, sign-in
+  codes, Trakt, Time Zone, Restore From Backup, QR captions) passes `lines = 0`; drawn text (the TMDB key
+  picture) fades at its edge instead of ending in "…". A
   scrolling setup list keeps `SetupScreen.LIFT_H` / `LIFT_V` of room so the last pill's glow isn't cut. Check every
   setup screen at 1080p (960 x 540 dp), the Fire TV Stick HD's size.
 - **Setup's shape** (owner, 2026-10-29; spec in `docs/setup-redesign.md`): every step uses the one frame in
@@ -118,6 +121,10 @@ because something broke or looked wrong before. Check new work against the **che
   a card pill (their next episode belongs on the show page). Episode pills only for episodes aired in the last 21 days
   (`Availability.recentEpisode()`), so pills expire by themselves. A movie whose main date is 90-240 days old still
   gets its pill when its US digital release is within 90 days or ahead (`Availability.digitalTarget`).
+- **A source decides, not the date** (owner, 2026-10-30): a title is available as soon as the index has a copy (HD:
+  Available Now; only CAM: CAM Only and the CAM plays), whatever date TMDB lists. Titles still ahead are looked up like
+  any other and keep "Coming ..." only while nothing is found; an episode up early is playable on the title page, in the
+  player's list and as Up Next. Never change or hide the listed date itself. Details: `docs/bugs/out-early-2026-10-30.md`.
 - **One fixed card label per state:** "Available Now", "CAM Only", "Coming Nov 14" (date via `DreamTime`), "Not Available
   Yet" (out, but no copy yet), "Coming Soon" (not out, no date). Short forms on narrow cards ("Available", "CAM",
   "Nov 14", "Soon"); never an icon-only pill. Quality detail belongs on the title page and in the player badges.
@@ -155,6 +162,11 @@ because something broke or looked wrong before. Check new work against the **che
 - **Where playback starts is the watch history's call** (`PlayFlow.historyStart`), never a spot a page, card or button
   captured earlier: a finished, removed or moved-on title starts from the beginning. A page that shows Resume /
   progress redoes it on `TitlePage.historyChanged` (a details page waits behind the player while a movie ends).
+- **What the stick can play bounds every pick** (2026-10-30): `DeviceVideo`'s cap (1080p on the Fire TV Stick HD)
+  is checked first in `NativeResolver.allowed` and nothing relaxes or bypasses it; 4320p / 8K never passes. A
+  preference that lifts the viewer's own Maximum Quality (Prefer HDR, `quality.hdr`) works only on a TV that
+  reports HDR, keeps the speed and size limits, and never lifts to a Remux or past the Wi-Fi-friendly size. A
+  setting that can do nothing on this TV isn't shown (Prefer HDR on a non-HDR TV).
 
 ## 6. Performance budgets (Fire TV Stick 4K: weak GPU, ~1.7 GB RAM)
 

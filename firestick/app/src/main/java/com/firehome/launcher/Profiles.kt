@@ -65,6 +65,8 @@ object Profiles {
         prefs(ctx).edit().remove("pin_$id").apply()
         ctx.getSharedPreferences("tmdb", Context.MODE_PRIVATE).edit().remove("mylist_$id").apply()
         for (f in listOf("theme", "home")) ctx.deleteSharedPreferences(f + "_" + id)
+        // Its Trakt sign-in goes too (it was kept forever and could never be signed out of again).
+        Trakt.forgetProfile(ctx, id)
     }
 
     /** Appended to per-profile preference names ("" for the first profile). Cached: read on hot paths. */

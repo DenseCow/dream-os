@@ -26,7 +26,8 @@ object Upcoming {
 
     /**
      * Splits TMDB season [season] of show [showId] ([eps] as TMDB lists them) into out and upcoming. Out:
-     * past its exact instant when TVmaze has one, else on or after its air day (the rule before). TVmaze is
+     * past its exact instant when TVmaze has one, else on or after its air day (the rule before), or due within a few
+     * days with a real release already in the index ([Availability.earlyRelease]). TVmaze is
      * asked only when some episode is dated today or later, or undated. Blocking.
      */
     fun split(ctx: Context, showId: Int, show: String, season: Int, eps: List<JSONObject>): Split {
@@ -44,7 +45,8 @@ object Upcoming {
             val d = date(ep)
             val at = m?.at ?: 0L
             val out = if (at > 0) at <= now else d.length == 10 && d <= today
-            if (out) { aired += ep; continue }
+            // Due in a day or two but already up (a streaming service's early drop): the index has a real release.
+            if (out || coming.isEmpty() && Availability.earlyRelease(ctx, showId, show, season, num, at, d)) { aired += ep; continue }
             val c = JSONObject(ep.toString()) // TMDB's objects are cached: never written to
             c.put(AT, at)
             if (d.isEmpty() && m != null && m.date.isNotEmpty()) c.put("air_date", m.date)

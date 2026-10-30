@@ -55,6 +55,43 @@ internal interface DebridService {
      * user's account and not used is removed again. Gives up at [deadline] (SystemClock.elapsedRealtime).
      */
     fun resolve(candidates: List<Candidate>, deadline: Long): Found?
+
+    /**
+     * Blocking. Up to [limit] of [candidates] the service has cached, unlocked side by side, best first: the
+     * first is played, the rest are the player's next try when it doesn't open ([NativeResolver.nextLink]).
+     * A service whose check adds to the account keeps this small (AllDebrid: two); what an alternate added
+     * stays until [discard] or the janitor. By default one link, as [resolve].
+     */
+    fun resolveMany(candidates: List<Candidate>, deadline: Long, limit: Int): List<Found> = listOfNotNull(resolve(candidates, deadline))
+
+    /** Alternates with these info hashes aren't needed any more: whatever the race added for them goes. Returns at once. */
+    fun discard(hashes: Collection<String>) {}
+}
+
+/**
+ * Side-by-side calls inside one service (the race's alternates, a parallel unlock): a few short-lived threads,
+ * gone 30 s after use; past them the caller runs the call itself. Worst case [THREADS] threads, no queue.
+ */
+internal object DebridWork {
+    private const val THREADS = 6
+    private val pool = java.util.concurrent.ThreadPoolExecutor(0, THREADS, 30, java.util.concurrent.TimeUnit.SECONDS,
+        java.util.concurrent.SynchronousQueue<Runnable>()) { r -> Thread(r, "debrid-work").apply { isDaemon = true } }
+        .apply { rejectedExecutionHandler = java.util.concurrent.ThreadPoolExecutor.CallerRunsPolicy() }
+
+    /** [items] through [f] at once; the non-null answers in the items' order. Gives up on what isn't in by [deadline]. */
+    fun <T, R : Any> each(items: List<T>, deadline: Long, f: (T) -> R?): List<R> {
+        if (items.isEmpty()) return emptyList()
+        if (items.size == 1) return listOfNotNull(try { f(items[0]) } catch (e: Exception) { null })
+        val futures = items.map { item -> pool.submit(java.util.concurrent.Callable { try { f(item) } catch (e: Exception) { null } }) }
+        val out = ArrayList<R>()
+        for (fu in futures) {
+            val left = (deadline - SystemClock.elapsedRealtime()).coerceAtLeast(1)
+            try { fu.get(left, java.util.concurrent.TimeUnit.MILLISECONDS)?.let { out += it } }
+            catch (e: java.util.concurrent.TimeoutException) { fu.cancel(true) }
+            catch (e: Exception) {}
+        }
+        return out
+    }
 }
 
 /** The debrid accounts the user linked, held by Dream OS ([DreamAccounts], under the provider's setting ids). Cached for a minute. */
@@ -131,9 +168,32 @@ internal object DebridHttp {
             c.setFixedLengthStreamingMode(body.size)
             c.outputStream.use { it.write(body) }
         }
+        val t0 = SystemClock.elapsedRealtime()
         val code = c.responseCode
-        val s = (if (code in 200..299) c.inputStream else c.errorStream)?.bufferedReader()?.use { it.readText() }.orEmpty()
+        val s = readAll((if (code in 200..299) c.inputStream else c.errorStream), t0)
         return Reply(code, s)
+    }
+
+    /** No debrid request runs longer than this in all (iPhone 17dface): the timeouts above only count silence. */
+    const val TOTAL_MS = 60_000L
+
+    /**
+     * [input] read to its end as UTF-8, cut off with an exception once [TOTAL_MS] have passed since [startedAt]:
+     * a server that trickles bytes keeps a read timeout from firing and used to hold a lookup thread for good.
+     */
+    fun readAll(input: java.io.InputStream?, startedAt: Long): String {
+        val stream = input ?: return ""
+        val out = java.io.ByteArrayOutputStream()
+        val buf = ByteArray(16 * 1024)
+        stream.use {
+            while (true) {
+                val n = it.read(buf)
+                if (n < 0) break
+                out.write(buf, 0, n)
+                if (SystemClock.elapsedRealtime() - startedAt > TOTAL_MS) throw java.net.SocketTimeoutException("debrid reply took over ${TOTAL_MS / 1000} s")
+            }
+        }
+        return out.toString("UTF-8")
     }
 
     fun get(url: String, bearer: String? = null, timeoutMs: Int = 6_000) = request(url, bearer = bearer, timeoutMs = timeoutMs)

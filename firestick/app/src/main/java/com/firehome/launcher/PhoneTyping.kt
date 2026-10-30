@@ -68,7 +68,7 @@ internal object PhoneTyping {
             gravity = Gravity.CENTER_HORIZONTAL
             visibility = View.GONE
             addView(box, LinearLayout.LayoutParams(dp(sizeDp), dp(sizeDp)))
-            addView(k.label("Type on Your Phone", 12.5f, Ui.alpha(Color.WHITE, 0.72f), k.medium).apply { gravity = Gravity.CENTER },
+            addView(k.label("Type on Your Phone", 12.5f, Ui.alpha(Color.WHITE, 0.72f), k.medium, lines = 0).apply { gravity = Gravity.CENTER },
                 LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT).apply { topMargin = dp(8) })
         }
         var active = false

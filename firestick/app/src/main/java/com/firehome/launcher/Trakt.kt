@@ -251,16 +251,26 @@ object Trakt {
             if (got.code != 400 && got.code != 401) break
         }
         val reply = r ?: return null
+        // A sign-out (or a new sign-in) while the renewal was on the network wins: its answer is never written back.
+        fun stillSame() = tokens(ctx, sfx)?.refresh == cur.refresh
         return when (reply.code) {
-            200 -> tokensFrom(JSONObject(reply.body)).also {
-                saveTokens(ctx, sfx, it)
+            200 -> {
+                val t = tokensFrom(JSONObject(reply.body))
+                synchronized(store) {
+                    if (!stillSame()) { Log.w(TAG, "Trakt: renewal dropped (signed out meanwhile)"); return null }
+                    saveTokens(ctx, sfx, t)
+                }
                 prefs(ctx).edit().putString("redirect", used).apply()
                 Log.w(TAG, "Trakt: sign-in renewed")
+                t
             }
             400, 401 -> {
-                Log.w(TAG, "Trakt: sign-in ended (renewal refused, ${r.code}); Sign In Again needed")
-                saveTokens(ctx, sfx, null)
-                prefs(ctx).edit().putBoolean("expired$sfx", true).apply()
+                synchronized(store) {
+                    if (!stillSame()) return null
+                    Log.w(TAG, "Trakt: sign-in ended (renewal refused, ${r.code}); Sign In Again needed")
+                    saveTokens(ctx, sfx, null)
+                    prefs(ctx).edit().putBoolean("expired$sfx", true).apply()
+                }
                 changed()
                 null
             }
@@ -477,14 +487,27 @@ object Trakt {
     /** Signs the current profile out: tokens revoked on Trakt (best effort) and forgotten here, with the sync state. */
     fun signOut(ctx: Context) {
         val app = ctx.applicationContext
-        val sfx = sfx(app)
+        signOut(app, sfx(app))
+        Log.w(TAG, "Trakt: signed out")
+    }
+
+    /** A deleted profile's Trakt sign-in, sync state and queue go with it at once (revoked on Trakt, best effort). */
+    fun forgetProfile(ctx: Context, id: String) {
+        val app = ctx.applicationContext
+        val sfx = "_$id"
+        if (prefs(app).getString("auth$sfx", null) == null && prefs(app).getString("user$sfx", null) == null) return
+        signOut(app, sfx)
+        Log.w(TAG, "Trakt: a deleted profile's sign-in forgotten")
+    }
+
+    private fun signOut(app: Context, sfx: String) {
         val t = tokens(app, sfx)
         val keys = keys(app)
-        saveTokens(app, sfx, null)
+        // Under the store lock: a renewal in flight checks the saved sign-in under it and never writes one back.
         synchronized(store) {
+            saveTokens(app, sfx, null)
             prefs(app).edit().remove("user$sfx").remove("state$sfx").remove("queue$sfx").remove("expired$sfx").apply()
         }
-        Log.w(TAG, "Trakt: signed out")
         changed()
         if (t != null && keys != null) io.execute {
             try {
@@ -876,18 +899,24 @@ object Trakt {
             var watched = 0
             var progress = 0
             var listed = 0
-            if (Tmdb.hasKey(app)) {
-                if (moved("episodes", "watched_at") || moved("movies", "watched_at")) watched = pullHistory(app, sfx, st, prev)
-                if (moved("episodes", "paused_at") || moved("movies", "paused_at")) progress = pullPlayback(app, sfx, st)
-                if (moved("movies", "watchlisted_at") || moved("shows", "watchlisted_at") || !st.has("wl")) listed = syncWatchlist(app, sfx, st, la)
-            }
+            // What this sync really pulled: only those parts are written back (an edit made meanwhile, like a title
+            // removed from Continue Watching, isn't overwritten by the copy read at the start).
+            val pulled = HashSet<String>()
+            val keyed = Tmdb.hasKey(app)
+            if (keyed) {
+                if (moved("episodes", "watched_at") || moved("movies", "watched_at")) { watched = pullHistory(app, sfx, st, prev); pulled += "shows" }
+                if (moved("episodes", "paused_at") || moved("movies", "paused_at")) { progress = pullPlayback(app, sfx, st); pulled += "pb" }
+                if (moved("movies", "watchlisted_at") || moved("shows", "watchlisted_at") || !st.has("wl")) { listed = syncWatchlist(app, sfx, st, la); pulled += "wl" }
+            } else Log.w(TAG, "Trakt: sync ($reason) pulls nothing yet: no TMDB key (activity marks kept for later)")
             // Saved as one: the activity marks move on only once everything they stand for is in.
             synchronized(store) {
                 // Signed out, or another profile took over mid-sync (its pulls were skipped): the marks stay, so the next sync pulls again.
                 if (!prefs(app).contains("auth$sfx") || Profiles.suffix(app) != sfx) return
                 val cur = state(app, sfx)
-                for (k in listOf("shows", "pb", "wl")) st.opt(k)?.let { cur.put(k, it) }
-                cur.put("la", la).put("at", System.currentTimeMillis()).remove("dirty")
+                for (k in pulled) st.opt(k)?.let { cur.put(k, it) }
+                // Without a TMDB key nothing was pulled: the marks stay, so the first sync with a key pulls everything.
+                if (keyed) cur.put("la", la)
+                cur.put("at", System.currentTimeMillis()).remove("dirty")
                 prefs(app).edit().putString("state$sfx", cur.toString()).apply()
             }
             ok = true

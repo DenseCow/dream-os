@@ -1347,7 +1347,9 @@ enum SourceNames {
     static func dedupe(_ list: [StreamCandidate]) -> [StreamCandidate] {
         func name(_ c: StreamCandidate) -> String {
             let n = c.fileName.map(DebridFiles.base) ?? c.torrentName
-            let base = n.contains(".") ? String(n[..<n.lastIndex(of: ".")!]) : n
+            // Only a real video extension goes: a torrent name has none, and cutting its last dotted word made
+            // "S01E02.1080p.WEB" and its camera twin "S01E02.1080p.HDTS" one row.
+            let base = n.replacingOccurrences(of: #"(?i)\.(mkv|mp4|m4v|avi|ts|m2ts|webm|mov|wmv)$"#, with: "", options: .regularExpression)
             return norm(base).replacingOccurrences(of: " ", with: "")
         }
         func better(_ a: StreamCandidate, _ b: StreamCandidate) -> Bool {

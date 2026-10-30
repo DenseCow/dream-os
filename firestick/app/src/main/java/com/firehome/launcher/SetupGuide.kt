@@ -261,7 +261,7 @@ internal object SetupGuide {
         val k = ui.k
         val dp = { v: Int -> Ui.dp(ctx, v) }
         val s = SetupScreen(ui, title, null)
-        val counter = k.label("", 15f, Ui.alpha(Color.WHITE, 0.70f), k.medium)
+        val counter = k.label("", 15f, Ui.alpha(Color.WHITE, 0.70f), k.medium, lines = 0)
         val page = LinearLayout(ctx).apply { orientation = LinearLayout.VERTICAL }
         s.add(counter, 0)
         s.add(page.apply { layoutParams = LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT) }, 12)
@@ -374,7 +374,7 @@ internal object SetupGuide {
         val dp = { v: Int -> Ui.dp(ctx, v) }
         setPadding(dp(16), dp(12), dp(16), dp(14))
         background = Ui.rounded(ctx, Ui.alpha(Color.WHITE, 0.04f), Ui.R_MD, 1f, Ui.alpha(Color.WHITE, 0.10f))
-        addView(k.label("What to Try", 15f, SetupBrand.TEXT, k.semibold))
+        addView(k.label("What to Try", 15f, SetupBrand.TEXT, k.semibold, lines = 0))
         for (l in lines) addView(k.label(l, 14f, SetupBrand.DIM, k.font, lines = 0).apply { setLineSpacing(dp(3).toFloat(), 1f) },
             LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { topMargin = dp(7) })
         layoutParams = LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT)
@@ -386,9 +386,10 @@ internal object SetupGuide {
         val dp = { v: Int -> Ui.dp(ctx, v) }
         setPadding(dp(16), dp(12), dp(16), dp(14))
         background = Ui.rounded(ctx, Ui.alpha(Color.WHITE, 0.045f), Ui.R_MD, 1f, Ui.alpha(Color.WHITE, 0.10f))
-        addView(k.label("A Repository Address Looks Like This", 15f, SetupBrand.TEXT, k.semibold))
+        addView(k.label("A Repository Address Looks Like This", 15f, SetupBrand.TEXT, k.semibold, lines = 0))
         // Plain lines, one per example (no capsule around each: they're text to read, not things to choose).
-        for (a in ADDRESS_EXAMPLES) addView(k.label(a, 15f, Ui.alpha(SetupBrand.TEXT, 0.90f), Typeface.MONOSPACE),
+        // Setup text is never cut: an address too long for the box wraps instead of ending in "…".
+        for (a in ADDRESS_EXAMPLES) addView(k.label(a, 15f, Ui.alpha(SetupBrand.TEXT, 0.90f), Typeface.MONOSPACE, lines = 0),
             LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { topMargin = dp(8) })
         addView(k.label("Enter it exactly as you got it. It usually starts with https:// and often has github in it.", 14f, SetupBrand.DIM, k.font, lines = 0),
             LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { topMargin = dp(9) })
@@ -466,15 +467,20 @@ internal class TmdbKeyArt(ctx: Context, private val k: PremiumKit) : View(ctx) {
         p.color = if (lit) PearlFocus.PEARL else Ui.alpha(Color.WHITE, 0.06f)
         c.drawRoundRect(cap, cap.height() / 2, cap.height() / 2, p)
         c.drawText(tag, cap.left + px(8f), cap.bottom - px(5.5f), tp)
-        // The value, cut at the field's edge.
+        // The value: a long token melts away at the field's edge (a soft fade, never "…": owner, text cut with dots is a bug).
         val v = Paint(Paint.ANTI_ALIAS_FLAG).apply { typeface = Typeface.MONOSPACE; textSize = px(12f); color = if (lit) SetupBrand.TEXT else Ui.alpha(SetupBrand.TEXT, 0.35f) }
-        val room = r.width() - px(24f)
-        val shown = if (v.measureText(value) <= room) value else {
-            var n = value.length
-            while (n > 1 && v.measureText(value.substring(0, n) + "…") > room) n--
-            value.substring(0, n) + "…"
+        val x0 = r.left + px(12f)
+        val end = r.right - px(12f)
+        if (v.measureText(value) > end - x0) {
+            val fade = px(36f)
+            // Opaque to clear: the paint's own alpha (the dimmer token) still applies once on top.
+            v.shader = android.graphics.LinearGradient(end - fade, 0f, end, 0f, v.color or 0xFF000000.toInt(), v.color and 0x00FFFFFF,
+                android.graphics.Shader.TileMode.CLAMP)
         }
-        c.drawText(shown, r.left + px(12f), r.top + px(42f), v)
+        c.save()
+        c.clipRect(x0, r.top, end, r.bottom)
+        c.drawText(value, x0, r.top + px(42f), v)
+        c.restore()
     }
 
     companion object { const val HEIGHT_DP = 160 }

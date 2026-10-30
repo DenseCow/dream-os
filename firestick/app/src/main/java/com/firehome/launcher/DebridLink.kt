@@ -183,8 +183,10 @@ object DebridLink {
     }
 
     private fun read(c: HttpURLConnection): Pair<Int, String> {
+        val t0 = android.os.SystemClock.elapsedRealtime()
         val code = c.responseCode
-        val s = c.runCatching { (if (code in 200..299) inputStream else errorStream)?.bufferedReader()?.use { it.readText() } }.getOrNull().orEmpty()
+        // Cut off after DebridHttp.TOTAL_MS in all: a trickling server never holds the sign-in's thread.
+        val s = c.runCatching { DebridHttp.readAll(if (code in 200..299) inputStream else errorStream, t0) }.getOrNull().orEmpty()
         return code to s
     }
 

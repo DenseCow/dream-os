@@ -197,6 +197,10 @@ final class ContentCatalog: CatalogService, @unchecked Sendable {
         await AvailabilityChecker.shared.episode(episode, show: show)?.state
     }
 
+    func earlyRelease(_ episode: Episode, of show: Title) async -> Bool {
+        await AvailabilityChecker.shared.earlyRelease(episode, show: show)
+    }
+
     func markEpisodeSeen(_ item: CatalogItem) async {
         guard let e = item.episode else { return }
         await NewEpisodes.shared.markSeen("\(item.title.id):s\(e.season)e\(e.number)")

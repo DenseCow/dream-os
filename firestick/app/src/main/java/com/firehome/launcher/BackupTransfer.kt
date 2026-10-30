@@ -558,10 +558,11 @@ internal class BackupPages(
             setPadding(24.dp, 20.dp, 24.dp, 22.dp)
             background = Ui.rounded(ctx, Ui.alpha(Color.WHITE, 0.05f), Ui.R_LG, 1f, Ui.alpha(Color.WHITE, 0.10f))
         }
-        val kicker = k.label("YOUR CODE", 12f, Ui.alpha(Color.WHITE, 0.62f), k.semibold, Ui.TRACK_CAPS)
+        // Title Case kicker, no tracked caps (STANDARDS §4); the lines under the code wrap in full, never "…".
+        val kicker = k.label("Your Code", 14f, Ui.alpha(Color.WHITE, 0.62f), k.semibold, lines = 0)
         val code = k.label("", 46f, SetupBrand.TEXT, k.semibold).apply { letterSpacing = 0.16f }
-        val where = k.label("", 15f, SetupBrand.DIM, k.font, lines = 2)
-        val status = k.label("", 15f, SetupBrand.TEXT, k.medium, lines = 3)
+        val where = k.label("", 15f, SetupBrand.DIM, k.font, lines = 0)
+        val status = k.label("", 15f, SetupBrand.TEXT, k.medium, lines = 0)
         val bar = ui.progress().apply { visibility = View.GONE }
         card.addView(kicker)
         card.addView(code, LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT).apply { topMargin = 10.dp })
@@ -796,9 +797,9 @@ object BackupPage {
         }
         val left = LinearLayout(a).apply { orientation = LinearLayout.VERTICAL }
         left.addView(SetupArt(a, SetupArt.Kind.BACKUP), LinearLayout.LayoutParams(dp(132), dp(132)))
-        left.addView(k.label(if (restore) "OPTIONAL" else "SETTINGS", 12f, Ui.alpha(Color.WHITE, 0.62f), k.semibold, Ui.TRACK_CAPS),
+        left.addView(k.label(if (restore) "Optional" else "Settings", 14f, Ui.alpha(Color.WHITE, 0.62f), k.semibold, lines = 0),
             LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT).apply { topMargin = dp(18) })
-        left.addView(k.label(if (restore) "Restore From Backup" else "Back Up Dream OS", 32f, SetupBrand.TEXT, k.semibold, Ui.TRACK_TITLE, lines = 2),
+        left.addView(k.label(if (restore) "Restore From Backup" else "Back Up Dream OS", 32f, SetupBrand.TEXT, k.semibold, Ui.TRACK_TITLE, lines = 0),
             LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT).apply { topMargin = dp(8) })
         left.addView(parts.note(if (restore)
             "Bring everything over from your old Fire Stick: profiles, accounts, scrapers, lists and settings. Dream OS restarts when it's done."

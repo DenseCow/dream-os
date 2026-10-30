@@ -98,6 +98,9 @@ public struct Episode: Codable, Sendable, Hashable, Identifiable {
     public var airsAt: Date? = nil
     /// Still to come (DreamContent's Upcoming split): not playable yet; word it with `DreamTime`.
     public var upcoming: Bool = false
+    /// Up before its air day (DreamContent's split): the index already has a source for it, so it plays like any aired
+    /// episode, with its status pill and no air date from the future. `upcoming` is false.
+    public var outEarly: Bool = false
     public var id: String { "\(showId):\(season):\(number)" }
     public init(showId: Int, season: Int, number: Int, name: String, overview: String = "", stillPath: String? = nil,
                 airDate: String = "", runtime: Int = 0, airsAt: Date? = nil, upcoming: Bool = false) {

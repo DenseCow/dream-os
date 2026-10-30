@@ -37,40 +37,62 @@ internal class AllDebridService(private val token: String, private val purpose: 
     private class Mag(val id: String, val ready: Boolean)
     private class Entry(val path: String, val bytes: Long, val link: String)
 
-    override fun resolve(candidates: List<Candidate>, deadline: Long): Found? {
-        if (candidates.isEmpty() || refused() || limited(token)) return null
+    override fun resolve(candidates: List<Candidate>, deadline: Long): Found? = resolveMany(candidates, deadline, 1).firstOrNull()
+
+    /**
+     * The race on AllDebrid, kept small because every candidate checked is an upload: with [limit] 2 ([RACE_CAP])
+     * the first magnet/upload sends the top two at once and both ready ones are opened side by side (the second is
+     * the alternate); after that the search goes on in twos as before, one link. An alternate's magnet stays in
+     * the account until [discard] (the winner's first frame) or the janitor; nothing else this lookup added survives it.
+     */
+    override fun resolveMany(candidates: List<Candidate>, deadline: Long, limit: Int): List<Found> {
+        if (candidates.isEmpty() || refused() || limited(token)) return emptyList()
         val allow = DebridLedger.allowance(key, purpose)
-        if (allow <= 0) return null
+        if (allow <= 0) return emptyList()
         snapshot()
         val order = order(candidates)
         if (order.isEmpty()) {
             Log.i(TAG, "AllDebrid: none of ${candidates.size} cached (all seen uncached in the last hours; nothing uploaded)")
-            return null
+            return emptyList()
         }
+        val race = limit.coerceIn(1, RACE_CAP)
         val added = LinkedHashMap<String, String>() // hash -> magnet id: what this lookup added, for cleanup
-        var kept: String? = null
+        val kept = HashSet<String>()
         var sent = 0
         try {
             var i = 0
-            var batch = 1
+            var batch = race
             while (i < order.size && sent < allow && SystemClock.elapsedRealtime() < deadline) {
                 val chunk = order.subList(i, minOf(i + batch, order.size, i + (allow - sent)))
                 i += chunk.size; sent += chunk.size; batch = 2
                 val mags = upload(chunk, deadline, added) ?: break
-                for (c in chunk) {
-                    val m = mags[c.hash]?.takeIf { it.ready } ?: continue
-                    if (SystemClock.elapsedRealtime() >= deadline) break
-                    val f = open(c, m, deadline) ?: continue
-                    kept = c.hash
-                    if (c.hash in added) DebridLedger.markPlayed(scope, c.hash)
-                    Log.i(TAG, "AllDebrid: link after $sent upload${if (sent == 1) "" else "s"} (${candidates.size} candidates)")
-                    return f
-                }
+                val ready = chunk.mapNotNull { c -> mags[c.hash]?.takeIf { it.ready }?.let { c to it } }
+                if (ready.isEmpty() || SystemClock.elapsedRealtime() >= deadline) continue
+                val out = if (race > 1 && ready.size > 1) DebridWork.each(ready.take(race), deadline) { (c, m) -> open(c, m, deadline) }
+                    else ready.firstNotNullOfOrNull { (c, m) -> if (SystemClock.elapsedRealtime() >= deadline) null else open(c, m, deadline) }?.let { listOf(it) }.orEmpty()
+                val first = out.firstOrNull() ?: continue
+                out.forEach { kept += it.hash }
+                if (first.hash in added) DebridLedger.markPlayed(scope, first.hash)
+                Log.w(TAG, "AllDebrid: ${if (out.size == 1) "link" else "${out.size} links"} after $sent upload${if (sent == 1) "" else "s"} (${candidates.size} candidates)")
+                return out
             }
             if (!limited(token)) Log.i(TAG, "AllDebrid: nothing cached after $sent upload${if (sent == 1) "" else "s"} (${candidates.size} candidates)")
-            return null
+            return emptyList()
         } finally {
             cleanup(added, kept)
+        }
+    }
+
+    /** Alternates no longer needed: their magnets (added by Dream OS, not playing) are deleted now, not by the janitor two hours on. */
+    override fun discard(hashes: Collection<String>) {
+        val owned = DebridLedger.owned(scope)
+        val protect = DebridLedger.inUse()
+        val drop = hashes.mapNotNull { h -> if (h in protect) null else owned[h]?.id?.let { it to h } }
+        if (drop.isEmpty()) return
+        Net.run {
+            val gone = delete(token, drop, SystemClock.elapsedRealtime() + 10_000)
+            DebridLedger.release(scope, gone)
+            Log.w(TAG, "AllDebrid: dropped ${gone.size} alternate${if (gone.size == 1) "" else "s"}" + if (gone.size < drop.size) "; ${drop.size - gone.size} left for the janitor" else "")
         }
     }
 
@@ -91,7 +113,7 @@ internal class AllDebridService(private val token: String, private val purpose: 
         try {
             upload(ask, deadline, added)?.forEach { (h, m) -> if (m.ready) ready += h }
         } finally {
-            cleanup(added, null)
+            cleanup(added, emptySet())
         }
         return ready
     }
@@ -189,14 +211,15 @@ internal class AllDebridService(private val token: String, private val purpose: 
             u.optLong("filesize").takeIf { it > 0 } ?: f.bytes, c.quality, c.hash)
     }
 
-    /** Everything this lookup added but [kept] (the one handed to the player), deleted in one batched call, in the background. */
-    private fun cleanup(added: Map<String, String>, kept: String?) {
+    /** Everything this lookup added but [kept] (the one handed to the player and its alternates), deleted in one batched call, in the background. */
+    private fun cleanup(added: Map<String, String>, kept: Set<String>) {
         if (added.isEmpty()) return
         val owned = DebridLedger.owned(scope)
         val protect = DebridLedger.inUse()
-        val drop = added.filter { (h, _) -> h != kept && h !in protect && owned[h]?.played != true }
-        val keep = if (kept != null && kept in added) " (kept 1 ${if (purpose == DebridPurpose.PLAY) "playing" else "ready to play"})" else ""
-        if (drop.isEmpty()) { if (keep.isNotEmpty()) Log.i(TAG, "AllDebrid: cleaned 0$keep"); return }
+        val drop = added.filter { (h, _) -> h !in kept && h !in protect && owned[h]?.played != true }
+        val n = kept.count { it in added }
+        val keep = if (n > 0) " (kept $n ${if (purpose == DebridPurpose.PLAY) "playing or ready" else "ready to play"})" else ""
+        if (drop.isEmpty()) { if (keep.isNotEmpty()) Log.w(TAG, "AllDebrid: cleaned 0$keep"); return }
         Net.run {
             val gone = delete(token, drop.map { it.value to it.key }, SystemClock.elapsedRealtime() + 10_000)
             DebridLedger.release(scope, gone)
@@ -238,6 +261,8 @@ internal class AllDebridService(private val token: String, private val purpose: 
         const val MAX_AGE = 2 * 3_600_000L
         /** At most this many of Dream OS's magnets stay in the account (oldest removed first). */
         const val CAP = 25
+        /** How many candidates a race may open on AllDebrid (each is an upload). */
+        const val RACE_CAP = 2
         private const val HOUR = 3_600_000L
         @Volatile private var refusedKey = 0
         @Volatile private var refusedAt = 0L

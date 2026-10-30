@@ -32,6 +32,10 @@ public protocol CatalogService: Sendable {
     /// An episode's status pill (Availability.episode). Title pages ask only for episodes aired in the last 21 days.
     /// Added by the Pages worker; default nil (no pill).
     func episodeAvailability(_ episode: Episode, of show: Title) async -> Availability?
+    /// An episode still ahead (`upcoming`) that the index already has a source for (a real release, else a CAM): out
+    /// early, so it plays (owner, 2026-10-30: "available as soon as there's a source"). Asks the index unless it did
+    /// within the hour. Default false.
+    func earlyRelease(_ episode: Episode, of show: Title) async -> Bool
 
     // Content worker additions (defaults in ContentContract.swift).
     /// The page's rows in order as empty placeholders (id, name, style); fill each as it nears the screen.
@@ -93,6 +97,7 @@ public protocol CatalogService: Sendable {
 
 public extension CatalogService {
     func episodeAvailability(_ episode: Episode, of show: Title) async -> Availability? { nil }
+    func earlyRelease(_ episode: Episode, of show: Title) async -> Bool { false }
     func chips(for page: CatalogPage) async -> [Genre] { [] }
     func trending() async -> [Title] {
         let rows = (try? await rows(for: .home)) ?? []

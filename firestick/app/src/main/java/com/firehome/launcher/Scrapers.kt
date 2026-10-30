@@ -86,7 +86,14 @@ object Scrapers {
             val f = reposFile(ctx)
             if (!f.isFile) emptyList() else JSONArray(f.readText()).let { a -> (0 until a.length()).mapNotNull { a.optJSONObject(it)?.let(Rec::from) } }
         } catch (e: Exception) {
-            Log.w(TAG, "Scrapers: repos.json unreadable ($e)"); emptyList()
+            Log.w(TAG, "Scrapers: repos.json unreadable ($e)")
+            // Copied aside before the next save overwrites it: the viewer's repository list can still be recovered.
+            try {
+                val f = reposFile(ctx)
+                val aside = File(f.path + ".unreadable")
+                if (f.isFile && !aside.exists()) f.copyTo(aside)
+            } catch (x: Exception) { /* best effort */ }
+            emptyList()
         }.also { recs = it }
     }
 

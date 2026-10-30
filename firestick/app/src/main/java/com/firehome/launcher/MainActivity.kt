@@ -239,6 +239,11 @@ class MainActivity : Activity() {
         resumed = true
         HomeRedirectService.onFireHomeVisible(this)
         Trakt.onHomeOpened(this) // throttled background sync; returns at once
+        // Continue Watching's links kept fresh while Home sits idle (never under the intro, a page, a menu or the player).
+        PreResolve.watchContinueWatching(this) {
+            resumed && splash == null && titlePage == null && details == null && menuOverlay == null && picker == null &&
+                setup == null && settingsPage == null && shell?.introDone != false
+        }
         if (pendingAmazonSettings) {
             pendingAmazonSettings = false
             openAmazonSettings()
@@ -279,6 +284,7 @@ class MainActivity : Activity() {
     /** Everything a pause stops or releases (bounceBackIfHome aside, which always comes first). */
     private fun pauseWork() {
         shell?.onPause()
+        PreResolve.stopWatching()
         airPods.stop()
         handler.removeCallbacks(idleRunnable)
         handler.removeCallbacks(trailerAwake)
@@ -2446,10 +2452,14 @@ class MainActivity : Activity() {
                     PlayerPrefs.setPosition(this, (PlayerPrefs.position(this) + 1) % PlayerPrefs.POSITIONS.size); refreshSettings()
                 },
             )),
-            PremiumSettings.Section("Sources & Quality", SettingsGlyph.SLIDERS, listOf(
+            PremiumSettings.Section("Sources & Quality", SettingsGlyph.SLIDERS, listOfNotNull(
                 I("Highest Quality", if (qIdx < 0) "Automatic" else qualities[qIdx].second, R.drawable.ic_movie, null, "Hides Anything Better Than This") {
                     filter("quality.max", qualities[if (qIdx < 0) 1 else (qIdx + 1) % qualities.size].first)
                 },
+                // Prefer HDR (DreamFilters "quality.hdr"): only on a TV that shows HDR, where it can do something.
+                if (DeviceVideo.showsHdr(this)) I("Prefer HDR", null, R.drawable.ic_movie, f.hdrChosen, "HDR and Dolby Vision Even Above Highest Quality") {
+                    PlaybackPrefs.setPreferHdr(this, !f.hdrChosen); refreshSettings()
+                } else null,
                 I("Hide AV1", null, R.drawable.ic_shield, f.hideAv1, "Some AV1 Videos Restart This Fire Stick") { flag("hide.av1", f.hideAv1) },
                 I("Hide HEVC (H.265)", null, R.drawable.ic_shield, f.hideHevc) { flag("hide.hevc", f.hideHevc) },
                 I("Hide HDR", null, R.drawable.ic_shield, f.hideHdr, "For TVs Without HDR") { flag("hide.hdr", f.hideHdr) },

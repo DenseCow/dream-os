@@ -41,6 +41,8 @@ internal object SetupBrand {
     val DIM = 0xFFA1A1AA.toInt()
     val GREEN = 0xFF30D158.toInt()
     val RED = 0xFFFF453A.toInt()
+    /** Attention that isn't a failure (AllDebrid waiting for its owner to approve this network). */
+    val AMBER = 0xFFFFD60A.toInt()
     const val TAG = "FireHome"
 
     /** The debrid services in the order setup lists them, with their badge letters and websites. */
@@ -409,7 +411,7 @@ internal fun setupEntry(
         if (qr != null) ui.qr(qr, 112)?.let { code ->
             val col = LinearLayout(ctx).apply { orientation = LinearLayout.VERTICAL; gravity = Gravity.CENTER_HORIZONTAL }
             col.addView(code, LinearLayout.LayoutParams(dp(112), dp(112)))
-            col.addView(k.label("Open the Website", 13f, Ui.alpha(Color.WHITE, 0.72f), k.medium).apply { gravity = Gravity.CENTER },
+            col.addView(k.label("Open the Website", 13f, Ui.alpha(Color.WHITE, 0.72f), k.medium, lines = 0).apply { gravity = Gravity.CENTER },
                 LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT).apply { topMargin = dp(8) })
             codes.addView(col, LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT).apply { marginEnd = dp(20) })
         }
@@ -432,7 +434,7 @@ internal fun setupEntry(
         if (qr != null) ui.qr(qr, 104)?.let { code ->
             val col = LinearLayout(ctx).apply { orientation = LinearLayout.VERTICAL; gravity = Gravity.CENTER_HORIZONTAL }
             col.addView(code, LinearLayout.LayoutParams(dp(104), dp(104)))
-            col.addView(k.label("Open the Website", 12.5f, Ui.alpha(Color.WHITE, 0.72f), k.medium).apply { gravity = Gravity.CENTER },
+            col.addView(k.label("Open the Website", 12.5f, Ui.alpha(Color.WHITE, 0.72f), k.medium, lines = 0).apply { gravity = Gravity.CENTER },
                 LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT).apply { topMargin = dp(8) })
             wrap.addView(col, LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT).apply { marginStart = dp(18) })
         }
@@ -497,7 +499,7 @@ internal object SetupGate {
         val i = AccountHealth.last(ctx, s) ?: return Triple("Connected · Not Checked Yet", null, BrandRow.Mark.NONE)
         return when {
             i.health == AccountHealth.Health.INVALID -> Triple("Sign In Again", SetupBrand.RED, BrandRow.Mark.WARN)
-            i.health == AccountHealth.Health.BLOCKED -> Triple("Approve New Location", SetupBrand.RED, BrandRow.Mark.WARN)
+            i.health == AccountHealth.Health.BLOCKED -> Triple(AccountHealth.BLOCKED_WORDS, SetupBrand.AMBER, BrandRow.Mark.WARN)
             expired(i) -> Triple("Expired", SetupBrand.RED, BrandRow.Mark.WARN)
             i.health == AccountHealth.Health.OFFLINE -> Triple("Couldn't Check Right Now", null, BrandRow.Mark.NONE)
             i.until > 0 -> Triple("Connected · Premium Until ${DreamTime.fmt(ctx, "MMM d, yyyy").format(Date(i.until))}", SetupBrand.GREEN, BrandRow.Mark.OK)
@@ -517,7 +519,7 @@ internal object SetupGate {
         return when {
             i == null -> "Checking your account…"
             i.health == AccountHealth.Health.INVALID -> "Sign in to $n again, or connect another service, to continue."
-            i.health == AccountHealth.Health.BLOCKED -> "$n blocked this new location. Approve it from the email $n sent you, then choose $n to check again."
+            i.health == AccountHealth.Health.BLOCKED -> "Approve this network in the email from $n, then choose $n to check again."
             expired(i) -> "Your $n plan has expired. Renew it, or connect another service, to continue."
             else -> "Couldn't reach $n. Check your internet connection, then choose $n to check again."
         }
@@ -579,7 +581,7 @@ internal object SetupGate {
         }
         card.addView(SetupArt(a, if (page == DreamSettingsPage.SCRAPERS) SetupArt.Kind.SCRAPERS else SetupArt.Kind.ACCOUNTS), LinearLayout.LayoutParams(dp(130), dp(130)))
         val col = LinearLayout(a).apply { orientation = LinearLayout.VERTICAL }
-        col.addView(k.label("Finish Setting Up", 15f, Ui.alpha(Color.WHITE, 0.62f), k.semibold))
+        col.addView(k.label("Finish Setting Up", 15f, Ui.alpha(Color.WHITE, 0.62f), k.semibold, lines = 0))
         col.addView(k.label(headline, 26f, SetupBrand.TEXT, k.semibold, Ui.TRACK_TITLE, lines = 0), LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT).apply { topMargin = dp(8) })
         col.addView(parts.note(line, 16f).apply { setPadding(0, 0, 0, 0) }, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { topMargin = dp(10) })
         val go = parts.pill("Set Up Now", true) { close { DreamSettingsPage.open(a, page) } }
@@ -833,9 +835,10 @@ internal class AccountsPages(
             // Setup's stage has room for one screen without scrolling: who's signed in rides on the status row.
             if (!inSetup) rows.row("acct", 0) { parts.row(SetupArt.monogram(ctx, SetupBrand.monogram(key))) }.set(user ?: name, SetupBrand.site(key))
             rows.row("status", if (inSetup) 0 else 8) { parts.row() }.set("Status", if (inSetup) (user?.let { "Signed In as $it" } ?: SetupBrand.site(key)) else null, words, tone, mark)
-            val bad = tone == SetupBrand.RED
+            val blocked = AccountHealth.last(app(), key)?.health == AccountHealth.Health.BLOCKED
+            val bad = tone == SetupBrand.RED || blocked
             if (bad) s.view("fix", 10) { parts.note("") }.let { (it as TextView).text = when {
-                AccountHealth.last(app(), key)?.health == AccountHealth.Health.BLOCKED -> AccountHealth.blockedLine(name)
+                blocked -> AccountHealth.blockedLine(name)
                 words == "Expired" -> "Renew your plan on $name's website, then choose Check Again."
                 else -> "Link $name again to sign back in."
             } }
@@ -936,6 +939,12 @@ internal class AccountsPages(
                 }
             }
         }
+        // A code that hasn't come in 20 s (both tries, slow DNS included) is an error with Try Again; a late one is dropped.
+        val noCode = Runnable {
+            if (finished || !s.alive) return@Runnable
+            Log.w(SetupBrand.TAG, "Setup: step Accounts, $name sent no sign-in code in 20 s")
+            fail("$name didn't answer. Check your internet connection and try again.")
+        }
         fun begin(retries: Int) {
             s.bg({ DebridLink.start(key) ?: Unit }) { p ->
                 if (finished) return@bg
@@ -944,6 +953,7 @@ internal class AccountsPages(
                     else fail("$name didn't answer. Check your internet connection and try again.")
                     return@bg
                 }
+                ui.main.removeCallbacks(noCode)
                 step.text = "On your phone, scan the code, or go to"
                 site.text = p.url.removePrefix("https://").removePrefix("http://").removePrefix("www.").trimEnd('/')
                 code.text = p.code
@@ -954,7 +964,7 @@ internal class AccountsPages(
                 ui.main.postAtTime({ poll(p) }, tag, SystemClock.uptimeMillis() + p.intervalS * 1000L)
             }
         }
-        s.onShow = { if (!started) { started = true; begin(1) } }
+        s.onShow = { if (!started) { started = true; ui.main.postAtTime(noCode, tag, SystemClock.uptimeMillis() + 20_000); begin(1) } }
         return s
     }
 
@@ -1101,7 +1111,7 @@ internal class AccountsPages(
             (head.getChildAt(1) as TextView).text = when {
                 key in checking -> "Checking Your Account…"
                 ok -> "$name Is Connected"
-                blocked -> "Approve This Location"
+                blocked -> AccountHealth.BLOCKED_WORDS
                 else -> "$name Isn't Ready Yet"
             }
             val user = DreamAccounts.user(app(), key)

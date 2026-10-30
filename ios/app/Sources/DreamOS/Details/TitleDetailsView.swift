@@ -318,7 +318,7 @@ struct TitleDetailsView: View {
                             target: shown.first { model.isUpNext($0) }?.id) { ep in
                     EpisodeCard(episode: ep,
                                 width: cardW,
-                                upcoming: ep.upcoming || !PageTime.aired(ep.airDate),
+                                upcoming: ep.upcoming || (!ep.outEarly && !PageTime.aired(ep.airDate)),
                                 progress: model.progress(for: ep),
                                 upNext: model.isUpNext(ep),
                                 pill: model.progress(for: ep) == nil ? model.episodePills[ep.id] : nil,
@@ -719,7 +719,9 @@ struct EpisodeCard: View {
             if let at = episode.airsAt { return "Coming " + DreamTime.airLabel(at) }
             return PageTime.shortDate(episode.airDate).map { "Coming \($0)" } ?? "Coming Soon"
         }
-        return [InfoWords.runtime(episode.runtime), PageTime.shortDate(episode.airDate), language].compactMap { $0 }.joined(separator: Cinema.dot)
+        // Up early (its air day still ahead): no date from the future.
+        let aired = episode.outEarly && !PageTime.aired(episode.airDate) ? nil : PageTime.shortDate(episode.airDate)
+        return [InfoWords.runtime(episode.runtime), aired, language].compactMap { $0 }.joined(separator: Cinema.dot)
     }
 }
 

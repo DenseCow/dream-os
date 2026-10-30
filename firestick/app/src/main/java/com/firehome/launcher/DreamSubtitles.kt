@@ -322,6 +322,9 @@ object DreamSubtitles {
                 val p = lastPrefs
                 val list = p?.let { cache[key(r)]?.takeIf { s -> s.fresh && s.langs == p.langs }?.list }
                 if (p == null || list == null) { if (tries < 40) wait(g, tries + 1) else settle(false); return@postDelayed }
+                // "In the video first": the video's own tracks are known only at the first frame, so a list that came
+                // earlier waits for it (at most 30 s from the start) instead of putting the download ahead of them.
+                if (p.embeddedFirst && p.show && !started && tries < 60) { wait(g, tries + 1); return@postDelayed }
                 val subs = subtitles(pick(list, p, file), p, preferDownload = !(p.embeddedFirst && hasOwn(p)))
                 when {
                     subs.isEmpty() -> settle(false)

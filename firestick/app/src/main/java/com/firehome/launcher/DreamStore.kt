@@ -150,7 +150,7 @@ object DreamFilters {
 
     /** The option keys Settings shows. */
     val KEYS = setOf(
-        "quality.max", "quality.min", "hide.cam", "hide.hdr", "hide.dv", "hide.hevc", "hide.av1", "prefer.hdr", "prefer.hevc",
+        "quality.max", "quality.min", "quality.hdr", "hide.cam", "hide.hdr", "hide.dv", "hide.hevc", "hide.av1", "prefer.hdr", "prefer.hevc",
         "size.movie.limit", "size.movie.min_gb", "size.movie.max_gb", "size.movie.speed_mbps",
         "size.episode.limit", "size.episode.min_gb", "size.episode.max_gb", "size.episode.speed_mbps",
         "subs.enabled", "subs.lang1", "subs.lang2", "subs.embedded", "subs.hi", "subs.forced",
@@ -161,13 +161,21 @@ object DreamFilters {
     /**
      * The filters as the resolver applies them. Missing values fall back to safe defaults for this stick.
      * [deviceCap]: the best this stick and TV can show ([DeviceVideo.capIndex]); never relaxed.
+     * [screenHdr]: the TV on HDMI takes HDR10 or Dolby Vision ([DeviceVideo.showsHdr]).
      */
-    class Values internal constructor(private val v: Map<String, String>, val deviceCap: Int = 0) {
+    class Values internal constructor(private val v: Map<String, String>, val deviceCap: Int = 0, val screenHdr: Boolean = false) {
         private fun on(k: String, def: Boolean) = v[k].let { if (it.isNullOrEmpty()) def else it == "true" }
         /** A quality cap was ever chosen; without one the resolver ranks 1080p first. */
         val known = !v["quality.max"].isNullOrEmpty()
         /** 0 4K, 1 1080p, 2 720p, 3 SD: anything better is dropped. */
         val cap = maxOf(Q.indexOf(v["quality.max"]).coerceAtLeast(0), deviceCap)
+        /** Prefer HDR ("quality.hdr"): the viewer's choice, else on when the TV shows HDR. */
+        val hdrChosen = on("quality.hdr", screenHdr)
+        /**
+         * Prefer HDR applies: an HDR copy may go above the viewer's Maximum Quality, only on an HDR TV and only up to
+         * what this stick decodes (on the Fire TV Stick HD, or a cap already at the device's best, there's no room).
+         */
+        val hdrAboveCap = hdrChosen && screenHdr && Q.indexOf(v["quality.max"]) > deviceCap
         /** SD only goes when something better exists. */
         val hideSd = v["quality.min"].let { if (it.isNullOrEmpty()) true else it != "sd" }
         val hideCam = on("hide.cam", true)
@@ -212,7 +220,7 @@ object DreamFilters {
         // Under the lock [put] takes: a read racing a change could otherwise cache the old values for good.
         synchronized(this) {
             cached?.let { return it }
-            return Values(stored(ctx), DeviceVideo.capIndex(ctx)).also { cached = it }
+            return Values(stored(ctx), DeviceVideo.capIndex(ctx), DeviceVideo.showsHdr(ctx)).also { cached = it }
         }
     }
 
@@ -244,6 +252,33 @@ object DeviceVideo {
 
     /** [DreamFilters.Values.cap] scale: 0 4K, 1 1080p. */
     fun capIndex(ctx: Context) = if (plays4k(ctx)) 0 else 1
+
+    @Volatile private var showsHdr: Boolean? = null
+
+    /**
+     * The TV on HDMI takes HDR10 or Dolby Vision (its EDID, as Fire OS reports it) and a decoder here plays 10-bit
+     * HEVC: Prefer HDR's default and its gate. Read once per process, like [plays4k].
+     */
+    fun showsHdr(ctx: Context): Boolean = showsHdr ?: (screenHdr(ctx) && decodesMain10()).also {
+        showsHdr = it
+        Log.w("FireHome", "Device video: HDR ${if (it) "shown" else "not shown"} on this TV")
+    }
+
+    private fun screenHdr(ctx: Context): Boolean = try {
+        @Suppress("DEPRECATION")
+        val d = (ctx.getSystemService(Context.WINDOW_SERVICE) as android.view.WindowManager).defaultDisplay
+        val types = d.hdrCapabilities?.supportedHdrTypes ?: IntArray(0)
+        types.any { it == android.view.Display.HdrCapabilities.HDR_TYPE_HDR10 || it == android.view.Display.HdrCapabilities.HDR_TYPE_DOLBY_VISION }
+    } catch (e: Exception) { false }
+
+    private fun decodesMain10(): Boolean = try {
+        val main10 = setOf(android.media.MediaCodecInfo.CodecProfileLevel.HEVCProfileMain10,
+            android.media.MediaCodecInfo.CodecProfileLevel.HEVCProfileMain10HDR10)
+        android.media.MediaCodecList(android.media.MediaCodecList.REGULAR_CODECS).codecInfos.any { info ->
+            !info.isEncoder && "video/hevc" in info.supportedTypes &&
+                info.getCapabilitiesForType("video/hevc").profileLevels.any { it.profile in main10 }
+        }
+    } catch (e: Exception) { false }
 
     private fun decodes4k(): Boolean = try {
         android.media.MediaCodecList(android.media.MediaCodecList.REGULAR_CODECS).codecInfos.any { info ->

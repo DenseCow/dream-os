@@ -26,9 +26,12 @@ internal object AccountHealth {
     /** BLOCKED: AllDebrid's AUTH_BLOCKED, a sign-in from a new location waiting for the owner's approval. */
     enum class Health { OK, LIMIT, INVALID, OFFLINE, BLOCKED }
 
-    /** What to do about [Health.BLOCKED], in the same words on the setup's check, Accounts and Settings. */
-    fun blockedLine(name: String) = "$name blocked this new location. Approve it from the email $name sent you " +
-        "(or the security page of your $name account), then choose Check Again."
+    /** What to do about [Health.BLOCKED], in the same words on the setup's check, Accounts and Settings (and the iPhone). */
+    fun blockedLine(name: String) = "$name holds your account on a network it hasn't seen before until you approve it. " +
+        "Open the email from $name, approve this location, then choose Check Again."
+
+    /** [Health.BLOCKED]'s status, in amber: signing in again won't help, approving the network will. */
+    const val BLOCKED_WORDS = "Approve This Network"
 
     /** [premium]: true/false when the service said, null when unknown; [until]: plan end (wall ms), 0 when unknown or none. */
     class Info(val service: String, val health: Health, val at: Long, val premium: Boolean?, val until: Long, val user: String?) {
@@ -209,10 +212,10 @@ internal object AccountHealth {
         Health.LIMIT -> "Magnet Limit Reached"
         Health.INVALID -> "Sign-In Invalid"
         Health.OFFLINE -> "No Answer Right Now"
-        Health.BLOCKED -> "Approve New Location"
+        Health.BLOCKED -> BLOCKED_WORDS
     }
 
-    fun healthTone(h: Health): Int? = when (h) { Health.OK -> null; Health.LIMIT, Health.OFFLINE -> AMBER; Health.INVALID, Health.BLOCKED -> RED }
+    fun healthTone(h: Health): Int? = when (h) { Health.OK -> null; Health.LIMIT, Health.OFFLINE, Health.BLOCKED -> AMBER; Health.INVALID -> RED }
 
     fun ago(at: Long): String {
         val m = ((System.currentTimeMillis() - at) / 60_000).coerceAtLeast(0)
@@ -235,7 +238,7 @@ internal object AccountHealth {
         val prem = plan(ctx, service)
         return when {
             i?.health == Health.INVALID -> "Sign-In Invalid" to RED
-            i?.health == Health.BLOCKED || DebridExpiry.blocked(ctx, service) -> "Approve New Location" to RED
+            i?.health == Health.BLOCKED || DebridExpiry.blocked(ctx, service) -> BLOCKED_WORDS to AMBER
             prem?.second == RED -> prem
             limited -> "Magnet Limit Reached" to AMBER
             prem != null -> prem

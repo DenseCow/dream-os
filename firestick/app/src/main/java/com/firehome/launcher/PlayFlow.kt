@@ -215,7 +215,8 @@ object PlayFlow {
      */
     fun episodeAfter(ctx: Context, showId: Int, season: Int, episode: Int): Pair<Int, JSONObject>? {
         val today = DreamTime.todayYmd(ctx)
-        fun aired(ep: JSONObject) = ep.optString("air_date").let { it.isNotEmpty() && it != "null" && it <= today }
+        fun aired(ep: JSONObject) = ep.optString("air_date").let { it.isNotEmpty() && it != "null" && it <= today } ||
+            Availability.outEarly(ctx, showId, ep.optInt("season_number"), ep.optInt("episode_number")) // up before its air day
         var s = season
         var next = WatchHistory.seasonEpisodes(ctx, showId, season)?.firstOrNull { it.optInt("episode_number") == episode + 1 }
         if (next == null) {

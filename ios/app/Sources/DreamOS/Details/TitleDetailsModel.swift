@@ -109,9 +109,12 @@ final class TitleDetailsModel {
 
     // MARK: Seasons
 
-    /// Seasons already out (number > 0, with episodes, aired).
+    /// Seasons already out (number > 0, with episodes, aired, or up early: an episode found before its day,
+    /// `Episode.outEarly`; its chip then loses "Coming Nov 1").
     var seasonsOut: [SeasonSummary] {
-        (details?.seasons ?? []).filter { $0.number > 0 && $0.episodeCount > 0 && PageTime.aired($0.airDate) }.sorted { $0.number < $1.number }
+        (details?.seasons ?? []).filter { s in
+            s.number > 0 && s.episodeCount > 0 && (PageTime.aired(s.airDate) || episodes[s.number]?.contains { $0.outEarly } == true)
+        }.sorted { $0.number < $1.number }
     }
 
     /// Announced seasons after the last one out (at most two), shown as "Coming Mar 4".
@@ -159,12 +162,14 @@ final class TitleDetailsModel {
         loadingSeasons.remove(n)
     }
 
-    /// What follows a season's episodes arriving: Information's Episode Length, the stills, the pills.
+    /// What follows a season's episodes arriving: Information's Episode Length, the stills, episodes up early, the pills
+    /// (an episode up early gets the same pill as an aired one).
     private func settle(_ eps: [Episode], season n: Int) async {
         if episodeMinutes == 0 { episodeMinutes = InfoWords.median(eps.filter { PageTime.aired($0.airDate) }.map(\.runtime)) }
         prefetchStills(eps, first: n == season ? eps.count : 6)
         let show = shown
-        let recent = eps.filter { PageTime.recentEpisode($0.airDate) && episodePills[$0.id] == nil }
+        await findEarly(eps, season: n, show: show)
+        let recent = (episodes[n] ?? eps).filter { (PageTime.recentEpisode($0.airDate) || $0.outEarly) && episodePills[$0.id] == nil }
         guard !recent.isEmpty else { return }
         await withTaskGroup(of: (String, Availability?).self) { group in
             for e in recent {
@@ -172,6 +177,23 @@ final class TitleDetailsModel {
             }
             for await (id, a) in group { if let a { episodePills[id] = a } }
         }
+    }
+
+    /// A source decides, not the date (owner, 2026-10-30: "available as soon as there's a source"; Paramount+ posts
+    /// Showtime's Sunday episodes on Friday): the season's episodes still ahead are asked about in order, first one
+    /// first, until one isn't up yet. Each one found plays like an aired one (`Episode.outEarly`); the rest keep their
+    /// "Coming ..." line.
+    private func findEarly(_ eps: [Episode], season n: Int, show: Title) async {
+        var found: Set<String> = []
+        for e in eps.filter(\.upcoming).sorted(by: { $0.number < $1.number }) {
+            guard await Services.shared.catalog.earlyRelease(e, of: show) else { break }
+            found.insert(e.id)
+        }
+        guard !found.isEmpty, var list = episodes[n] else { return }
+        for i in list.indices where found.contains(list[i].id) { list[i].upcoming = false; list[i].outEarly = true }
+        guard list != episodes[n] else { return }
+        episodes[n] = list
+        SeasonCache.put(title.id, n, list)
     }
 
     /// Every other season in the background, nearest to the one on show first, so a season switch is instant.

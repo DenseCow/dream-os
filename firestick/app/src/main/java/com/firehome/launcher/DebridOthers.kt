@@ -52,6 +52,22 @@ private object DebridOthersKit {
         return sb.toString().toByteArray(Charsets.UTF_8) to "multipart/form-data; boundary=$b"
     }
 
+    /**
+     * The first [limit] of [cached] through [unlock] side by side ([DebridWork]); none of them opened: the rest
+     * in turn, as a single lookup did. The links come back in rank order.
+     */
+    fun unlockMany(cached: List<Candidate>, limit: Int, deadline: Long, unlock: (Candidate) -> Found?): List<Found> {
+        val race = cached.take(limit.coerceAtLeast(1))
+        var out = if (race.size > 1) DebridWork.each(race, deadline, unlock) else listOfNotNull(race.firstOrNull()?.let(unlock))
+        if (out.isEmpty()) for (c in cached.drop(race.size)) {
+            if (now() >= deadline) break
+            val f = unlock(c) ?: continue
+            out = listOf(f)
+            break
+        }
+        return out
+    }
+
     fun found(url: String, service: String, c: Candidate, path: String, size: Long) =
         Found(url, service, DebridFiles.base(path), if (size > 0) size else c.sizeBytes, c.quality, c.hash)
 }
@@ -70,15 +86,23 @@ internal class PremiumizeService(private val token: String) : DebridService {
         const val MAX = 60 // hashes per check
     }
 
-    override fun resolve(candidates: List<Candidate>, deadline: Long): Found? = try {
-        find(candidates.take(MAX), deadline)
+    override fun resolve(candidates: List<Candidate>, deadline: Long): Found? = resolveMany(candidates, deadline, 1).firstOrNull()
+
+    /** The first [limit] cached candidates unlocked side by side (directdl adds nothing to the account). */
+    override fun resolveMany(candidates: List<Candidate>, deadline: Long, limit: Int): List<Found> = try {
+        val t0 = DebridOthersKit.now()
+        val cached = cached(candidates.take(MAX), deadline)
+        val out = DebridOthersKit.unlockMany(cached, limit, deadline) { unlock(it, deadline) }
+        if (out.isNotEmpty()) Log.w(DebridOthersKit.TAG, "Premiumize: ${out.size} link${if (out.size == 1) "" else "s"} in ${DebridOthersKit.now() - t0} ms")
+        out
     } catch (e: Exception) {
         Log.w(DebridOthersKit.TAG, "Premiumize: resolve failed: ${e.javaClass.simpleName}")
-        null
+        emptyList()
     }
 
-    private fun find(list: List<Candidate>, deadline: Long): Found? {
-        if (list.isEmpty() || token.isBlank()) return null
+    /** [list] Premiumize has cached, in rank order, from one batched check; empty when it didn't answer. */
+    private fun cached(list: List<Candidate>, deadline: Long): List<Candidate> {
+        if (list.isEmpty() || token.isBlank()) return emptyList()
         val t0 = DebridOthersKit.now()
         // A form POST of items[], as the API docs list it (POST /api/cache/check) and batched checks send it.
         val r = DebridHttp.postForm("$API/cache/check", list.map { "items[]" to it.hash }, token, DebridHttp.left(deadline))
@@ -86,19 +110,12 @@ internal class PremiumizeService(private val token: String) : DebridService {
         if (o == null || o.optString("status") != "success") {
             // Premiumize answers errors with HTTP 200 and status "error" (code "authentication_failed" for a bad token).
             Log.w(DebridOthersKit.TAG, "Premiumize: cache check failed (HTTP ${r.code} ${o?.optString("code").orEmpty()})")
-            return null
+            return emptyList()
         }
-        val flags = o.optJSONArray("response") ?: return null
-        val cached = list.indices.filter { flags.optBoolean(it, false) }
+        val flags = o.optJSONArray("response") ?: return emptyList()
+        val cached = list.indices.filter { flags.optBoolean(it, false) }.map { list[it] }
         Log.i(DebridOthersKit.TAG, "Premiumize: ${cached.size} of ${list.size} cached (${DebridOthersKit.now() - t0} ms)")
-        for (i in cached) {
-            if (DebridOthersKit.now() >= deadline) break
-            unlock(list[i], deadline)?.let {
-                Log.i(DebridOthersKit.TAG, "Premiumize: link for #$i in ${DebridOthersKit.now() - t0} ms")
-                return it
-            }
-        }
-        return null
+        return cached
     }
 
     /** The candidate's file through directdl; `link` is the original file (`stream_link` is a transcode). */
@@ -181,15 +198,42 @@ internal class TorBoxService(private val token: String) : DebridService {
         if (n > 0 || why != "hourly") Log.w(DebridOthersKit.TAG, "TorBox janitor ($why): removed $n Dream OS torrent${if (n == 1) "" else "s"} (user's ${user.size} untouched)")
     }
 
-    override fun resolve(candidates: List<Candidate>, deadline: Long): Found? = try {
-        find(candidates.take(MAX), deadline)
+    override fun resolve(candidates: List<Candidate>, deadline: Long): Found? = resolveMany(candidates, deadline, 1).firstOrNull()
+
+    /**
+     * The first [limit] cached candidates that hold the file, added (cached only) and unlocked side by side. Each
+     * alternate is a torrent kept in the account until [discard] (the winner started) or the janitor.
+     */
+    override fun resolveMany(candidates: List<Candidate>, deadline: Long, limit: Int): List<Found> = try {
+        val t0 = DebridOthersKit.now()
+        val fits = fits(candidates.take(MAX), deadline)
+        val out = DebridOthersKit.unlockMany(fits, limit, deadline) { unlock(it, deadline) }
+        if (out.isNotEmpty()) Log.w(DebridOthersKit.TAG, "TorBox: ${out.size} link${if (out.size == 1) "" else "s"} in ${DebridOthersKit.now() - t0} ms")
+        out
     } catch (e: Exception) {
         Log.w(DebridOthersKit.TAG, "TorBox: resolve failed: ${e.javaClass.simpleName}")
-        null
+        emptyList()
     }
 
-    private fun find(list: List<Candidate>, deadline: Long): Found? {
-        if (list.isEmpty() || token.isBlank()) return null
+    /** Alternates no longer needed: their torrents (added by Dream OS, not in use) are deleted now, not by the janitor two hours on. */
+    override fun discard(hashes: Collection<String>) {
+        val owned = DebridLedger.owned(scope)
+        val protect = DebridLedger.inUse()
+        val drop = hashes.mapNotNull { h -> if (h in protect) null else owned[h]?.id?.toLongOrNull()?.let { h to it } }
+        if (drop.isEmpty()) return
+        Net.run {
+            var n = 0
+            for ((h, id) in drop) if (delete(id)) { DebridLedger.release(scope, listOf(h)); n++ }
+            Log.w(DebridOthersKit.TAG, "TorBox: dropped $n alternate${if (n == 1) "" else "s"}")
+        }
+    }
+
+    /**
+     * [list] TorBox has cached and that hold the wanted file (a pack without the episode is skipped before anything
+     * is added), in rank order, from one batched check; empty when it didn't answer.
+     */
+    private fun fits(list: List<Candidate>, deadline: Long): List<Candidate> {
+        if (list.isEmpty() || token.isBlank()) return emptyList()
         val t0 = DebridOthersKit.now()
         val body = JSONObject().put("hashes", JSONArray(list.map { it.hash })).toString().toByteArray()
         val r = DebridHttp.request("$API/torrents/checkcached?format=list&list_files=true", "POST", token, body,
@@ -197,21 +241,15 @@ internal class TorBoxService(private val token: String) : DebridService {
         if (!r.ok) {
             // 401/403 with error BAD_TOKEN for a stale token.
             Log.w(DebridOthersKit.TAG, "TorBox: cache check failed (HTTP ${r.code} ${errorOf(r)})")
-            return null
+            return emptyList()
         }
         val cached = cachedFiles(r.json().opt("data"))
-        val hits = list.withIndex().filter { cached.containsKey(it.value.hash.lowercase()) }
-        Log.i(DebridOthersKit.TAG, "TorBox: ${hits.size} of ${list.size} cached (${DebridOthersKit.now() - t0} ms)")
-        for ((i, c) in hits) {
-            if (DebridOthersKit.now() >= deadline) break
-            val files = cached.getValue(c.hash.lowercase())
-            if (files.isNotEmpty() && DebridFiles.pick(files, c) < 0) continue // the pack doesn't hold it
-            unlock(c, deadline)?.let {
-                Log.i(DebridOthersKit.TAG, "TorBox: link for #$i in ${DebridOthersKit.now() - t0} ms")
-                return it
-            }
+        val fits = list.filter { c ->
+            val files = cached[c.hash.lowercase()] ?: return@filter false
+            files.isEmpty() || DebridFiles.pick(files, c) >= 0
         }
-        return null
+        Log.i(DebridOthersKit.TAG, "TorBox: ${fits.size} of ${list.size} cached (${DebridOthersKit.now() - t0} ms)")
+        return fits
     }
 
     /** hash -> its files (name, size) from a checkcached reply, in list or object format; uncached hashes are absent. */
@@ -372,15 +410,21 @@ internal class RealDebridService(private val accounts: DebridAccounts.Accounts) 
         @Synchronized fun close(): List<Probe> { closed = true; return got.sortedBy { it.rank } }
     }
 
-    override fun resolve(candidates: List<Candidate>, deadline: Long): Found? = try {
-        find(candidates.take(MAX), deadline)
+    override fun resolve(candidates: List<Candidate>, deadline: Long): Found? = resolveMany(candidates, deadline, 1).firstOrNull()
+
+    /**
+     * Rounds of probes as before; within the round that has cached ones, up to [limit] are unrestricted side by
+     * side. The unrestricted links live on after the probe torrents are deleted, so alternates add nothing to the account.
+     */
+    override fun resolveMany(candidates: List<Candidate>, deadline: Long, limit: Int): List<Found> = try {
+        find(candidates.take(MAX), deadline, limit.coerceAtLeast(1))
     } catch (e: Exception) {
         Log.w(DebridOthersKit.TAG, "Real-Debrid: resolve failed: ${e.javaClass.simpleName}")
-        null
+        emptyList()
     }
 
-    private fun find(list: List<Candidate>, deadline: Long): Found? {
-        if (list.isEmpty() || stored.isBlank()) return null
+    private fun find(list: List<Candidate>, deadline: Long, limit: Int): List<Found> {
+        if (list.isEmpty() || stored.isBlank()) return emptyList()
         val t0 = DebridOthersKit.now()
         for (start in list.indices step BATCH) {
             if (DebridOthersKit.now() >= deadline) break
@@ -394,24 +438,25 @@ internal class RealDebridService(private val accounts: DebridAccounts.Accounts) 
                 try { f.get(ms, TimeUnit.MILLISECONDS) } catch (e: TimeoutException) { break } catch (e: Exception) { }
             }
             val cached = round.close()
-            var found: Found? = null
+            var found: List<Found> = emptyList()
             try {
-                for (p in cached) {
+                if (limit > 1 && cached.size > 1) {
+                    found = DebridWork.each(cached.take(limit), deadline) { unrestrict(it, deadline) }
+                } else for (p in cached) {
                     if (DebridOthersKit.now() >= deadline) break
-                    found = unrestrict(p, deadline)
-                    if (found != null) {
-                        Log.i(DebridOthersKit.TAG, "Real-Debrid: link for #${p.rank} in ${DebridOthersKit.now() - t0} ms")
-                        break
-                    }
+                    val f = unrestrict(p, deadline) ?: continue
+                    found = listOf(f)
+                    break
                 }
+                if (found.isNotEmpty()) Log.w(DebridOthersKit.TAG, "Real-Debrid: ${found.size} link${if (found.size == 1) "" else "s"} in ${DebridOthersKit.now() - t0} ms")
             } finally {
                 // Also when unrestrict throws (network, bad JSON): the round's torrents are in the account either way.
                 if (cached.isNotEmpty()) Net.run { for (p in cached) delete(p.id) }
             }
-            if (found != null) return found
+            if (found.isNotEmpty()) return found
         }
         Log.i(DebridOthersKit.TAG, "Real-Debrid: none of ${list.size} cached (${DebridOthersKit.now() - t0} ms)")
-        return null
+        return emptyList()
     }
 
     /** Adds [c], selects its file and checks it is complete at once. Any torrent not handed to [round] is deleted. */

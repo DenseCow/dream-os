@@ -93,13 +93,17 @@ object AirTimes {
     fun info(ctx: Context, tmdbId: Int, imdb: String? = null, tvdb: Int? = null): Info? {
         memory[tmdbId]?.takeIf { System.currentTimeMillis() - it.fetchedAt < INFO_TTL }?.let { return it }
         val app = ctx.applicationContext
-        val maze = synchronized(lockFor(tmdbId)) { mazeId(app, tmdbId, imdb, tvdb) } ?: return null
-        val o = tryFetch("$API/shows/$maze?embed%5B%5D=previousepisode&embed%5B%5D=nextepisode")
-            ?.let { try { JSONObject(it) } catch (e: Exception) { null } } ?: return memory[tmdbId]
-        val emb = o.optJSONObject("_embedded")
-        val info = Info(air(emb?.optJSONObject("previousepisode")), air(emb?.optJSONObject("nextepisode")), System.currentTimeMillis())
-        memory[tmdbId] = info
-        return info
+        // Under the show's lock: New Episodes, a pill and a title page asking for one show at once share one call.
+        synchronized(lockFor(tmdbId)) {
+            memory[tmdbId]?.takeIf { System.currentTimeMillis() - it.fetchedAt < INFO_TTL }?.let { return it }
+            val maze = mazeId(app, tmdbId, imdb, tvdb) ?: return null
+            val o = tryFetch("$API/shows/$maze?embed%5B%5D=previousepisode&embed%5B%5D=nextepisode")
+                ?.let { try { JSONObject(it) } catch (e: Exception) { null } } ?: return memory[tmdbId]
+            val emb = o.optJSONObject("_embedded")
+            val info = Info(air(emb?.optJSONObject("previousepisode")), air(emb?.optJSONObject("nextepisode")), System.currentTimeMillis())
+            memory[tmdbId] = info
+            return info
+        }
     }
 
     private fun air(o: JSONObject?): Air? {

@@ -771,7 +771,8 @@ class CinemaDetails(private val ctx: Context, private val t: Title, private val 
     private fun buildTabs(d: Details) {
         if (tabs.isNotEmpty()) return
         if (isShow) {
-            val out = d.seasons.filter { it.number > 0 && it.episodes > 0 && aired(it.airDate) }
+            // Out: its day has come, or its first episode is already up early (the index said so; Availability.earlyRelease).
+            val out = d.seasons.filter { it.number > 0 && it.episodes > 0 && (aired(it.airDate) || Availability.outEarly(ctx, t.id, it.number, 1)) }
             // Announced seasons after the last one out (Upcoming.kt): their own tab, a "Coming Mar 4" line on the chip.
             val last = out.maxOfOrNull { it.number } ?: 0
             val ahead = d.seasons.filter { it.number > last && Upcoming.seasonAhead(it, today) }.sortedBy { it.number }.take(2)
@@ -978,10 +979,12 @@ class CinemaDetails(private val ctx: Context, private val t: Title, private val 
         }
     }
 
+    private fun chipName(s: Season) = s.name.takeIf { it.isNotBlank() && !it.startsWith("Season") && it.length <= 22 } ?: "Season ${s.number}"
+
     /** Season chip (the focusable is its glow box): see [paintChip]. */
     private fun seasonChip(s: Season): View {
         val fill = GradientDrawable().apply { cornerRadius = 18.dp.toFloat() } // the glow's radius: border and fill hug
-        val base = s.name.takeIf { it.isNotBlank() && !it.startsWith("Season") && it.length <= 22 } ?: "Season ${s.number}"
+        val base = chipName(s)
         // A season still to come: a smaller, softer "Coming Mar 4" after the name (it keeps the chip's ink, focused or not).
         val text: CharSequence = comingSeasons[s.number]?.let { c ->
             android.text.SpannableStringBuilder(base).append("   ").apply {
@@ -1064,6 +1067,8 @@ class CinemaDetails(private val ctx: Context, private val t: Title, private val 
                 epMinutes = m
                 infoGrid?.set(TitleInfo.EPISODE_LENGTH, TitleInfo.runtimeWords(m))
             }
+            // A season listed as still to come that's already up early (Upcoming.split): its chip loses "Coming Nov 1".
+            if (split != null && split.aired.isNotEmpty()) comingSeasons.remove(n)?.let { s -> chips.firstOrNull { it.tag == n }?.text = chipName(s) }
             if (gen != seasonGen) return@background
             val eps = split?.aired.orEmpty()
             val coming = split?.upcoming.orEmpty()
@@ -1156,7 +1161,8 @@ class CinemaDetails(private val ctx: Context, private val t: Title, private val 
         val airDate = ep.optString("air_date").takeIf { it.length == 10 }.orEmpty()
         val watched = !resume && Watched.episode(ctx, t.id, n, num)
         if (watched) Availability.attachWatched(card.art)
-        val pillFocus = if (!resume && !watched && Availability.recentEpisode(0L, airDate))
+        // Up early (Upcoming.split found a real release before its air day): the same pill, already green.
+        val pillFocus = if (!resume && !watched && (Availability.recentEpisode(0L, airDate) || Availability.outEarly(ctx, t.id, n, num)))
             Availability.attachTarget(card.art, Availability.episode(t.id, t.name, null, n, num, 0L, airDate)) else null
         val sub = listOfNotNull(epRuntime(ep).ifEmpty { null }, epLang(n, num)).joinToString("  ·  ")
         return captioned(card, "$num.  $name", sub) { has -> if (has) describeEpisode(n, ep); pillFocus?.invoke(has) }
@@ -1175,7 +1181,8 @@ class CinemaDetails(private val ctx: Context, private val t: Title, private val 
             epBlurb?.set(Upcoming.title(ep) ?: name, sub, ep.optString("overview").takeIf { it != "null" }.orEmpty(), animate)
             return
         }
-        val date = TitleInfo.longDate(ctx, ep.optString("air_date"))?.let { "Aired $it" }
+        // Up early (its air day still ahead): no "Aired" date from the future.
+        val date = ep.optString("air_date").takeIf { aired(it) }?.let { TitleInfo.longDate(ctx, it) }?.let { "Aired $it" }
         val sub = listOfNotNull("Season $n, Episode $num", epRuntime(ep).ifEmpty { null }, date, epLang(n, num)).joinToString("  ·  ")
         epBlurb?.set(name, sub, ep.optString("overview").takeIf { it != "null" }.orEmpty(), animate)
     }

@@ -196,12 +196,12 @@ object TimeSettings {
         }
         val left = LinearLayout(a).apply { orientation = LinearLayout.VERTICAL }
         left.addView(k.kicker("Settings"))
-        left.addView(k.label("Time Zone", 30f, k.text, k.semibold, Ui.TRACK_TITLE, lines = 2),
+        left.addView(k.label("Time Zone", 30f, k.text, k.semibold, Ui.TRACK_TITLE, lines = 0),
             LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT).apply { topMargin = dp(8) })
         left.addView(k.label("New episode times, the clock, the screensaver and reminders all follow the time zone you choose.",
             16f, k.dim, k.font, lines = 0).apply { setLineSpacing(dp(4).toFloat(), 1f) },
             LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { topMargin = dp(12) })
-        nowLine = k.label(nowText(a), 18f, k.text, k.medium, lines = 2)
+        nowLine = k.label(nowText(a), 18f, k.text, k.medium, lines = 0)
         left.addView(nowLine, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { topMargin = dp(24) })
         row.addView(left, LinearLayout.LayoutParams(0, WRAP_CONTENT, 0.36f))
         row.addView(panel, LinearLayout.LayoutParams(0, MATCH_PARENT, 0.64f).apply { marginStart = dp(52) })

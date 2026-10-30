@@ -248,8 +248,9 @@ enum Pages {
         for i in snap.recent + snap.upcoming.prefix(10) {
             let ep = Episode(showId: i.show.id, season: i.season, number: i.number, name: i.name, overview: i.overview, stillPath: i.still,
                              airDate: i.airDate, airsAt: i.at, upcoming: i.upcoming)
-            let avail = i.upcoming || AvailabilityChecker.recentEpisode(at: i.at, date: i.airDate)
-                ? await AvailabilityChecker.shared.episode(ep, show: i.show)?.state : nil
+            // Upcoming: looked up too (it can be up early), but in the background: the row never waits on it.
+            let avail = i.upcoming ? await AvailabilityChecker.shared.episodeNow(ep, show: i.show)?.state
+                : AvailabilityChecker.recentEpisode(at: i.at, date: i.airDate) ? await AvailabilityChecker.shared.episode(ep, show: i.show)?.state : nil
             let isNew = !i.upcoming ? await NewEpisodes.shared.isNew(i.key) : false
             out.append(CatalogItem(title: i.show, episode: ep, availability: avail, subtitle: i.badge(), badge: isNew ? "NEW" : nil))
         }
@@ -496,7 +497,7 @@ enum Pages {
 
     // MARK: items
 
-    /// Cards for [list]: availability from what's known now (unreleased: its date; else the cache). Cards ask
+    /// Cards for [list]: availability from what's known now (the cache; else, unreleased, its date). Cards ask
     /// `availability(for:)` when they show for a fresh answer.
     static func items(_ list: [Title], _ decorate: @Sendable (Title) -> (kicker: String?, subtitle: String?, badge: String?) = { _ in (nil, nil, nil) }) async -> [CatalogItem] {
         var out: [CatalogItem] = []

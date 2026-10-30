@@ -17,10 +17,12 @@ import java.util.concurrent.TimeoutException
  * The user's scrapers (the repositories they add: [Scrapers], run by [ScraperEngine]) are asked for
  * the title's torrents, which stream in as each provider answers. The user's own source filters
  * (DreamFilters) drop what they wouldn't play, the rest is ranked (best allowed quality, a size that
- * streams well over Wi-Fi, English, an MKV before an MP4, seeders) and the top [TOP] go to the linked
- * debrid services in turn (the user's order, by default Premiumize, TorBox, Real-Debrid, then AllDebrid;
- * one that starts streams clearly faster for this user goes first: [services]), which unlock the first
- * one they have cached. A found link is remembered for [LINK_TTL].
+ * streams well over Wi-Fi, English, an MKV before an MP4, seeders, what played well here before:
+ * [SourceMemory]) and the top [TOP] go to the linked debrid services at once ([race]: the user's order
+ * breaks near-ties, by default Premiumize, TorBox, Real-Debrid, then AllDebrid; one that starts streams
+ * clearly faster for this user goes first: [services]). The first service with a link wins; a Play has
+ * the top few unlocked side by side and keeps the extra links as the player's next try ([nextLink]). A
+ * found link is remembered for [LINK_TTL].
  *
  * Checking a torrent at AllDebrid or Real-Debrid adds it to the user's account (AllDebrid caps an
  * account at 1000 magnets, recently deleted ones included), so what a lookup may ask depends on why
@@ -78,6 +80,10 @@ object NativeResolver {
         val collection get() = bit(F_COLLECTION)
         val mp4 get() = bit(F_MP4)
         val disc get() = bit(F_DISC)
+        val eightK get() = bit(F_8K)
+        val remux get() = bit(F_REMUX)
+        /** Dolby Vision with no HDR10 named: usually profile 5, no standard HDR picture underneath for a non-DV TV. */
+        val dvOnly get() = dv && !hdr10
     }
 
     private const val F_HEVC = 1
@@ -91,6 +97,8 @@ object NativeResolver {
     private const val F_COLLECTION = 1 shl 8
     private const val F_MP4 = 1 shl 9
     private const val F_DISC = 1 shl 10
+    private const val F_8K = 1 shl 11
+    private const val F_REMUX = 1 shl 12
 
     private fun flagsOf(p: Parsed): Int {
         val t = p.text
@@ -100,12 +108,35 @@ object NativeResolver {
             f(has(t, "AVC", "X264", "H264", "H.264"), F_AVC) or f(has(t, "3D"), F_3D) or f(upscaled(t), F_UPSCALED) or
             f(has(t, "TRILOGY", "DUOLOGY", "QUADRILOGY", "PENTALOGY", "HEXALOGY", "COLLECTION", "SAGA", "BOXSET", "ANTHOLOGY", "COMPLETE"), F_COLLECTION) or
             f(mp4(p), F_MP4) or
-            f(DISC.containsMatchIn(p.c.torrentName) || has(t, "ISO", "BDMV", "BD25", "BD50", "BD66", "BD100"), F_DISC)
+            f(DISC.containsMatchIn(p.c.torrentName) || has(t, "ISO", "BDMV", "BD25", "BD50", "BD66", "BD100"), F_DISC) or
+            f(has(t, "4320P", "8K"), F_8K) or f(has(t, "REMUX", "BDREMUX"), F_REMUX)
     }
 
     private val links = ConcurrentHashMap<String, Stamped<Found>>()
     /** Per title/episode: info hashes whose link failed to play, with when. */
     private val failed = ConcurrentHashMap<String, ConcurrentHashMap<String, Long>>()
+    /** Per title/episode: links (URLs) that failed to play; the alternates skip these (the same torrent on another service is another try). */
+    private val failedUrls = ConcurrentHashMap<String, MutableSet<String>>()
+
+    // ---- the race and its alternates (Instant Play parity, 2026-10-30) ----
+
+    /** Links unlocked side by side with a Play's: the player's next try when its link doesn't open. */
+    private const val RACE_LINKS = 3
+    /** A later service in the viewer's order that answers within this of an earlier one still answering doesn't win yet. */
+    private const val TIE_MS = 250L
+    /**
+     * A service whose check adds to the account (AllDebrid, Real-Debrid) joins the race this much later when a free
+     * cache check (Premiumize, TorBox) is in it: when the free one has a link by then, nothing is uploaded at all.
+     */
+    private const val UPLOAD_DELAY_MS = 500L
+    /** Alternates kept per title, and titles with alternates at once (each a small Found: a URL and a few fields). */
+    private const val MAX_ALTERNATES = 6
+    private const val MAX_ALTERNATE_TITLES = 30
+
+    /** Per title/episode: the race's extra links, best first; mutated under its own monitor. */
+    private val alternates = ConcurrentHashMap<String, Stamped<ArrayList<Found>>>()
+    /** Per title/episode: when the playing link's first frame settled the alternates (late answers that add to an account go at once). */
+    private val settledAt = ConcurrentHashMap<String, Long>()
     private val imdbs = ConcurrentHashMap<String, String>()
     private val inFlight = ConcurrentHashMap<String, Lookup>()
 
@@ -183,6 +214,7 @@ object NativeResolver {
         val deadline = SystemClock.elapsedRealtime() + budgetMs
         val app = ctx.applicationContext
         ledger(app)
+        SourceMemory.init(app)
         if (purpose == DebridPurpose.PLAY) misses.remove(k)
         return try {
             peek(req) ?: run {
@@ -227,7 +259,104 @@ object NativeResolver {
         val k = key(req)
         val f = links.remove(k)?.value ?: return
         failed.getOrPut(k) { ConcurrentHashMap() }[f.hash] = SystemClock.elapsedRealtime()
+        failedUrls.getOrPut(k) { java.util.Collections.newSetFromMap(ConcurrentHashMap<String, Boolean>()) } += f.url
+        if (failedUrls.size > MAX_ALTERNATE_TITLES) failedUrls.keys.filter { !links.containsKey(it) && !alternates.containsKey(it) }.take(10).forEach { failedUrls.remove(it) }
         Log.w(TAG, "Dream Core: ${label(req)}: ${f.service.uppercase()} ${f.quality} ${size(f.sizeBytes)} didn't play; skipped from now on")
+        try { SourceMemory.record(traits(k, f), ok = false) } catch (e: Exception) {}
+        // What the failed link's service added for it goes now (AllDebrid's magnet, TorBox's torrent).
+        Net.run { try { service(f.service)?.discard(listOf(f.hash)) } catch (e: Exception) {} }
+    }
+
+    /**
+     * The next ready link for [req] after its link failed ([forget] first): one unlocked alongside it by the race,
+     * not failed, remembered as the title's link from now on. Null when none is left.
+     */
+    fun nextLink(req: PlaybackRequest): Found? {
+        val k = key(req)
+        val a = alternates[k]?.takeIf { it.fresh(LINK_TTL) } ?: run { alternates.remove(k); return null }
+        val bad = failedUrls[k].orEmpty()
+        val cur = links[k]?.value?.url
+        val f: Found?
+        val left: Int
+        synchronized(a.value) {
+            var pick: Found? = null
+            while (a.value.isNotEmpty()) {
+                val c = a.value.removeAt(0)
+                if (c.url in bad || c.url == cur) continue
+                pick = c; break
+            }
+            f = pick
+            left = a.value.size
+            if (a.value.isEmpty()) alternates.remove(k, a)
+        }
+        if (f == null) return null
+        links[k] = Stamped(f)
+        Log.w(TAG, "Dream Core: ${label(req)} → next source ${f.service.uppercase()} ${f.quality} ${size(f.sizeBytes)} ($left more ready)")
+        return f
+    }
+
+    /** Whether [nextLink] has one for [req] (nothing taken). */
+    fun hasAlternate(req: PlaybackRequest): Boolean {
+        val k = key(req)
+        val a = alternates[k]?.takeIf { it.fresh(LINK_TTL) } ?: return false
+        val bad = failedUrls[k].orEmpty()
+        val cur = links[k]?.value?.url
+        return synchronized(a.value) { a.value.any { it.url !in bad && it.url != cur } }
+    }
+
+    /** Links the race unlocked besides the one played: kept as the player's next tries, at most a few, no repeats. */
+    private fun addAlternates(k: String, found: List<Found>) {
+        if (found.isEmpty()) return
+        val cur = links[k]?.value?.url
+        val a = alternates[k]?.takeIf { it.fresh(LINK_TTL) } ?: Stamped(ArrayList<Found>()).also { alternates[k] = it }
+        synchronized(a.value) {
+            // One entry per link (the same torrent from two services is two copies, each a try of its own).
+            for (f in found) if (f.url != cur && a.value.none { it.url == f.url }) a.value += f
+            while (a.value.size > MAX_ALTERNATES) a.value.removeAt(a.value.size - 1)
+        }
+        if (alternates.size > MAX_ALTERNATE_TITLES) alternates.entries.removeAll { !it.value.fresh(LINK_TTL) }
+        if (alternates.size > MAX_ALTERNATE_TITLES) alternates.entries.sortedBy { it.value.at }.take(alternates.size - MAX_ALTERNATE_TITLES).forEach { alternates.remove(it.key, it.value) }
+    }
+
+    /**
+     * The winner's first frame is up: alternates whose service added something for them (AllDebrid, TorBox) are
+     * dropped and cleaned up; the free ones (Premiumize, Real-Debrid) stay as later tries.
+     */
+    private fun settleAlternates(k: String, winner: Found) {
+        settledAt[k] = now()
+        if (settledAt.size > MAX_ALTERNATE_TITLES) settledAt.entries.removeAll { now() - it.value > LINK_TTL }
+        val a = alternates[k] ?: return
+        val drop: List<Found> = synchronized(a.value) {
+            val d = a.value.filter { it.service == "ad" || it.service == "tb" || it.hash == winner.hash }
+            a.value.removeAll { l -> d.any { it.hash == l.hash } }
+            if (a.value.isEmpty()) alternates.remove(k, a)
+            d.filter { it.hash != winner.hash }
+        }
+        if (drop.isEmpty()) return
+        Net.run { for ((svc, group) in drop.groupBy { it.service }) try { service(svc)?.discard(group.map { it.hash }) } catch (e: Exception) {} }
+    }
+
+    /** Links that add to an account and land after the winner's first frame: nothing to keep them for. Returns what to keep. */
+    private fun lateAlternates(k: String, found: List<Found>): List<Found> {
+        val settled = settledAt[k]?.let { now() - it < LINK_TTL } == true
+        if (!settled) return found
+        val (drop, keep) = found.partition { it.service == "ad" || it.service == "tb" }
+        if (drop.isNotEmpty()) Net.run { for ((svc, group) in drop.groupBy { it.service }) try { service(svc)?.discard(group.map { it.hash }) } catch (e: Exception) {} }
+        return keep
+    }
+
+    /** The linked service with key [key] for a Play, or null. */
+    private fun service(key: String): DebridService? {
+        val ctx = appCtx ?: return null
+        val acc = DebridAccounts.get(ctx) ?: return null
+        return services(ctx, acc, DebridPurpose.PLAY).firstOrNull { it.key == key }
+    }
+
+    /** The learning traits of [f] for title [k]: from its scraped release when the scrape is still kept, else from the link itself. */
+    private fun traits(k: String, f: Found): List<String> {
+        val item = gathers[k]?.value?.items()?.firstOrNull { it.hash == f.hash }
+        if (item != null) return SourceMemory.traits(item.name, f.fileName, item.provider, if (item.pack) 0L else (f.sizeBytes.takeIf { it > 0 } ?: item.bytes))
+        return SourceMemory.traits(f.fileName, f.fileName, null, f.sizeBytes)
     }
 
     @Volatile private var warmedAt = 0L
@@ -313,6 +442,13 @@ object NativeResolver {
     /** How long Play waits for more sources once the first arrived, with none / one of the best allowed grade in. */
     private const val GRACE_MS = 1_200L
     private const val GRACE_GOOD_MS = 250L
+    /**
+     * The same for a title page's look-ahead: it used to wait out the whole scrape (one slow provider: the 20 s cap),
+     * holding the scraper lanes and leaving its free cache check for last. Longer than a Play's for a better ranking;
+     * the scrape itself goes on and Play ranks whatever has arrived.
+     */
+    private const val AHEAD_GRACE_MS = 5_000L
+    private const val AHEAD_GRACE_GOOD_MS = 2_000L
     /** Time kept for the debrid step before a Play's budget ends. */
     private const val DEBRID_RESERVE_MS = 2_500L
 
@@ -477,11 +613,14 @@ object NativeResolver {
                 var wake = until
                 // A page's lookup checks every 250 ms whether a Play joined it, so that Play never waits on the slowest scraper.
                 if (l.purpose == DebridPurpose.PAGE) wake = minOf(wake, t + 250)
-                if (l.purpose != DebridPurpose.PAGE && kept.isNotEmpty()) {
+                if (kept.isNotEmpty()) {
                     if (round > 0) break // later rounds: whatever new arrives goes at once
                     val since = t - job.startedAt - job.firstMs
                     val good = kept.any { !it.cam && tier(it.c.quality, f) <= best } // a CAM never cuts the wait short
-                    val grace = if (good) GRACE_GOOD_MS else GRACE_MS
+                    // A look-ahead ends early too (its free cache check runs sooner, the lanes free up), still waking every
+                    // moment in case Play was pressed meanwhile (then the Play's grace applies).
+                    val page = l.purpose == DebridPurpose.PAGE
+                    val grace = if (page) (if (good) AHEAD_GRACE_GOOD_MS else AHEAD_GRACE_MS) else if (good) GRACE_GOOD_MS else GRACE_MS
                     if (since >= grace) break
                     wake = minOf(wake, t + (grace - since))
                 }
@@ -515,24 +654,22 @@ object NativeResolver {
                 if (ran == DebridPurpose.PAGE) { Log.w(TAG, "Instant play: ranked ${kept.size} for ${label(req)} (debrid step on Play)"); return null }
                 return none("AllDebrid is at its magnet limit and no other service is linked")
             }
-            for (svc in svcs) {
-                val deadline = l.deadline
-                if (now() >= deadline) break
-                val cands = if (ran == DebridPurpose.AHEAD && svc.key == "rd") top.take(2).map { it.c } else top.map { it.c }
-                val found = try { svc.resolve(cands, deadline) } catch (x: Exception) {
-                    Log.w(TAG, "Dream Core: ${svc.key.uppercase()} failed (${x.javaClass.simpleName})"); null
-                }
-                if (found == null) { if (svc is AllDebridService && adLimited(acc)) limitNote(ctx, svcs.drop(svcs.indexOf(svc) + 1), svcs.size > 1); continue }
+            val won = race(k, svcs, top.map { it.c }, ran, l.deadline, label(req))
+            if (won != null) {
+                val (found, others) = won
                 links[k] = Stamped(found)
                 if (links.size > 100) links.entries.removeAll { !it.value.fresh(LINK_TTL) }
+                addAlternates(k, others)
                 noteRelaxed(req, k, found, kept, level, f)
+                if (l.purpose == DebridPurpose.PLAY) noteHdr(req, found, kept, f)
                 kept.firstOrNull { it.c.hash == found.hash }?.let { noteAvailable(ctx, k, it) }
                 val from = kept.firstOrNull { it.c.hash == found.hash }?.provider?.substringAfter(':') ?: "?"
                 Log.w(TAG, "Scrapers: ${label(req)} first ready result in ${now() - t0} ms from $from")
                 Log.w(TAG, "Dream Core: ${label(req)} → ${found.service.uppercase()} ${found.quality} ${size(found.sizeBytes)} in ${secs(now() - t0)} " +
-                    "(scrapers: ${job.count} sources so far, ${kept.size} kept, round ${round + 1})")
+                    "(scrapers: ${job.count} sources so far, ${kept.size} kept, round ${round + 1}${if (others.isEmpty()) "" else ", ${others.size} more ready"})")
                 return found
             }
+            if (adLimited(acc) && svcs.any { it is AllDebridService }) limitNote(ctx, svcs.dropWhile { it.key != "ad" }.drop(1), svcs.size > 1)
             tried += top.map { it.c.hash }
             round++
             if (ran == DebridPurpose.PAGE) { Log.w(TAG, "Instant play: ranked ${kept.size} for ${label(req)} (debrid step on Play)"); return null }
@@ -770,19 +907,136 @@ object NativeResolver {
         val acc = DebridAccounts.get(app) ?: return null
         val t0 = now()
         ledger(app)
+        val k = key(req)
         val services = services(app, acc, DebridPurpose.PLAY)
-        for (svc in services) {
-            if (now() >= deadline) break
-            val f = try { svc.resolve(cands, deadline) } catch (x: Exception) {
-                Log.w(TAG, "Dream Core: ${svc.key.uppercase()} failed (${x.javaClass.simpleName})"); null
-            }
-            if (f == null) { if (svc is AllDebridService && adLimited(acc)) limitNote(app, services.drop(services.indexOf(svc) + 1), services.size > 1); continue }
-            links[key(req)] = Stamped(f)
-            Log.w(TAG, "Dream Core: ${label(req)} → ${f.service.uppercase()} ${f.quality} ${size(f.sizeBytes)} in ${secs(now() - t0)} ($why)")
+        val won = race(k, services, cands, if (why == "test") DebridPurpose.LIST else DebridPurpose.PLAY, deadline, label(req))
+        if (won != null) {
+            val (f, others) = won
+            links[k] = Stamped(f)
+            addAlternates(k, others)
+            Log.w(TAG, "Dream Core: ${label(req)} → ${f.service.uppercase()} ${f.quality} ${size(f.sizeBytes)} in ${secs(now() - t0)} ($why${if (others.isEmpty()) "" else ", ${others.size} more ready"})")
             return f
         }
+        if (adLimited(acc) && services.any { it is AllDebridService }) limitNote(app, services.dropWhile { it.key != "ad" }.drop(1), services.size > 1)
         Log.w(TAG, "Dream Core: ${label(req)} → nothing cached of ${cands.size} ($why)")
         return null
+    }
+
+    // ---- the race (every linked service at once) ----
+
+    /** What one race has heard so far, shared by its service threads and the waiter. */
+    private class RaceBox(val count: Int) {
+        private val lock = Object()
+        private val results = HashMap<Int, List<Found>>()
+        private val finished = HashSet<Int>()
+        private var firstReadyAt = 0L
+        private var decided = false
+        private var version = 0
+
+        /** Service [i] is done; true when the race was decided already (its links go to the alternates). */
+        fun finish(i: Int, links: List<Found>): Boolean = synchronized(lock) {
+            results[i] = links
+            finished += i
+            if (firstReadyAt == 0L && links.isNotEmpty()) firstReadyAt = SystemClock.elapsedRealtime()
+            version++
+            lock.notifyAll()
+            decided
+        }
+
+        /** The winner (its index, link and the other ready links in the viewer's order), null while waiting; [over] when every service answered with none. */
+        class Won(val i: Int, val f: Found, val others: List<Found>)
+        var over = false; private set
+
+        fun decide(now: Long, tieMs: Long): Won? = synchronized(lock) {
+            if (decided) return null
+            val ready = results.filter { it.value.isNotEmpty() }.keys.sorted()
+            val best = ready.firstOrNull() ?: run { if (finished.size >= count) over = true; return null }
+            val earlierPending = (0 until best).any { it !in finished }
+            if (earlierPending && firstReadyAt > 0 && now - firstReadyAt < tieMs) return null
+            decided = true
+            val mine = results.getValue(best)
+            Won(best, mine[0], mine.drop(1) + ready.drop(1).flatMap { results.getValue(it) })
+        }
+
+        val isDecided get() = synchronized(lock) { decided }
+        val nextWake get() = synchronized(lock) { firstReadyAt }
+        val seen get() = synchronized(lock) { version }
+
+        /** Waits until something changed after [v], or [until]. */
+        fun await(v: Int, until: Long) = synchronized(lock) {
+            while (version == v) {
+                val left = until - SystemClock.elapsedRealtime()
+                if (left <= 0) return
+                lock.wait(left)
+            }
+        }
+    }
+
+    /**
+     * The debrid step: every service in [svcs] asked at once (each on its own thread, [Net.runNow]), the first with
+     * a link wins, the viewer's order breaking near-ties ([TIE_MS]): a later service that answers while an earlier
+     * one is still answering waits that long for it. The winner's extra links and every other service's links
+     * (even ones that land after the decision) become the title's alternates for the player's next try. A Play
+     * races up to [RACE_LINKS] per service (AllDebrid caps itself at two uploads). Only a Play races: a look-ahead
+     * (no one waiting) and a viewer with one service ask in the viewer's order on this thread, as before.
+     */
+    private fun race(k: String, svcs: List<DebridService>, cands: List<Candidate>, purpose: DebridPurpose, deadline: Long, what: String): Pair<Found, List<Found>>? {
+        if (svcs.isEmpty() || cands.isEmpty() || now() >= deadline) return null
+        val limit = if (purpose == DebridPurpose.PLAY) RACE_LINKS else 1
+        fun ask(svc: DebridService): List<Found> {
+            val mine = if (purpose == DebridPurpose.AHEAD && svc.key == "rd") cands.take(2) else cands
+            return try { svc.resolveMany(mine, deadline, limit) } catch (x: Exception) {
+                Log.w(TAG, "Dream Core: ${svc.key.uppercase()} failed (${x.javaClass.simpleName})"); emptyList()
+            }
+        }
+        // A look-ahead (the next episode, the source list's marks) stops at the first link in the viewer's order, so a
+        // service that adds to the account is asked only when the free checks found nothing.
+        if (svcs.size == 1 || purpose != DebridPurpose.PLAY) {
+            for (svc in svcs) {
+                if (now() >= deadline) break
+                val out = ask(svc)
+                out.firstOrNull()?.let { return it to out.drop(1) }
+            }
+            return null
+        }
+        val t0 = now()
+        val box = RaceBox(svcs.size)
+        val anyFree = svcs.any { it.key == "pm" || it.key == "tb" }
+        val names = svcs.joinToString("/") { it.key.uppercase() }
+        for ((i, svc) in svcs.withIndex()) {
+            val uploads = svc.key == "ad" || svc.key == "rd"
+            Net.runNow {
+                if (uploads && anyFree) {
+                    // Magnet safety: the free checks get a head start; decided by then, this one never uploads.
+                    try { Thread.sleep(UPLOAD_DELAY_MS) } catch (e: InterruptedException) {}
+                    if (box.isDecided) {
+                        box.finish(i, emptyList())
+                        Log.w(TAG, "Dream Core: race for $what: ${svc.key.uppercase()} skipped (a free check answered first; nothing uploaded)")
+                        return@runNow
+                    }
+                }
+                val out = ask(svc)
+                if (box.finish(i, out) && out.isNotEmpty()) {
+                    val keep = lateAlternates(k, out)
+                    addAlternates(k, keep)
+                    Log.w(TAG, "Dream Core: race for $what: ${svc.key.uppercase()} answered after the decision, ${out.size} ready${if (keep.size < out.size) " (${out.size - keep.size} dropped again)" else " (kept as next tries)"}")
+                }
+            }
+        }
+        // Everyone gives up at [deadline]; a moment more lets the last answer land.
+        val end = deadline + 1_500
+        while (true) {
+            val t = now()
+            val v = box.seen
+            box.decide(t, TIE_MS)?.let { w ->
+                Log.w(TAG, "Dream Core: race for $what won by ${svcs[w.i].key.uppercase()} of $names in ${secs(now() - t0)} (${w.others.size} more ready)")
+                return w.f to w.others
+            }
+            if (box.over) return null
+            if (t >= end) { Log.w(TAG, "Dream Core: race for $what: no answer from $names in time"); return null }
+            val first = box.nextWake
+            box.await(v, minOf(end, if (first > 0) first + TIE_MS else end).coerceAtLeast(t + 20))
+        }
     }
 
     /**
@@ -863,12 +1117,15 @@ object NativeResolver {
     fun limitBlocked(ctx: Context): Boolean = DebridAccounts.get(ctx.applicationContext)?.let { adLimited(it) } == true
 
     @Volatile private var ledgerReady = false
+    /** The application context, kept once a lookup has run (for [service] off the request path). */
+    @Volatile private var appCtx: Context? = null
 
     /**
      * Dream OS's record of what it added to the debrid accounts ([DebridLedger]) lives in app-private
      * prefs; links handed out in the last 4 h (maybe playing) are never cleaned up.
      */
     private fun ledger(app: Context) {
+        appCtx = app
         if (ledgerReady) return
         synchronized(this) {
             if (ledgerReady) return
@@ -900,10 +1157,14 @@ object NativeResolver {
      */
     fun firstFrame(ctx: Context, req: PlaybackRequest, url: String) {
         val clean = url.substringBefore('|')
-        val at = handedAt.remove(clean) ?: return
+        val at = handedAt.remove(clean)
         val f = peek(req)?.takeIf { it.url == clean } ?: return
-        val ms = now() - at
-        if (ms <= 0 || ms > 60_000) return
+        val k = key(req)
+        // The picture is up: the race's alternates that sit in an account go; what played well is learned.
+        try { settleAlternates(k, f) } catch (e: Exception) {}
+        val ms = if (at != null) now() - at else 0L
+        try { SourceMemory.record(traits(k, f), ok = true, ms = if (ms in 1..60_000) ms else 0L) } catch (e: Exception) {}
+        if (at == null || ms <= 0 || ms > 60_000) return
         val p = prefs(ctx)
         val n = p.getInt("ttff_n_${f.service}", 0)
         val avg = if (n == 0) ms else (p.getLong("ttff_${f.service}", ms) * 2 + ms) / 3
@@ -954,6 +1215,19 @@ object NativeResolver {
 
     private fun hdr(t: String) = has(t, "HDR", "HDR10", "HDR10+", "DV", "DOVI", "DOLBY VISION")
     private fun hevc(t: String) = has(t, "HEVC", "X265", "H265", "H.265")
+
+    /**
+     * Prefer HDR ([DreamFilters.Values.hdrAboveCap]): an HDR / Dolby Vision copy may go above Maximum Quality (almost
+     * every HDR copy is 4K), never above what this stick decodes ([allowed] checks that first). A 1080p cap is often
+     * there for weak Wi-Fi, so such a pick is never a Remux and stays within the Wi-Fi-friendly size; the speed and
+     * size limits still apply in [allowed].
+     */
+    private fun hdrAboveCap(p: Parsed, f: DreamFilters.Values, ep: Boolean) = f.hdrAboveCap && p.anyHdr && !p.remux &&
+        !(f.hideDv && p.dvOnly) && (p.c.sizeBytes <= 0 || p.c.sizeBytes <= if (ep) 6 * GB else 25 * GB)
+
+    /** A copy above the viewer's own Maximum Quality that only Prefer HDR let in. */
+    private fun aboveCap(p: Parsed, f: DreamFilters.Values) = f.known && qi(p.c.quality) < f.cap
+
     private val DISC = Regex("(?i)\\.(iso|img|rar|zip|7z|exe)$")
 
     /**
@@ -969,7 +1243,9 @@ object NativeResolver {
         if (ep && c.sizeBytes > 40 * GB) return false
         // Above what this stick can decode never plays (a 4K file on the Fire TV Stick HD), so no relaxing lets it in.
         if (qi(c.quality) < f.deviceCap) return false
-        if (relax < RELAX_QUALITY && qi(c.quality) < f.cap) return false
+        // 8K never plays: the decoders stop at 4K, and the name parse reads "4320p" as SD, so no cap would stop it.
+        if (p.eightK) return false
+        if (relax < RELAX_QUALITY && qi(c.quality) < f.cap && !hdrAboveCap(p, f, ep)) return false
         if (relax < RELAX_SIZE) {
             val r = f.range(ep)
             if (r != null && c.sizeBytes > 0 && (c.sizeBytes.toDouble() / GB) !in r) return false
@@ -1018,6 +1294,19 @@ object NativeResolver {
         } catch (e: Exception) { Log.w(TAG, "Dream Core: availability note failed (${e.javaClass.simpleName})") }
     }
 
+    /** After a Play's link: what Prefer HDR did (log only). */
+    private fun noteHdr(req: PlaybackRequest, found: Found, kept: List<Parsed>, f: DreamFilters.Values) {
+        if (!f.known || f.cap <= 0) return
+        val cap = listOf("4K", "1080p", "720p", "SD")[f.cap.coerceAtMost(3)]
+        val p = kept.firstOrNull { it.c.hash == found.hash }
+        when {
+            p != null && aboveCap(p, f) ->
+                Log.w(TAG, "Sources: prefer HDR picked ${p.c.quality} ${tags(p.text).firstOrNull() ?: "HDR"} above your $cap Maximum Quality for ${label(req)}")
+            f.hdrChosen && !f.screenHdr -> Log.w(TAG, "Sources: prefer HDR held back for ${label(req)} (this TV shows no HDR), kept within $cap")
+            f.hdrAboveCap -> Log.w(TAG, "Sources: prefer HDR on, no HDR copy above $cap was ready for ${label(req)}")
+        }
+    }
+
     /** After a link was found: when the filters were relaxed ([level] > 0), the log line and the note PlayFlow shows. */
     private fun noteRelaxed(req: PlaybackRequest, k: String, found: Found, kept: List<Parsed>, level: Int, f: DreamFilters.Values) {
         if (level <= 0) { relaxedLinks.remove(k); return }
@@ -1062,14 +1351,20 @@ object NativeResolver {
         // A film from a scraper never names its file: a collection (which film would play?) goes last.
         fun sink(p: Parsed) = p.c.sizeBytes > 2 * heavy || (!ep && p.collection)
         fun penalty(p: Parsed) = (if (p.dubbed && !other && !dubFirst) 2 else 0) + (if (p.upscaled) 2 else 0) +
-            (if (preferHdr && !p.anyHdr) 1 else 0) + (if (preferHevc && !p.hevc) 1 else 0)
+            (if (preferHdr && !p.anyHdr) 1 else 0) + (if (preferHevc && !p.hevc) 1 else 0) +
+            // Above the cap, an HDR10 / hybrid copy before a Dolby Vision-only one (profile 5 has no picture for a non-DV TV).
+            (if (p.dvOnly && aboveCap(p, f)) 1 else 0)
+        // What played well here before (SourceMemory): a step up or down among otherwise-equal releases, once per release per pass.
+        val learn = SourceMemory.snapshot()
+        val nudges = if (learn.isEmpty) null else java.util.IdentityHashMap<Parsed, Int>()
+        fun learned(p: Parsed) = nudges?.getOrPut(p) { learn.nudge(SourceMemory.traits(p.c.torrentName, p.c.fileName, p.provider, if (p.pack) 0L else p.c.sizeBytes)) } ?: 0
         // Otherwise equal, an MKV before an MP4: a feature-length MP4's index (the moov, ~10 MB, often at the end of
         // a BluRay encode) costs Dream Player its download plus ~1.5 s of parsing before the first frame (measured
         // 2026-10-25: 4.2 s to the first frame against 2.2 s for an MKV; a resume 8-10 s, 2026-10-26); an MKV's index
         // is tens of KB. Resuming, it outweighs size and preferences (the seek can't start without the index).
         // CAM copies let in (relaxed): every real release first, then the best CAM (quality, size sanity, seeders).
         return list.sortedWith(compareBy<Parsed>({ sink(it) }, { camsLast && it.cam }, { langMiss(it) }, { tier(it.c.quality, f) }, { it.cam }, { dubMiss(it) },
-            { resume && it.mp4 }, { it.pack }, { it.c.sizeBytes > heavy }, { penalty(it) }, { it.mp4 }, { -it.c.seeders }))
+            { resume && it.mp4 }, { it.pack }, { it.c.sizeBytes > heavy }, { penalty(it) }, { learned(it) }, { it.mp4 }, { -it.c.seeders }))
     }
 
     /**

@@ -38,7 +38,8 @@ public enum PlayFlow {
             s = ns
             next = (try? await catalog.episodes(showId: r.title.id, season: ns))?.min { $0.number < $1.number }
         }
-        guard let n = next, !n.airDate.isEmpty, n.airDate <= today else { return nil }
+        // Out: its day has come, or it's up before it (the index found a source; `Episode.outEarly`).
+        guard let n = next, n.outEarly || (!n.airDate.isEmpty && n.airDate <= today) else { return nil }
         var req = r
         req.season = s; req.episode = n.number; req.episodeName = n.name.isEmpty ? nil : n.name; req.fromStart = false
         return NextUp(request: req, stillPath: n.stillPath, overview: n.overview, runtime: n.runtime)

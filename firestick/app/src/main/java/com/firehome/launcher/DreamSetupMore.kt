@@ -128,6 +128,13 @@ object PlaybackPrefs {
     fun hideAv1(ctx: Context) = DreamFilters.stored(ctx)["hide.av1"].let { if (it.isNullOrEmpty()) true else it == "true" }
     fun setHideAv1(ctx: Context, on: Boolean) = DreamFilters.put(ctx, "hide.av1", on.toString())
 
+    /** Prefer HDR (DreamFilters "quality.hdr"): HDR copies may go above Maximum Quality; on by default on an HDR TV. */
+    fun preferHdr(ctx: Context) = DreamFilters.current(ctx).hdrChosen
+    fun setPreferHdr(ctx: Context, on: Boolean) {
+        DreamFilters.put(ctx, "quality.hdr", on.toString())
+        Log.w(TAG, "Sources: prefer HDR ${if (on) "on" else "off"} (TV shows HDR: ${DeviceVideo.showsHdr(ctx)})")
+    }
+
     // ---- source size limits (DreamFilters "size.movie.*" / "size.episode.*") ----
 
     val MODES = listOf("off" to "No Limit", "range" to "Size Range", "speed" to "Match My Connection")
@@ -201,7 +208,7 @@ internal class PlaybackPages(private val ctx: Context, private val ui: SetupUi, 
         val rows = ScreenRows(s)
         fun paint() {
             rows.row("pic", 0) { parts.row(null, chevron = true) { panel.push(overview("pic")) } }
-                .set("Picture", "Maximum quality and AV1 videos", P.qualityLabel(P.quality(app())))
+                .set("Picture", if (DeviceVideo.showsHdr(app())) "Maximum quality, HDR and AV1 videos" else "Maximum quality and AV1 videos", P.qualityLabel(P.quality(app())))
             rows.row("sound", 8) { parts.row(null, chevron = true) { panel.push(overview("sound")) } }
                 .set("Sound", "Audio language, dubs and Dolby audio", P.audioLabel(app()))
             rows.row("subs", 8) { parts.row(null, chevron = true) { panel.push(overview("subs")) } }
@@ -231,6 +238,10 @@ internal class PlaybackPages(private val ctx: Context, private val ui: SetupUi, 
             if (all) s.view("k:pic", 0) { parts.section("Picture", null) }
             if (on("pic")) rows.row("quality", if (all) 10 else 0) { parts.row(null, chevron = true) { panel.push(qualityChooser()) } }
                 .set("Maximum Quality", if (DeviceVideo.plays4k(app())) "Your Fire Stick and TV can play 4K" else "Your Fire Stick and TV play up to 1080p", P.qualityLabel(P.quality(app())))
+            // Prefer HDR: only on a TV that shows HDR (elsewhere it would do nothing).
+            if (!on("pic") || !DeviceVideo.showsHdr(app())) s.hide("hdr")
+            else switchRow("hdr", 8, { P.preferHdr(app()) }) { P.setPreferHdr(app(), !P.preferHdr(app())) }
+                .set("Prefer HDR", "Plays an HDR or Dolby Vision copy when there is one, even above Maximum Quality")
             if (on("pic")) switchRow("av1", 8, { P.hideAv1(app()) }) { P.setHideAv1(app(), !P.hideAv1(app())) }
                 .set("Hide AV1 Videos", "Some AV1 videos can restart this Fire Stick")
             if (all) s.view("k:sound", 24) { parts.section("Sound", null) }
@@ -801,8 +812,9 @@ object DreamPanelPage {
         }
         val left = LinearLayout(a).apply { orientation = LinearLayout.VERTICAL }
         left.addView(SetupArt(a, art), LinearLayout.LayoutParams(dp(132), dp(132)))
-        left.addView(k.label("SETTINGS", 12f, Ui.alpha(Color.WHITE, 0.62f), k.semibold, Ui.TRACK_CAPS), LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT).apply { topMargin = dp(18) })
-        left.addView(k.label(title, 32f, SetupBrand.TEXT, k.semibold, Ui.TRACK_TITLE, lines = 2), LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT).apply { topMargin = dp(8) })
+        // A Title Case kicker (STANDARDS §4, no tracked caps); the title wraps in full, never "…" (setup text rule).
+        left.addView(k.label("Settings", 14f, Ui.alpha(Color.WHITE, 0.62f), k.semibold, lines = 0), LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT).apply { topMargin = dp(18) })
+        left.addView(k.label(title, 32f, SetupBrand.TEXT, k.semibold, Ui.TRACK_TITLE, lines = 0), LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT).apply { topMargin = dp(8) })
         left.addView(parts.note(note, 16f).apply { setPadding(0, 0, 0, 0) }, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { topMargin = dp(12) })
         row.addView(left, LinearLayout.LayoutParams(0, WRAP_CONTENT, 0.36f))
         row.addView(panel, LinearLayout.LayoutParams(0, MATCH_PARENT, 0.64f).apply { marginStart = dp(56) })

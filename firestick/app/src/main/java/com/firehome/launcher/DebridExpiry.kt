@@ -85,7 +85,7 @@ object DebridExpiry {
      * "Premium Ends Tomorrow", "Premium Expired"; null when nothing is known yet.
      */
     fun caption(ctx: Context, service: String): String? {
-        if (blocked(ctx, service)) return "Approve New Location"
+        if (blocked(ctx, service)) return AccountHealth.BLOCKED_WORDS
         val s = status(ctx, service) ?: return null
         if (s.expired) return if (s.until > 0) "Premium Expired ${dateText(s.until, year = true)}" else "No Premium Plan"
         if (s.until <= 0) return if (s.premium) "Premium Active" else null
@@ -177,6 +177,7 @@ object DebridExpiry {
                 }
                 asked++
                 val s = try { fetch(svc, token, acc) } catch (e: Blocked) {
+                    Log.w(TAG, "Premium check: ${DreamNotices.serviceName(svc)} waiting for network approval (AUTH_BLOCKED)")
                     p.edit().putLong(BLOCKED + svc, System.currentTimeMillis()).apply(); null
                 } catch (e: Exception) {
                     Log.w(TAG, "Premium check: ${DreamNotices.serviceName(svc)} failed: ${e.javaClass.simpleName}"); null

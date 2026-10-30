@@ -3,8 +3,10 @@ import DreamCore
 
 /// Is it out yet? (Availability.kt) For new and upcoming titles only (STANDARDS §5): movies released in the last ~90 days
 /// or upcoming; shows premiered in the last ~12 months or not yet (their latest episode while it aired in the last
-/// 21 days, else their premiere). Unreleased titles are answered locally; the rest ask the scrapers' index
-/// (`PlaybackService.survey`, else DreamContent reads `SourceService.find` names itself). Asked by cards on screen
+/// 21 days, else their premiere). Every title asks the scrapers' index (`PlaybackService.survey`, else DreamContent
+/// reads `SourceService.find` names itself), unreleased ones too: a source decides, not the date (owner, 2026-10-30:
+/// "available as soon as there's a source"; Paramount+ posts Showtime's Sunday episodes on Friday). Until it answers,
+/// an unreleased title shows a local "Coming ..." stand-in, which it keeps when nothing is found. Asked by cards on screen
 /// and ahead of the screen (`ahead`: a page's cards in row order, at background priority, holding off while a Play
 /// runs), cached on disk (Available Now 24 h, anything else 1 h, sooner after a known release instant). A stale answer
 /// keeps showing while it's checked again; a failed check, or a lower answer than a recent one, never takes a pill away.
@@ -80,12 +82,11 @@ actor AvailabilityChecker {
 
     // MARK: public
 
-    /// What a card shows now, without waiting for the network: the local answer for an unreleased title or the cached one.
+    /// What a card shows now, without waiting for the network: the cached answer, else an unreleased title's stand-in.
     func peek(_ t: Title) -> Availability? {
         if t.kind == .tv { return showPeek(t.id, first: t.date) ?? nil }
         guard let target = Self.cardTarget(t) else { return nil }
-        if let local = Self.localEntry(target) { return Self.state(local) }
-        return cache[target.key].map(Self.state)
+        return (cache[target.key] ?? Self.localEntry(target)).map(Self.state)
     }
 
     /// What the card showed, with its best copy (any age, no network): a title page's first frame.
@@ -93,12 +94,12 @@ actor AvailabilityChecker {
         guard Self.mayHavePill(t) else { return nil }
         if t.kind == .tv {
             guard let ref = showRefs[String(t.id)], let key = ref.key else { return nil }
-            if let local = Self.localEntry(releaseAt: ref.releaseAt, date: ref.date) { return Self.detail(local) }
+            if let local = Self.localEntry(releaseAt: ref.releaseAt, date: ref.date) { return Self.detail(cache[key] ?? local) }
             guard Self.recentEpisode(at: ref.releaseAt, date: ref.date) else { return nil }
             return cache[key].map(Self.detail)
         }
-        if let target = Self.cardTarget(t), let local = Self.localEntry(target) { return Self.detail(local) }
-        return cache["movie:\(t.id)"].map(Self.detail)
+        if let e = cache["movie:\(t.id)"] { return Self.detail(e) }
+        return Self.cardTarget(t).flatMap { Self.localEntry($0) }.map(Self.detail)
     }
 
     /// The card / title page answer (fetches when stale). nil: no pill for this title.
@@ -123,10 +124,45 @@ actor AvailabilityChecker {
     static let digitalLookback = 240
 
     func episode(_ e: Episode, show: Title) async -> AvailabilityDetail? {
-        guard e.upcoming || Self.recentEpisode(at: e.airsAt, date: e.airDate) else { return nil }
-        let t = Target(key: "tv:\(show.id):\(e.season):\(e.number)",
-                       request: PlayRequest(title: show, season: e.season, episode: e.number, episodeName: e.name), releaseAt: e.airsAt, date: e.airDate)
-        return await want(t).map(Self.detail)
+        guard e.upcoming || e.outEarly || Self.recentEpisode(at: e.airsAt, date: e.airDate) else { return nil }
+        return await want(Self.episodeTarget(e, show: show)).map(Self.detail)
+    }
+
+    private static func episodeTarget(_ e: Episode, show: Title) -> Target {
+        Target(key: episodeKey(show.id, e.season, e.number),
+               request: PlayRequest(title: show, season: e.season, episode: e.number, episodeName: e.name), releaseAt: e.airsAt, date: e.airDate)
+    }
+
+    private static func episodeKey(_ show: Int, _ season: Int, _ number: Int) -> String { "tv:\(show):\(season):\(number)" }
+
+    /// An episode's answer without waiting: the kept one, else its "Coming ..." stand-in; a lookup that's due runs in
+    /// the background (Home's Coming Up cards: their row never waits on the index).
+    func episodeNow(_ e: Episode, show: Title) -> AvailabilityDetail? {
+        let t = Self.episodeTarget(e, show: show)
+        let kept = cache[t.key] ?? Self.localEntry(t)
+        if kept.map({ !fresh($0, t.key) }) ?? true { Task(priority: .utility) { _ = await self.want(t) } }
+        return kept.map(Self.detail)
+    }
+
+    /// The index's last answer for this episode found a source (Available Now, or CAM Only). Cheap: no lookup.
+    func outEarly(_ show: Int, _ season: Int, _ number: Int) -> Bool {
+        guard let e = cache[Self.episodeKey(show, season, number)] else { return false }
+        return e.status != .none
+    }
+
+    /// An episode not due yet (or undated) that the index already has a source for (a real release, else a CAM): out
+    /// early, so it plays. Asks the index (the quick check) unless it did within the hour (a real answer still `fresh`)
+    /// or failed in the last 90 s; the cache it answers from is the pills' own, so nothing else is kept. False when
+    /// nothing is found.
+    func earlyRelease(_ e: Episode, show: Title) async -> Bool {
+        if outEarly(show.id, e.season, e.number) { return true }
+        _ = await want(Self.episodeTarget(e, show: show))
+        let out = outEarly(show.id, e.season, e.number)
+        if out {
+            let due = e.airsAt.map { "\($0)" } ?? (e.airDate.isEmpty ? "date unknown" : e.airDate)
+            Log.core.notice("Avail: \(show.name, privacy: .public) S\(e.season, privacy: .public)E\(e.number, privacy: .public) is out early (due \(due, privacy: .public))")
+        }
+        return out
     }
 
     /// Every kept card answer still in its pill window, by title key (the cards' memory at launch).
@@ -166,7 +202,7 @@ actor AvailabilityChecker {
     static let aheadParallel = 2, aheadMax = 400
 
     /// Checks [titles] ahead of the screen, in order, two at a time, and only while the cards on screen leave room
-    /// (`CheckGate.load`) and no Play runs. Answers known now (unreleased, fresh) come back at once; a check that
+    /// (`CheckGate.load`) and no Play runs. Answers known now (fresh) come back at once; a check that
     /// gets no answer is tried again later (up to 3 times) and never reported.
     func ahead(_ titles: [Title], answer: @escaping Answer) async {
         watchPlays()
@@ -250,19 +286,17 @@ actor AvailabilityChecker {
         _ = nc.addObserver(forName: .dreamPlayerClosed, object: nil, queue: nil) { _ in Task { await AvailabilityChecker.shared.hold(3, replace: true) } }
     }
 
-    /// The answer when no check is due (no pill, unreleased, or fresh); nil: a check is due.
+    /// The answer when no check is due (no pill, or fresh); nil: a check is due (an unreleased title's too).
     private func freshAnswer(_ t: Title) -> Availability?? {
         guard Self.mayHavePill(t) else { return .some(nil) }
         if t.kind == .movie {
             guard let target = Self.cardTarget(t) else { return .some(nil) }
-            if let local = Self.localEntry(target) { return .some(Self.state(local)) }
             if let e = cache[target.key], fresh(e, target.key) { return .some(Self.state(e)) }
             return nil
         }
         // A show: its target found within the hour (showTarget's own memory).
         guard let ref = showRefs[String(t.id)], Date().timeIntervalSince(ref.at) < 3600 else { return nil }
         guard let key = ref.key else { return .some(nil) }
-        if let local = Self.localEntry(releaseAt: ref.releaseAt, date: ref.date) { return .some(Self.state(local)) }
         if let e = cache[key], fresh(e, key) { return .some(Self.state(e)) }
         return nil
     }
@@ -272,7 +306,7 @@ actor AvailabilityChecker {
         guard first.count == 10, first >= DreamTime.ymdPlus(-Self.newShowDays) else { return .some(nil) }
         guard let ref = showRefs[String(id)] else { return nil }
         guard let key = ref.key else { return .some(nil) }
-        if let local = Self.localEntry(releaseAt: ref.releaseAt, date: ref.date) { return .some(Self.state(local)) }
+        if let local = Self.localEntry(releaseAt: ref.releaseAt, date: ref.date) { return .some(Self.state(cache[key] ?? local)) }
         // An aired episode past its 21 days: the next ask finds the show's new target (or none).
         guard Self.recentEpisode(at: ref.releaseAt, date: ref.date) else { return .some(nil) }
         guard let e = cache[key] else { return nil }
@@ -283,10 +317,9 @@ actor AvailabilityChecker {
     /// without asking TMDB and TVmaze first. An hour-old target is looked up again in the background.
     private func keptShowAnswer(_ t: Title) -> Entry? {
         guard Self.mayHavePill(t), let ref = showRefs[String(t.id)], let key = ref.key else { return nil }
-        let e: Entry
-        if let local = Self.localEntry(releaseAt: ref.releaseAt, date: ref.date) { e = local }
-        else if Self.recentEpisode(at: ref.releaseAt, date: ref.date), let c = cache[key], fresh(c, key) { e = c }
-        else { return nil }
+        // Not premiered yet too: only a fresh real answer (the stand-in is never fresh), else it's looked up.
+        let due = Self.ahead(releaseAt: ref.releaseAt, date: ref.date) || Self.recentEpisode(at: ref.releaseAt, date: ref.date)
+        guard due, let e = cache[key], fresh(e, key) else { return nil }
         let known = shows[t.id].map { Date().timeIntervalSince($0.0) < 3600 } ?? false
         if !known && Date().timeIntervalSince(ref.at) >= 3600 { Task(priority: .utility) { _ = await self.showTarget(t) } }
         return e
@@ -363,15 +396,28 @@ actor AvailabilityChecker {
 
     // MARK: checking
 
-    /// Not out yet: answered here, no network.
+    /// Its release (`releaseAt`: the instant, else the day `date`) is still ahead.
+    static func ahead(releaseAt: Date?, date: String, now: Date = Date()) -> Bool {
+        if let at = releaseAt { return at > now }
+        return date.count == 10 && date > DreamTime.ymdPlus(0)
+    }
+
+    /// When a stand-in was "checked": never, so it is never fresh and never held over a real answer (`settle`).
+    static let standInAt = Date(timeIntervalSince1970: 0)
+    static func isStandIn(_ e: Entry) -> Bool { e.checkedAt.timeIntervalSince1970 < 1 }
+
+    /// Not out yet: its "Coming ..." stand-in, made here with no network. It shows until the index answers (`want`
+    /// looks every unreleased title up) and never counts as an answer.
     static func localEntry(_ t: Target, now: Date = Date()) -> Entry? { localEntry(releaseAt: t.releaseAt, date: t.date, now: now) }
 
     static func localEntry(releaseAt: Date?, date: String, now: Date = Date()) -> Entry? {
-        let ahead: Bool
-        if let at = releaseAt { ahead = at > now } else { ahead = date.count == 10 && date > DreamTime.ymdPlus(0) }
-        guard ahead else { return nil }
-        let note = "Coming " + (releaseAt.map { DreamTime.airLabel($0) } ?? DreamTime.dateWords(date))
-        return Entry(status: .none, best: nil, note: note, checkedAt: now, releaseAt: releaseAt ?? DreamTime.midnight(date), date: date)
+        guard ahead(releaseAt: releaseAt, date: date, now: now) else { return nil }
+        return Entry(status: .none, best: nil, note: comingNote(releaseAt: releaseAt, date: date), checkedAt: standInAt,
+                     releaseAt: releaseAt ?? DreamTime.midnight(date), date: date)
+    }
+
+    private static func comingNote(releaseAt: Date?, date: String) -> String {
+        "Coming " + (releaseAt.map { DreamTime.airLabel($0) } ?? DreamTime.dateWords(date))
     }
 
     /// Available Now lives a day; CAM Only and Not Available Yet an hour (a release can land any time); anything
@@ -386,7 +432,9 @@ actor AvailabilityChecker {
     private static func rank(_ s: Status) -> Int { s == .available ? 2 : (s == .cam ? 1 : 0) }
 
     private func want(_ t: Target) async -> Entry? {
-        if let local = Self.localEntry(t) { cache[t.key] = local; return local }
+        // Not out yet: its "Coming ..." stand-in at once (only where no real answer is kept), then the lookup like any
+        // other title: a source can be up before the listed day.
+        if let local = Self.localEntry(t), cache[t.key].map(Self.isStandIn) ?? true { cache[t.key] = local }
         if let e = cache[t.key], fresh(e, t.key) { return e }
         // No answer last time (the scrapers still starting, busy, or slow): no pill, asked again after 90 s while the
         // card is on screen. A failed check is never shown as "Not Available Yet".
@@ -445,6 +493,11 @@ actor AvailabilityChecker {
             if let digital, digital > today { releaseAt = DreamTime.midnight(digital); note = "Digital Release \(DreamTime.dateWords(digital))" }
             else if date.count == 10 && date > today { releaseAt = DreamTime.midnight(date); note = "Coming \(DreamTime.dateWords(date))" }
             else if date.count == 10 && date >= DreamTime.ymdPlus(-120) && digital == nil { note = "In Theaters Now" }
+        }
+        if status != .available && t.request.season != nil && ahead(releaseAt: t.releaseAt, date: t.date) {
+            // An episode not due yet and not up early: still says when it comes (and is asked again then).
+            releaseAt = t.releaseAt ?? DreamTime.midnight(t.date)
+            note = comingNote(releaseAt: t.releaseAt, date: t.date)
         }
         return Entry(status: status, best: status == .available ? sv.best : sv.bestCam, note: note, checkedAt: Date(), releaseAt: releaseAt)
     }

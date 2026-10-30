@@ -42,9 +42,12 @@ object CoreChecks {
 
     private fun account(app: Context, acc: DebridAccounts.Accounts): Check {
         // The resolver's own order: the first linked service is the one every play asks first.
+        var blocked = false
         val s = listOfNotNull(
             acc.allDebrid?.let { t -> Service("AllDebrid", "${AllDebridService.API}user?agent=${AllDebridService.AGENT}", t) { r ->
                 val j = r.json()
+                // AUTH_BLOCKED: the sign-in is fine; AllDebrid waits for its owner to approve this network.
+                blocked = j.optJSONObject("error")?.optString("code") == "AUTH_BLOCKED"
                 if (j.optString("status") == "success") j.optJSONObject("data")?.optJSONObject("user")?.optBoolean("isPremium", true) ?: true
                 else if (j.optJSONObject("error")?.optString("code").orEmpty().let { it.startsWith("AUTH_") || it.startsWith("ACCOUNT_") || it == "MUST_BE_PREMIUM" }) false
                 else null
@@ -64,7 +67,9 @@ object CoreChecks {
             } },
         ).firstOrNull() ?: return noAccount()
         val ok = try { s.read(DebridHttp.get(s.url, s.token, timeoutMs = 4_000)) } catch (e: Exception) { null }
-        Log.w(TAG, "System health: Dream Core account (${s.name}) ${when (ok) { true -> "valid"; false -> "refused"; null -> "not checked" }}")
+        Log.w(TAG, "System health: Dream Core account (${s.name}) ${when (ok) { true -> "valid"; false -> if (blocked) "waiting for network approval" else "refused"; null -> "not checked" }}")
+        if (ok == false && blocked) return Check(DREAM_CORE, TITLE, State.FIX,
+            "${s.name} is waiting for you to approve this network. Open the email from ${s.name} and approve this location.")
         return when (ok) {
             true -> Check(DREAM_CORE, TITLE, State.OK, "On · ${s.name} Account Active" +
                 (DebridExpiry.caption(app, when (s.name) { "AllDebrid" -> "ad"; "Premiumize" -> "pm"; "TorBox" -> "tb"; else -> "rd" })?.let { " · $it" } ?: ""))

@@ -118,12 +118,13 @@ object StreamBadges {
 
     private fun source(tags: String): String? = when {
         tags.isBlank() -> null
+        // First: "HQ PreDVD WEB-DL 1080p" is a camera copy whatever else its name says, as Dream Core ranked it.
+        has(tags, *CAM_TAGS) -> "CAM"
         has(tags, "REMUX", "BDREMUX") -> "Remux"
         has(tags, "BLURAY", "BLU RAY", "BDRIP", "BRRIP", "BD25", "BD50") -> "BluRay"
         has(tags, "WEBRIP", "WEB RIP") -> "WEBRip"
         has(tags, "WEB DL", "WEBDL", "WEB") -> "WEB-DL"
         has(tags, "HDTV") -> "HDTV"
-        has(tags, *CAM_TAGS) -> "CAM"
         has(tags, "DVDRIP", "DVD") -> "DVD"
         else -> null
     }

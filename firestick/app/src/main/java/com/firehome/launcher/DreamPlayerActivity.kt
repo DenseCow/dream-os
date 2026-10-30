@@ -90,8 +90,10 @@ class DreamPlayerActivity : Activity(), PlayerHost {
         private const val MIN_HISTORY_MS = 10 * 60_000L // shorter is a trailer/clip, not Continue Watching material
         /** Real playback (seeks and skips excluded) before a title not on Continue Watching joins it. */
         private const val REAL_WATCH_MS = 90_000L
-        /** Quiet switches to the next source per title before the error screen shows. */
-        private const val SILENT_TRIES = 2
+        /** Quiet switches to the next source per title before the error screen shows (a ready alternate, else a fresh lookup). */
+        private const val SILENT_TRIES = 3
+        /** No first frame this long after a load while another link is ready: that one plays instead. */
+        private const val START_WATCH_MS = 12_000L
         /** Sound this long with no picture counts as a failed source (a video track no decoder here can start). */
         private const val NO_PICTURE_MS = 12_000L
         private const val DAMAGED_TEXT = "This file is damaged or incomplete. Try Again plays another copy."
@@ -299,6 +301,7 @@ class DreamPlayerActivity : Activity(), PlayerHost {
                 firstFrame = true
                 Log.w(TAG, "dream player: first frame after ${SystemClock.elapsedRealtime() - loadStartedAt} ms, ${exo.videoInfo()}")
                 handler.removeCallbacks(trailerTimeout)
+                handler.removeCallbacks(startWatch)
                 curtainHiddenAt = SystemClock.uptimeMillis()
                 curtain.hide()
                 dreamSubs.onFirstFrame()
@@ -610,6 +613,8 @@ class DreamPlayerActivity : Activity(), PlayerHost {
         markersAsked = false
         released = false
         loadStartedAt = SystemClock.elapsedRealtime()
+        handler.removeCallbacks(startWatch)
+        if (!trailerMode && req != null && req.tmdbId > 0) handler.postDelayed(startWatch, START_WATCH_MS)
         // Not waiting (a retry after an error, say): a calm curtain until the first frame.
         // A trailer's curtain is already up from the lookup.
         if (trailerMode) { if (!curtain.isShowing) curtain.show(req) }
@@ -644,6 +649,7 @@ class DreamPlayerActivity : Activity(), PlayerHost {
 
     /** Saves and stops whatever is playing (the screen stays). */
     private fun endSession() {
+        handler.removeCallbacks(startWatch)
         saveProgress(force = true)
         stopComponents()
         if (exo.hasSource) exo.clear()
@@ -866,7 +872,8 @@ class DreamPlayerActivity : Activity(), PlayerHost {
     /**
      * The iPhone's silent fallback: a link that fails (or ends before any picture) gives way to the next source from
      * the same spot, behind the loading curtain, with no error screen; [SILENT_TRIES] times per title, then the error
-     * screen. Posted: never inside the engine's own callback. True if it took over.
+     * screen. A link the race unlocked alongside the failed one ([NativeResolver.nextLink]) plays with no lookup at
+     * all; without one, Dream Core looks again. Posted: never inside the engine's own callback. True if it took over.
      */
     private fun silentFallback(why: String): Boolean {
         if (trailerMode) return false
@@ -876,9 +883,46 @@ class DreamPlayerActivity : Activity(), PlayerHost {
         if (k != silentKey) { silentKey = k; silentTries = 0 }
         if (silentTries >= SILENT_TRIES) return false
         silentTries++
-        Log.w(TAG, "dream player: $why; switching to the next source quietly ($silentTries of $SILENT_TRIES)")
-        handler.post { if (request === req && !isFinishing) tryAnotherSource() }
+        val next = try { NativeResolver.nextLink(req) } catch (e: Exception) { null }
+        if (next != null) {
+            Log.w(TAG, "dream player: $why; switching to the next ready source quietly ($silentTries of $SILENT_TRIES, no lookup)")
+            handler.post { if (request === req && !isFinishing) playAlternate(req, next) }
+        } else {
+            Log.w(TAG, "dream player: $why; switching to the next source quietly ($silentTries of $SILENT_TRIES)")
+            handler.post { if (request === req && !isFinishing) tryAnotherSource() }
+        }
         return true
+    }
+
+    /**
+     * [f] (a link the race unlocked alongside the failed one) from the same spot, behind the curtain: its fast start
+     * runs first ([StreamCache.fastStart], bounded), then it plays here, with no round trip through the play flow.
+     */
+    private fun playAlternate(req: PlaybackRequest, f: Found) {
+        val at = if (exo.hasSource && firstFrame) exo.positionMs else req.startMs
+        val again = req.copy(startMs = at)
+        endSession()
+        startWaiting(again)
+        val app = applicationContext
+        Net.runNow {
+            NativeResolver.handing(f)
+            try { StreamCache.fastStart(app, f.url, emptyMap(), again.startMs, PlayFlow.knownDuration(app, again), f.sizeBytes) } catch (e: Exception) {}
+            handler.post {
+                if (request !== again || !waiting || isFinishing) return@post
+                startSession(again, f.url, ExoEngine.Source(f.url, emptyMap()), again.startMs)
+            }
+        }
+    }
+
+    /** [START_WATCH_MS] after a load with no first frame while another link is ready: that one plays instead of the error screen later. */
+    private val startWatch = Runnable {
+        val req = request
+        if (firstFrame || trailerMode || waiting || isFinishing || req == null || req.tmdbId <= 0) return@Runnable
+        if (!exo.hasSource || !NativeResolver.hasAlternate(req)) return@Runnable
+        if (silentKey == "${req.tmdbId}:${req.season}:${req.episode}" && silentTries >= SILENT_TRIES) return@Runnable
+        Log.w(TAG, "dream player: no first frame after ${START_WATCH_MS / 1000} s and another source is ready")
+        NativeResolver.forget(req)
+        silentFallback("no first frame after ${START_WATCH_MS / 1000} s")
     }
 
     fun tryAnotherSource() {

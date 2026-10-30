@@ -466,7 +466,7 @@ private struct EpisodesSheet: View {
         let all = (try? await Services.shared.catalog.episodes(showId: id, season: s)) ?? []
         // Another season picked meanwhile: its own load fills the list (a slow answer showed the wrong season's).
         guard s == season else { return }
-        episodes = all.filter { !$0.airDate.isEmpty && $0.airDate <= today }
+        episodes = all.filter { $0.outEarly || (!$0.airDate.isEmpty && $0.airDate <= today) } // up early too: it plays
     }
 
     private func progress(_ ep: Episode) -> Double? {

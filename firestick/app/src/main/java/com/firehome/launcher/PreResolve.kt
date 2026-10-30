@@ -274,6 +274,80 @@ object PreResolve {
         StreamCache.prefetch(app, url, emptyMap(), start, duration)
     }
 
+    // ---- Continue Watching's links, kept fresh while Home is idle (the iPhone's background refresh) ----
+
+    /** How often Continue Watching's newest items are looked at again while Dream OS is in front. */
+    private const val REFRESH_MS = 15 * 60_000L
+    private const val REFRESH_ITEMS = 2
+    /** The remote must have rested this long; a check that finds Home busy asks again after [REFRESH_RETRY_MS]. */
+    private const val REFRESH_REST_MS = 4_000L
+    private const val REFRESH_RETRY_MS = 30_000L
+
+    private val main = android.os.Handler(android.os.Looper.getMainLooper())
+    /** Home's own idle test (nothing over it, the boot intro done); null while Dream OS isn't in front. */
+    @Volatile private var homeIdle: (() -> Boolean)? = null
+    @Volatile private var refreshCtx: Context? = null
+
+    /**
+     * Dream OS is in front: every [REFRESH_MS], when Home is idle ([idle]: nothing over it, the intro done), nothing
+     * plays or starts and the remote has rested, Continue Watching's [REFRESH_ITEMS] newest items are looked up again
+     * if their link has run out (links live 40 min). Only free cache checks ([DebridPurpose.PAGE]: Premiumize,
+     * TorBox): never an upload. For an AllDebrid / Real-Debrid viewer this keeps the scrape and ranking fresh, so
+     * Play goes straight to the debrid step. The newest item's stream start goes to disk as a page's would.
+     */
+    fun watchContinueWatching(ctx: Context, idle: () -> Boolean) {
+        refreshCtx = ctx.applicationContext
+        homeIdle = idle
+        main.removeCallbacks(refresh)
+        main.postDelayed(refresh, REFRESH_MS)
+    }
+
+    /** Dream OS left the front: no refreshes until [watchContinueWatching] again. */
+    fun stopWatching() {
+        homeIdle = null
+        refreshCtx = null
+        main.removeCallbacks(refresh)
+    }
+
+    private val refresh = object : Runnable {
+        override fun run() {
+            val app = refreshCtx ?: return
+            val idle = homeIdle ?: return
+            main.removeCallbacks(this)
+            val busy = !idle() || DreamPlayerActivity.isActive() || playStarting() || sinceKeyMs() < REFRESH_REST_MS ||
+                synchronized(lock) { job?.running == true } || !InstantPlay.enabled(app) || !NativeResolver.available(app)
+            if (busy) { main.postDelayed(this, REFRESH_RETRY_MS); return }
+            main.postDelayed(this, REFRESH_MS)
+            Thread({
+                android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_BACKGROUND)
+                try { refreshContinueWatching(app) } catch (e: Exception) { Log.w(TAG, "Instant play: refresh failed ($e)") }
+            }, "cw-refresh").apply { isDaemon = true }.start()
+        }
+    }
+
+    /** Background thread. One lookup at a time; stops as soon as the remote wakes up or something plays. */
+    private fun refreshContinueWatching(app: Context) {
+        val items = WatchHistory.recent(app).filter { !it.hidden }.take(REFRESH_ITEMS)
+        var looked = 0
+        for ((n, e) in items.withIndex()) {
+            if (DreamPlayerActivity.isActive() || playStarting() || sinceKeyMs() < REFRESH_REST_MS || homeIdle?.invoke() != true) break
+            val req = PlayFlow.request(e.isShow, e.tmdbId, e.title, e.year, e.imdb, e.season, e.episode,
+                backdropPath = e.backdropPath, posterPath = e.posterPath, episodeTitle = e.episodeTitle)
+            if (NativeResolver.peek(req) != null || ready(req)) continue
+            val j: Job
+            synchronized(lock) {
+                if (job?.running == true) return
+                j = Job(req, prefetch = n == 0, purpose = DebridPurpose.PAGE)
+                job = j
+            }
+            looked++
+            Log.w(TAG, "Instant play: Continue Watching refresh: looking at ${name(req)} (Home idle ${sinceKeyMs() / 1000} s)")
+            runNative(app, j)
+            synchronized(lock) { if (job === j) job = null }
+        }
+        if (looked > 0) Log.w(TAG, "Instant play: Continue Watching refresh done ($looked of ${items.size} looked up)")
+    }
+
     // ---- from the play flow ----
 
     /** The ready link for exactly [req] (title, season, episode), consumed; null when there is none. */

@@ -129,9 +129,16 @@ object SourcePicker {
     /** Same release: the same torrent hash, or the same release name. */
     private fun same(a: Source, b: Source): Boolean {
         if (a.hash != null && a.hash == b.hash) return true
-        val na = norm(a.name.substringBeforeLast('.')).replace(" ", "")
-        return na.length >= 8 && na == norm(b.name.substringBeforeLast('.')).replace(" ", "")
+        val na = releaseName(a.name)
+        return na.length >= 8 && na == releaseName(b.name)
     }
+
+    /**
+     * The name without a video file's extension. Only a real extension goes: a torrent name has none, and cutting
+     * its last dotted word made "S01E02.1080p.WEB" and its camera twin "S01E02.1080p.HDTS" one row.
+     */
+    private fun releaseName(n: String) = norm(n.replace(VIDEO_EXT, "")).replace(" ", "")
+    private val VIDEO_EXT = Regex("""(?i)\.(mkv|mp4|m4v|avi|ts|m2ts|webm|mov|wmv)$""")
 
     /** One entry per release, the best copy kept (in the place the release first appeared). */
     private fun dedupe(list: List<Source>): List<Source> {
@@ -146,7 +153,14 @@ object SourcePicker {
     // ---- name checks ----
 
     private val STOP = setOf("the", "a", "an", "and", "of", "in", "on", "to")
-    private fun norm(s: String) = s.lowercase().replace("&", " and ").replace(Regex("[^a-z0-9]+"), " ").trim()
+    // Compiled once: Choose a Source checks every row's name with them (iPhone da852cf).
+    private val NON_ALNUM = Regex("[^a-z0-9]+")
+    /** A second episode needs a dash or another "e" (S01E01-03, S01E01-E03, S01E01E02): "S01E02.1080p" is episode 2, not 2 to 108. */
+    private val SXE = Regex("""(?i)(?<![a-z0-9])s(\d{1,2})[ ._-]*e(\d{1,3})(?:(?:[ ._]*-[ ._]*e?|[ ._-]*e)(\d{1,3})(?![0-9]))?""")
+    private val NXN = Regex("""(?i)(?<![0-9])(\d{1,2})x(\d{2,3})(?![0-9])""")
+    private val SEASON = Regex("""(?i)(?<![a-z0-9])(?:s|season[ ._-]*)(\d{1,2})(?![0-9e])""")
+    private val YEAR = Regex("""(?<![0-9])(19\d{2}|20\d{2})(?![0-9])""")
+    private fun norm(s: String) = s.lowercase().replace("&", " and ").replace(NON_ALNUM, " ").trim()
     private fun words(s: String) = norm(s).split(' ').filter { it.isNotEmpty() && it !in STOP }
 
     /** Whether release [name] looks like [req]: its S/E (or year) and its title words. */
@@ -155,17 +169,14 @@ object SourcePicker {
         val nameWords = words(name).toSet()
         val have = if (title.isEmpty()) 1f else title.count { it in nameWords } / title.size.toFloat()
         if (req.type == "episode" && req.season != null && req.episode != null) {
-            // A second episode needs a dash or another "e" (S01E01-03, S01E01-E03, S01E01E02): "S01E02.1080p" is
-            // episode 2, not episodes 2 to 108.
-            val se = Regex("""(?i)(?<![a-z0-9])s(\d{1,2})[ ._-]*e(\d{1,3})(?:(?:[ ._]*-[ ._]*e?|[ ._-]*e)(\d{1,3})(?![0-9]))?""").find(name)
-                ?: Regex("""(?i)(?<![0-9])(\d{1,2})x(\d{2,3})(?![0-9])""").find(name)
+            val se = SXE.find(name) ?: NXN.find(name)
             if (se != null) {
                 val s = se.groupValues[1].toInt()
                 val e1 = se.groupValues[2].toInt()
                 val e2 = se.groupValues.getOrNull(3)?.toIntOrNull()?.takeIf { it >= e1 } ?: e1
                 if (s != req.season || req.episode !in e1..e2) return Match.OTHER_EPISODE
             } else {
-                val season = Regex("""(?i)(?<![a-z0-9])(?:s|season[ ._-]*)(\d{1,2})(?![0-9e])""").find(name)?.groupValues?.get(1)?.toIntOrNull()
+                val season = SEASON.find(name)?.groupValues?.get(1)?.toIntOrNull()
                 if (season != null && season != req.season) return Match.OTHER_EPISODE
             }
         } else if (req.year != null && req.year !in yearsIn(req.title)) {
@@ -179,7 +190,7 @@ object SourcePicker {
         }
     }
 
-    private fun yearsIn(s: String) = Regex("""(?<![0-9])(19\d{2}|20\d{2})(?![0-9])""").findAll(s).map { it.value.toInt() }.toList()
+    private fun yearsIn(s: String) = YEAR.findAll(s).map { it.value.toInt() }.toList()
 
     /** Whether Dream Core's [src] is the torrent behind the stream that's playing (the resolver's link for this title). */
     private fun playingNative(src: Source, streamUrl: String?): Boolean {

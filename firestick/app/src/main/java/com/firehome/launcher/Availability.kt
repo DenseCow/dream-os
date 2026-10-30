@@ -372,8 +372,8 @@ object Availability {
                 val list = synchronized(targets) { targets.values.toList() }
                 val due = list.filter { t ->
                     val e = cache[t.key]
-                    val notOut = if (t.releaseAt > 0) t.releaseAt > now else t.date.length == 10 && t.date > day(0) // answered locally anyway
-                    !notOut && hot(t.key) && e != null && e.status != Status.AVAILABLE && !fresh(e, now, hot = true) &&
+                    // Titles still ahead too: a source can show up before the listed day.
+                    hot(t.key) && e != null && e.status != Status.AVAILABLE && !fresh(e, now, hot = true) &&
                         failedAt[t.key]?.let { now - it < FAILED_TTL } != true
                 }.sortedByDescending { inView.containsKey(it.key) }.take(SWEEP_MAX)
                 if (due.isNotEmpty()) Log.w(TAG, "Avail: re-checking ${due.size} CAM Only / Not Available Yet title(s) in view or on My List")
@@ -502,13 +502,12 @@ object Availability {
             if (pageStale || force && !it.forced) pageWanted += t.key else if (fresh(it, now, hot(t.key))) return
         }
         failedAt[t.key]?.let { if (now - it < FAILED_TTL) return }
-        // Not out yet: no lookup needed.
-        val ahead = if (t.releaseAt > 0) t.releaseAt > now else t.date.length == 10 && t.date > day(0)
-        if (ahead) {
+        // Not out yet: its "Coming ..." pill at once (checked at 0: a stand-in, never fresh), then the lookup like any
+        // other title: a source can be up before the listed day.
+        if (ahead(t.releaseAt, t.date, now) && cache[t.key] == null) {
             val note = "Coming " + if (t.releaseAt > 0) AirTimes.label(t.releaseAt) else dateWords(t.date)
-            record(app, t.key, Entry(Status.NONE, null, note, now, if (t.releaseAt > 0) t.releaseAt else midnight(t.date), exact = t.releaseAt > 0),
+            record(app, t.key, Entry(Status.NONE, null, note, 0L, if (t.releaseAt > 0) t.releaseAt else midnight(t.date), exact = t.releaseAt > 0),
                 t.request.title, quiet = true)
-            return
         }
         synchronized(queue) {
             if (t.key in queued) {
@@ -631,7 +630,18 @@ object Availability {
                 else -> null
             }
         }
-        record(app, t.key, Entry(status, if (status == Status.AVAILABLE) sv.best else sv.bestCam, note, System.currentTimeMillis(), releaseAt), name)
+        var exact = false
+        if (status != Status.AVAILABLE && r.type == "episode" && ahead(t.releaseAt, t.date)) {
+            // Not due yet and not up early: still says when it comes.
+            releaseAt = if (t.releaseAt > 0) t.releaseAt else midnight(t.date)
+            note = "Coming " + if (t.releaseAt > 0) AirTimes.label(t.releaseAt) else dateWords(t.date)
+            exact = t.releaseAt > 0
+        }
+        if (r.type == "episode") {
+            if (earlyAsked.size >= KEEP_EARLY) earlyAsked.clear() // a cheap bound: only skips one repeat lookup each
+            earlyAsked[t.key] = System.currentTimeMillis()
+        }
+        record(app, t.key, Entry(status, if (status == Status.AVAILABLE) sv.best else sv.bestCam, note, System.currentTimeMillis(), releaseAt, exact = exact), name)
         if (status == Status.NONE && sv.total == 0) Log.w(TAG, "Avail: $name: the index has nothing yet")
     }
 
@@ -803,10 +813,47 @@ object Availability {
         else -> false
     }
 
+    /**
+     * A source decides, not the date (owner, 2026-10-30: "available as soon as there's a source"): streaming services
+     * often put a title up before the day TMDB lists (Paramount+ posts Showtime's Sunday episodes on Friday). So a
+     * title still ahead is asked about like any other; nothing found, it keeps its "Coming ..." note.
+     * Episodes still ahead whose index answer is real, not a local "Coming ..." (key -> when asked); at most [KEEP_EARLY].
+     */
+    private val earlyAsked = ConcurrentHashMap<String, Long>()
+    private const val KEEP_EARLY = 200
+
+    /** Its release ([at]: the instant, else the day [date]) is still ahead. */
+    private fun ahead(at: Long, date: String, now: Long = System.currentTimeMillis()) =
+        if (at > 0) at > now else date.length == 10 && date > day(0)
+
+    /** The index's last answer for this episode found a source (Available Now, or CAM Only). Cheap: no lookup. */
+    fun outEarly(ctx: Context, showId: Int, season: Int, number: Int): Boolean =
+        peek(ctx, "tv:$showId:$season:$number")?.status.let { it == Status.AVAILABLE || it == Status.CAM }
+
+    /**
+     * An episode not due yet (or undated) that the index already has a source for (a real release, else a CAM):
+     * out early, so it plays. Asks the index (the quick check, index only) unless it did in the last [HOT_TTL].
+     * False when nothing is found. Blocking.
+     */
+    fun earlyRelease(ctx: Context, showId: Int, show: String, season: Int, number: Int, at: Long, date: String): Boolean {
+        val app = ctx.applicationContext
+        if (!Tmdb.hasKey(app)) return false
+        val t = episode(showId, show, null, season, number, at, date)
+        if (outEarly(app, showId, season, number)) return true
+        val now = System.currentTimeMillis()
+        if (earlyAsked[t.key]?.let { now - it < HOT_TTL } == true) return false
+        if (failedAt[t.key]?.let { now - it < FAILED_TTL } == true) return false
+        synchronized(targets) { targets[t.key] = t }
+        try { check(app, t) } catch (e: Exception) { Log.w(TAG, "Avail: ${t.request.title}: $e") }
+        val out = outEarly(app, showId, season, number)
+        if (out) Log.w(TAG, "Avail: $show S${season}E$number is out early (due ${if (at > 0) AirTimes.stamp(at) else date.ifEmpty { "date unknown" }})")
+        return out
+    }
+
     private fun bindShow(pill: Pill, target: Target, upcoming: Boolean) {
         val ctx = pill.context
         pill.bind(target.key, peek(ctx, target.key))
-        if (!upcoming) want(ctx, target)
+        want(ctx, target) // not premiered yet too: a source can be up before the listed day
     }
 
     /**
@@ -850,8 +897,10 @@ object Availability {
         val note = if (number == 1) "Season $season" else "Coming " + if (at > 0) AirTimes.label(at) else dateWords(date)
         ensure(app)
         val old = cache[target.key]
-        if (old == null || old.status != Status.NONE || old.releaseAt != releaseAt || old.note != note)
-            record(app, target.key, Entry(Status.NONE, null, note, now, releaseAt, exact = at > 0), "${t.name} S${season}E$number", quiet = true)
+        if (old != null && old.status != Status.NONE) return ShowPick(target, false) // out early: its real pill (only lookups find a source)
+        // A real lookup's answer (checked) stays; only the stand-in is refreshed.
+        if (old == null || old.checkedAt == 0L && (old.releaseAt != releaseAt || old.note != note))
+            record(app, target.key, Entry(Status.NONE, null, note, 0L, releaseAt, exact = at > 0), "${t.name} S${season}E$number", quiet = true) // a stand-in
         return ShowPick(target, true)
     }
 

@@ -190,7 +190,9 @@ enum Details {
         return s.range(of: placeholder, options: [.regularExpression, .caseInsensitive]) != nil
     }
 
-    /// A season's episodes; ones still to come are marked `upcoming` with TVmaze's exact instant when known.
+    /// A season's episodes; ones still to come are marked `upcoming` with TVmaze's exact instant when known. One the
+    /// index already found a source for before its day (`AvailabilityChecker.outEarly`, its kept answer: no lookup
+    /// here; the title page asks, `earlyRelease`) is `outEarly` instead: it plays.
     static func episodes(_ showId: Int, _ season: Int) async throws -> [Episode] {
         let o = try await Tmdb.object("/tv/\(showId)/season/\(season)")
         let raw = o["episodes"] as? [[String: Any]] ?? []
@@ -198,22 +200,26 @@ enum Details {
         let today = DreamTime.todayYmd(now)
         let open = raw.contains { let d = Tmdb.str($0, "air_date"); return d.count != 10 || d >= today }
         let maze = open ? await AirTimes.episodes(showId) : nil
-        return raw.map { e in
+        var out: [Episode] = []
+        out.reserveCapacity(raw.count)
+        for e in raw {
             let num = e["episode_number"] as? Int ?? 0
             var d = Tmdb.str(e, "air_date")
             var name = Tmdb.str(e, "name")
             var ep = Episode(showId: showId, season: season, number: num, name: name, overview: Tmdb.str(e, "overview"),
                              stillPath: Tmdb.path(e, "still_path"), airDate: d.count == 10 ? d : "", runtime: e["runtime"] as? Int ?? 0)
-            guard d.count != 10 || d >= today else { return ep }
+            guard d.count != 10 || d >= today else { out.append(ep); continue }
             let m = maze?.first { $0.season == season && $0.number == num }
             let at = m?.at
-            let out = at.map { $0 <= now } ?? (d.count == 10 && d <= today)
-            if out { ep.airsAt = at; return ep }
+            let aired = at.map { $0 <= now } ?? (d.count == 10 && d <= today)
+            if aired { ep.airsAt = at; out.append(ep); continue }
             if d.isEmpty, let md = m?.date, !md.isEmpty { d = md }
             if isPlaceholder(name), let mn = m?.name, !isPlaceholder(mn) { name = mn }
-            ep.airDate = d; ep.name = name; ep.airsAt = at; ep.upcoming = true
-            return ep
+            ep.airDate = d; ep.name = name; ep.airsAt = at
+            if await AvailabilityChecker.shared.outEarly(showId, season, num) { ep.outEarly = true } else { ep.upcoming = true }
+            out.append(ep)
         }
+        return out
     }
 }
 

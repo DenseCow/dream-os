@@ -1056,7 +1056,7 @@ class SetupWizard(
         val texts = vBox()
         val headline = k.label("", Ui.T_HEADLINE, k.text, k.semibold, lines = 0)
         val detail = k.label("", 15.5f, k.dim, k.font, lines = 0).apply { setLineSpacing(3.dp.toFloat(), 1f) }
-        texts.addView(k.label("Try It Now", 15f, Ui.alpha(Color.WHITE, 0.66f), k.semibold))
+        texts.addView(k.label("Try It Now", 15f, Ui.alpha(Color.WHITE, 0.66f), k.semibold, lines = 0))
         texts.addView(headline, lp(top = 6))
         texts.addView(detail, lp(top = 6))
         card.addView(badge, LinearLayout.LayoutParams(64.dp, 64.dp))

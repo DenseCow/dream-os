@@ -93,7 +93,7 @@ object TraktPage {
         }
         val left = LinearLayout(a).apply { orientation = LinearLayout.VERTICAL }
         left.addView(k.kicker("Settings"))
-        left.addView(k.label("Trakt", 30f, k.text, k.semibold, Ui.TRACK_TITLE, lines = 2),
+        left.addView(k.label("Trakt", 30f, k.text, k.semibold, Ui.TRACK_TITLE, lines = 0),
             LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT).apply { topMargin = dp(8) })
         val who = Profiles.current(a).name.takeIf { it.isNotBlank() }
         left.addView(k.label("Keep what you watch in step across your devices: finished movies and episodes, where you left off, and your watchlist." +
@@ -394,11 +394,12 @@ internal class TraktPages(
         val s = SetupScreen(ui, null, "TRAKT")
         val wrap = LinearLayout(ctx).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
         val textCol = LinearLayout(ctx).apply { orientation = LinearLayout.VERTICAL }
-        val step = k.label("Getting a code…", Ui.T_LABEL, k.dim, k.font, lines = 2)
+        // Setup text is never cut: the sign-in lines wrap in full instead of ending in "…".
+        val step = k.label("Getting a code…", Ui.T_LABEL, k.dim, k.font, lines = 0)
         val code = k.label("", 40f, k.text, k.semibold).apply { letterSpacing = 0.12f; visibility = View.GONE }
-        val site = k.label("", Ui.T_BODY, k.text, k.medium, lines = 2)
-        val status = k.label("", Ui.T_CAPTION, k.dim, k.font, lines = 2).apply { visibility = View.GONE }
-        val countdown = k.label("", Ui.T_CAPTION, k.dim, k.font).apply { visibility = View.GONE }
+        val site = k.label("", Ui.T_BODY, k.text, k.medium, lines = 0)
+        val status = k.label("", Ui.T_CAPTION, k.dim, k.font, lines = 0).apply { visibility = View.GONE }
+        val countdown = k.label("", Ui.T_CAPTION, k.dim, k.font, lines = 0).apply { visibility = View.GONE }
         textCol.addView(step)
         textCol.addView(code, LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT).apply { topMargin = 10.dp })
         textCol.addView(site, LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT).apply { topMargin = 8.dp })
