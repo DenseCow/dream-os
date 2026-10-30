@@ -47,6 +47,8 @@ import javax.crypto.spec.GCMParameterSpec
 object Trakt {
     private const val TAG = "FireHome"
     private const val API = "https://api.trakt.tv"
+    /** Sign-in, renewal and sign-out: Trakt answers these only on its auth host (an approved code polled on the API host comes back 418). */
+    private const val AUTH = "https://auth.trakt.tv"
     /** Redirect URIs a Trakt app may carry: new development apps must use localhost, older ones have the oob one. */
     private val REDIRECTS = listOf(TraktPages.REDIRECT_URI, "urn:ietf:wg:oauth:2.0:oob")
     private const val PREFS = "trakt"
@@ -277,7 +279,7 @@ object Trakt {
     }
 
     private fun http(keys: Keys, method: String, path: String, body: String?, token: String?): Reply {
-        val c = URL(API + path).openConnection() as HttpURLConnection
+        val c = URL((if (path.startsWith("/oauth/")) AUTH else API) + path).openConnection() as HttpURLConnection
         try {
             c.requestMethod = method
             c.connectTimeout = 10_000

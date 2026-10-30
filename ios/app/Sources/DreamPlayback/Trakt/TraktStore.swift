@@ -235,6 +235,8 @@ enum TraktFailure: Error { case signedOut, refused(Int), unreadable }
 
 enum TraktHTTP {
     static let api = "https://api.trakt.tv"
+    /// Sign-in, renewal and sign-out: Trakt answers these only on its auth host (an approved code polled on the API host comes back 418).
+    static let auth = "https://auth.trakt.tv"
     /// Redirect URIs a Trakt app may carry: new development apps must use localhost, older ones have the oob one.
     static let redirect = "http://localhost"
     static let redirects = [redirect, "urn:ietf:wg:oauth:2.0:oob"]
@@ -263,7 +265,7 @@ enum TraktHTTP {
 
     /// Throws when Trakt can't be reached (offline, timeout).
     static func send(_ keys: TraktKeys, _ method: String, _ path: String, _ body: Data? = nil, token: String? = nil) async throws -> TraktReply {
-        guard let url = URL(string: api + path) else { throw TraktFailure.unreadable }
+        guard let url = URL(string: (path.hasPrefix("/oauth/") ? auth : api) + path) else { throw TraktFailure.unreadable }
         var r = URLRequest(url: url)
         r.httpMethod = method
         r.cachePolicy = .reloadIgnoringLocalCacheData
