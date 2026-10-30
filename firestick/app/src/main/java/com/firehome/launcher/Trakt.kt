@@ -47,7 +47,8 @@ import javax.crypto.spec.GCMParameterSpec
 object Trakt {
     private const val TAG = "FireHome"
     private const val API = "https://api.trakt.tv"
-    private const val REDIRECT = "urn:ietf:wg:oauth:2.0:oob"
+    /** Redirect URIs a Trakt app may carry: new development apps must use localhost, older ones have the oob one. */
+    private val REDIRECTS = listOf(TraktPages.REDIRECT_URI, "urn:ietf:wg:oauth:2.0:oob")
     private const val PREFS = "trakt"
     /** Home opening syncs at most this often (a finished playback skips the wait). */
     private const val HOME_EVERY_MS = 15 * 60_000L
@@ -235,11 +236,25 @@ object Trakt {
         // Another thread refreshed it meanwhile.
         if (cur.access != old.access && cur.expiresAt - System.currentTimeMillis() > REFRESH_AHEAD_MS) return cur
         val keys = keys(ctx) ?: return null
-        val body = JSONObject().put("refresh_token", cur.refresh).put("client_id", keys.id)
-            .putSecret(keys).put("redirect_uri", REDIRECT).put("grant_type", "refresh_token")
-        val r = try { http(keys, "POST", "/oauth/token", body.toString(), null) } catch (e: IOException) { return null }
-        return when (r.code) {
-            200 -> tokensFrom(JSONObject(r.body)).also { saveTokens(ctx, sfx, it); Log.w(TAG, "Trakt: sign-in renewed") }
+        // Renewal must name the app's own redirect URI: the one that worked last first, then the other.
+        val last = prefs(ctx).getString("redirect", null)
+        var r: Reply? = null
+        var used = REDIRECTS[0]
+        for (uri in REDIRECTS.sortedByDescending { it == last }) {
+            val body = JSONObject().put("refresh_token", cur.refresh).put("client_id", keys.id)
+                .putSecret(keys).put("redirect_uri", uri).put("grant_type", "refresh_token")
+            val got = try { http(keys, "POST", "/oauth/token", body.toString(), null) } catch (e: IOException) { return null }
+            r = got
+            used = uri
+            if (got.code != 400 && got.code != 401) break
+        }
+        val reply = r ?: return null
+        return when (reply.code) {
+            200 -> tokensFrom(JSONObject(reply.body)).also {
+                saveTokens(ctx, sfx, it)
+                prefs(ctx).edit().putString("redirect", used).apply()
+                Log.w(TAG, "Trakt: sign-in renewed")
+            }
             400, 401 -> {
                 Log.w(TAG, "Trakt: sign-in ended (renewal refused, ${r.code}); Sign In Again needed")
                 saveTokens(ctx, sfx, null)

@@ -235,7 +235,9 @@ enum TraktFailure: Error { case signedOut, refused(Int), unreadable }
 
 enum TraktHTTP {
     static let api = "https://api.trakt.tv"
-    static let redirect = "urn:ietf:wg:oauth:2.0:oob"
+    /// Redirect URIs a Trakt app may carry: new development apps must use localhost, older ones have the oob one.
+    static let redirect = "http://localhost"
+    static let redirects = [redirect, "urn:ietf:wg:oauth:2.0:oob"]
 
     /// Account calls never touch the shared cache or cookies.
     static let session: URLSession = {

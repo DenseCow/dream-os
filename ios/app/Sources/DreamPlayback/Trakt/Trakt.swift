@@ -41,7 +41,7 @@ public final class Trakt: @unchecked Sendable {
 
     /// Where a Trakt account creates its own apps.
     public static let appsURL = URL(string: "https://trakt.tv/oauth/applications")!
-    /// The redirect URI Trakt's app form asks for (device sign-in doesn't use it, but the form requires one).
+    /// The redirect URI Trakt's app form asks for: only renewal sends it, and development apps take only localhost.
     public static let redirectURI = TraktHTTP.redirect
 
     let vault = TraktVault.shared
@@ -217,14 +217,25 @@ public final class Trakt: @unchecked Sendable {
         // Renewed meanwhile by another call.
         if cur.a != old.a && cur.e - wallMs() > Self.refreshAheadMs { return cur }
         guard let keys else { return nil }
-        let body = TraktHTTP.client(keys, ["refresh_token": cur.r, "redirect_uri": TraktHTTP.redirect, "grant_type": "refresh_token"])
-        guard let r = try? await TraktHTTP.send(keys, "POST", "/oauth/token", body) else { return nil }
+        // Renewal must name the app's own redirect URI: the one that worked last first, then the other.
+        let last = UserDefaults.standard.string(forKey: "trakt.redirect")
+        var reply: TraktReply?
+        var used = TraktHTTP.redirect
+        for uri in TraktHTTP.redirects.sorted(by: { a, _ in a == last }) {
+            let body = TraktHTTP.client(keys, ["refresh_token": cur.r, "redirect_uri": uri, "grant_type": "refresh_token"])
+            guard let r = try? await TraktHTTP.send(keys, "POST", "/oauth/token", body) else { return nil }
+            reply = r
+            used = uri
+            if r.code != 400 && r.code != 401 { break }
+        }
+        guard let r = reply else { return nil }
         switch r.code {
         case 200:
             guard let o = r.object, let t = Self.tokens(from: o) else { return nil }
             // Signed out (or the profile deleted) while the renewal was on its way: it must not sign back in.
             guard vault.tokens(p)?.r == cur.r else { return nil }
             vault.setTokens(p, t)
+            UserDefaults.standard.set(used, forKey: "trakt.redirect")
             plog.info("Trakt: sign-in renewed")
             return t
         case 400, 401:

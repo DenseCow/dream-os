@@ -349,39 +349,17 @@ internal class TraktPages(
 
     private fun masked(v: String) = if (v.length <= 10) v else v.take(4) + "…" + v.takeLast(4)
 
-    /** One key typed with the Dream keyboard (or from Phone Remote); Done hands it back and returns. */
-    private fun keyEntry(title: String, initial: String, done: (String) -> Unit): SetupScreen {
-        val s = SetupScreen(ui, title, "YOUR TRAKT APP")
-        val field = QueryField(ctx).apply {
-            maxLen = 128
-            textSize = 18f
-            typeface = k.font
-            setTextColor(k.text)
-            caretColor = k.text
-            setPadding(16.dp, 0, 16.dp, 0)
-            background = Ui.rounded(ctx, Ui.alpha(k.text, 0.07f), Ui.R_PILL, 1f, Ui.alpha(k.text, 0.12f))
-            setQuery(initial)
-        }
-        s.add(field.apply { layoutParams = LinearLayout.LayoutParams(MATCH_PARENT, 44.dp) }, 0)
-        val kb = DreamKeyboard(k, field, 400, 32, 6, null).apply {
-            // The focused key is a pearl box with dark ink and the fading rainbow edge (as in Search).
-            glideStroke = true
-            glideColors = { CinemaStyle.glowNow.let { intArrayOf(it, it) } }
-            CinemaStyle.followGlow(this) { v, _ -> (v as DreamKeyboard).refreshGlide() }
-        }
-        field.focusRedirect = { kb.focusEntry() }
-        s.add(kb.apply { layoutParams = LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT) }, 14)
-        s.add(ui.note("Copy it from your app's page on Trakt. Typing from Phone Remote on your phone works here too."), 14)
-        val ok = ui.pill("Done", true) {
-            done(field.text.toString().filterNot { it.isWhitespace() })
+    /**
+     * One key typed with the Dream keyboard (Caps and _ for Trakt's newer keys), from Phone Remote, or with the
+     * QR codes beside it (Trakt's apps page, Type on Your Phone); Done hands it back and returns.
+     */
+    private fun keyEntry(title: String, initial: String, done: (String) -> Unit): SetupScreen =
+        setupEntry(ctx, ui, SetupParts(ctx, k), title, "YOUR TRAKT APP", "Your $title", initial, listOf("_", "-"),
+            "Scan the code to open your apps on Trakt, then copy the $title from your app's page. Phone Remote can type it here.",
+            "https://trakt.tv/oauth/applications") { typed ->
+            done(typed.filterNot { it.isWhitespace() })
             panel.pop()
         }
-        s.add(ui.pillRow(ok), 14)
-        s.focus = { kb.entryKey() }
-        s.onShow = { TraktPage.fieldShown(field) }
-        s.onHide = { TraktPage.fieldHidden(field) }
-        return s
-    }
 
     // ---- Advanced: the viewer's own app keys ----
 
@@ -555,7 +533,7 @@ internal class TraktPages(
     companion object {
         /** Where a Trakt account creates its own API apps. */
         const val APPS_URL = "https://trakt.tv/oauth/applications"
-        /** The redirect URI Trakt asks for (device sign-in doesn't use it, but the form requires one). */
-        const val REDIRECT_URI = "urn:ietf:wg:oauth:2.0:oob"
+        /** The redirect URI Trakt asks for: only renewal sends it, and Trakt's development apps take only localhost. */
+        const val REDIRECT_URI = "http://localhost"
     }
 }
