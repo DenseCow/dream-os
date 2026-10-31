@@ -7,24 +7,24 @@ Thanks for wanting to help. Bug reports, device reports, ideas and code are all 
 Use [Issues](https://github.com/DenseCow/dream-os/issues/new/choose) and pick a template. Please include:
 
 - Your device model and OS version (Fire Stick: **Settings › My Fire TV › About**; iPhone: **Settings › General ›
-  About**)
-- The Dream version (Fire Stick: **Settings › Updates**; iPhone: the release you installed)
+  About**; Windows: **Settings › System › About**)
+- The Dream version (Fire Stick and Windows: **Settings › Updates**; iPhone: the release you installed)
 - What you did, what you expected, and what happened instead. Photos of the screen help a lot.
 
 **Never paste API keys, debrid tokens, account emails or scraper repository addresses** into an issue.
-Dream OS has only been tested on two Fire Sticks and one iPhone, so reports from other devices, good or bad, are
+Dream OS has only been tested on two Fire Sticks, one iPhone and one Windows PC, so reports from other devices, good or bad, are
 especially useful.
 
 ## Before You Write Code
 
 - Open an issue first for anything bigger than a small fix, so we can agree on the approach.
-- Read [BUILDING.md](BUILDING.md) to get both apps building.
+- Read [BUILDING.md](BUILDING.md) to get the apps building.
 - Read the design rulebook, [`firestick/docs/STANDARDS.md`](firestick/docs/STANDARDS.md). It covers the Dream
   Cinema look (black and gray, the rainbow as the only accent), focus and layout rules, wording (Title Case
   labels, plain sentences, no technical terms on screen) and performance budgets. The iPhone app follows the
   same brand, wording and content rules.
-- The two apps should behave the same way; only the UI differs. If you change a behavior on one platform, say
-  in your pull request whether the other needs the same change.
+- The apps should behave the same way; only the UI differs. If you change a behavior on one platform, say in
+  your pull request whether the others need the same change.
 
 ## Pull Requests
 

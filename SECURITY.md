@@ -6,7 +6,7 @@ If you find a security problem in Dream OS, please **don't** open a public issue
 GitHub instead: open the [Security tab](https://github.com/DenseCow/dream-os/security) and choose
 **Report a vulnerability**.
 
-Please include what's affected (Fire Stick or iPhone, and the version), how to reproduce it, and what an attacker
+Please include what's affected (Fire Stick, iPhone or Windows, and the version), how to reproduce it, and what an attacker
 could do with it. You'll get a reply as soon as possible, and credit in the fix's release notes if you'd like.
 
 ## Supported Versions

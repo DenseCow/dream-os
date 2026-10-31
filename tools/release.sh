@@ -1,24 +1,30 @@
 #!/bin/bash
 # Publishes a Dream OS release on this repository's Releases page (maintainers only).
 #
-#   1. tools/sync.sh: exports the Fire TV and iPhone apps' committed code (HEAD), scrubs it, privacy scan
-#   2. builds the Fire TV APK from that exported code in a scratch folder, with NO keys inside (empty TMDB, OMDb,
+#   1. tools/sync.sh: exports the Fire Stick, iPhone and Windows apps' committed code (HEAD), scrubs it, privacy scan
+#   2. builds the Fire Stick APK from that exported code in a scratch folder, with NO keys inside (empty TMDB, OMDb,
 #      Trakt, Premiumize), the updater pointed at this repository, signed with the existing release key (read
 #      from its properties file outside every repository; the key is never copied anywhere)
 #   3. checks the version, that the signer is the release key (not the debug key), and privacy-scans the APK
 #   4. IPA=1: builds the unsigned iPhone Dream.ipa in WSL / Linux, removes the builder's home folder from it,
 #      privacy-scans it
+#   4b. WIN=1: builds the Windows setup from the exported windows/ code in a scratch folder (PUBLIC channel, no keys,
+#      libmpv and Python fetched by its pinned, checksum-checked scripts), privacy-scans the app image before Inno
+#      Setup packs it (tools/iscc-scan.sh) and the setup .exe after
 #   5. commits and pushes the synced code (if it changed), then creates the release v<version> with
-#      DreamOS.apk, DreamOS.apk.sha256 (and Dream.ipa) as assets
+#      DreamOS.apk, DreamOS.apk.sha256 (and Dream.ipa, DreamOS-Windows-Setup.exe + .sha256) as assets
 #
 # Every release MUST carry DreamOS.apk: the Downloader code and the in-app updater fetch
-# releases/latest/download/DreamOS.apk.
+# releases/latest/download/DreamOS.apk. The Windows app's updater and the README fetch
+# releases/latest/download/DreamOS-Windows-Setup.exe, so every release from 4.3.6 on should carry it too (WIN=1).
 #
 # Usage:  tools/release.sh [--dry-run]        (dry run: everything except commit, push and publish)
-#   NOTES=path/to/notes.md   release notes (Markdown; shown in the Fire TV app under View Changes)
+#   NOTES=path/to/notes.md   release notes (Markdown; shown in the Fire Stick app under View Changes)
 #   IPA=1                    also build and attach the iPhone Dream.ipa
+#   WIN=1                    also build and attach the Windows setup (DreamOS-Windows-Setup.exe + .sha256)
 # Settings come from tools/sources.local: GRADLE, ANDROID_SDK, PYTHON311, RELEASE_SIGNING, RELEASE_CERT_SHA256,
-# RELEASE_REPO (default DenseCow/dream-os), WSL (default wsl.exe).
+# RELEASE_REPO (default DenseCow/dream-os), WSL (default wsl.exe), WIN_SRC (read by tools/sync.sh), ISCC (Inno
+# Setup 6.7+ ISCC.exe; default: its usual install folders).
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd -P)"
 DRY=; [ "${1:-}" = "--dry-run" ] && DRY=1
@@ -31,7 +37,8 @@ export JAVA_HOME="${JAVA_HOME:-$(ls -d '/c/Program Files/Microsoft/'jdk-17* 2>/d
 winpath() { if command -v cygpath >/dev/null; then cygpath -m "$1"; else echo "$1"; fi; }
 
 [ -f "$SIGNING" ] || { echo "Release signing file not found: $SIGNING"; exit 1; }
-[ -z "$(git -C "$ROOT" status --porcelain -- ':!firestick' ':!ios')" ] || { echo "Commit your changes outside firestick/ and ios/ first."; exit 1; }
+[ -z "$(git -C "$ROOT" status --porcelain -- ':!firestick' ':!ios' ':!windows')" ] \
+  || { echo "Commit your changes outside firestick/, ios/ and windows/ first."; exit 1; }
 
 echo "== 1/5 Sync and privacy scan"
 bash "$ROOT/tools/sync.sh"
@@ -48,16 +55,18 @@ IOS_VERSION=$(plist_value CFBundleShortVersionString)
 IOS_BUILD=$(plist_value CFBundleVersion)
 echo "  Fire Stick: Version $VERSION ($CODE)"
 echo "  iPhone:     Version ${IOS_VERSION:-?} (${IOS_BUILD:-?})"
-if [ "$IOS_VERSION" != "$VERSION" ] || [ "$IOS_BUILD" != "$CODE" ]; then
-  echo "The two apps' versions differ. Run tools/set-version.sh $VERSION in both apps (fire-home and DreamOS-iOS),"
-  echo "commit them, then run this again."
+WIN_VERSION=$(sed -n 's/^extra\["dreamVersion"\] = "\([0-9.]*\)".*/\1/p' "$ROOT/windows/build.gradle.kts")
+echo "  Windows:    Version ${WIN_VERSION:-?}"
+if [ "$IOS_VERSION" != "$VERSION" ] || [ "$IOS_BUILD" != "$CODE" ] || [ "$WIN_VERSION" != "$VERSION" ]; then
+  echo "The apps' versions differ. Run tools/set-version.sh $VERSION in each app (fire-home, DreamOS-iOS and"
+  echo "dream-os-windows), commit them, then run this again."
   exit 1
 fi
 if gh release view "$TAG" --repo "$REPO" >/dev/null 2>&1; then
   echo "Release $TAG already exists in $REPO. Run tools/set-version.sh <new version> in both apps first."; exit 1
 fi
 
-echo "== 2/5 Build the Fire TV APK $VERSION (no keys)"
+echo "== 2/5 Build the Fire Stick APK $VERSION (no keys)"
 WORK="$(cd "${TMPDIR:-/tmp}" && pwd -P)/dream-release"
 case "$WORK" in */dream-release) rm -rf "$WORK" ;; *) echo "bad work folder"; exit 1 ;; esac
 mkdir -p "$WORK/build" "$WORK/out"
@@ -106,12 +115,20 @@ else
   echo "== 4/5 iPhone .ipa skipped (IPA=1 to build it)"
 fi
 
+if [ -n "${WIN:-}" ]; then
+  echo "== 4b/5 Build the Windows setup $VERSION (no keys)"
+  bash "$ROOT/tools/win-build.sh" "$WORK" "$VERSION"
+  ASSETS+=("$WORK/out/DreamOS-Windows-Setup.exe" "$WORK/out/DreamOS-Windows-Setup.exe.sha256")
+else
+  echo "== 4b/5 Windows setup skipped (WIN=1 to build it)"
+fi
+
 echo "== 5/5 Publish $TAG to $REPO"
 if [ -z "$(git -C "$ROOT" status --porcelain)" ]; then
   echo "  Code unchanged since the last push."
 elif [ -z "$DRY" ]; then
   git -C "$ROOT" add -A
-  git -C "$ROOT" commit -q -m "Sync Fire TV and iPhone code for Dream OS $VERSION" \
+  git -C "$ROOT" commit -q -m "Sync Fire Stick, iPhone and Windows code for Dream OS $VERSION" \
     -m "Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 fi
 if [ -n "$DRY" ]; then
@@ -123,4 +140,8 @@ NOTE_ARGS=(--notes "Dream OS $VERSION. See the install guides in the README.")
 gh release create "$TAG" "${ASSETS[@]}" --repo "$REPO" --title "Dream OS $VERSION" --latest "${NOTE_ARGS[@]}"
 echo "  Checking the download link..."
 curl -sIL "https://github.com/$REPO/releases/latest/download/DreamOS.apk" | grep -iE '^(HTTP|content-length)' | tail -2
+if [ -n "${WIN:-}" ]; then
+  curl -sIL "https://github.com/$REPO/releases/latest/download/DreamOS-Windows-Setup.exe" \
+    | grep -iE '^(HTTP|content-length)' | tail -2
+fi
 echo "Done: https://github.com/$REPO/releases/tag/$TAG"

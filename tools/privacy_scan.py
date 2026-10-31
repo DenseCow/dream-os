@@ -1,7 +1,9 @@
 """Privacy scan for the published repository and the release APK. Exits 1 on any hit that isn't allow-listed.
 
   python -I tools/privacy_scan.py repo <dir>      scan a folder (the repo, or a fresh clone of it)
-  python -I tools/privacy_scan.py apk  <file>     scan an APK / IPA, nested archives included
+  python -I tools/privacy_scan.py apk  <file>     scan an APK / IPA / setup .exe, nested archives included
+  python -I tools/privacy_scan.py image <dir>     scan the Windows app image before Inno Setup packs it (paths are
+                                                  shown as "<folder name>/...", e.g. "Dream OS/runtime/...")
 
 What it looks for:
   personal   this PC's user name and home folder, the maintainer's mail names (PERSONAL_WORDS, from
@@ -31,6 +33,10 @@ TEXT_LIMIT = 8 * 1024 * 1024
 VENDOR_GLOBS = [
     "ios/app/Vendor/Python/Stdlib/python/*",
     "ios/app/Vendor/Python/Python.xcframework/*",
+    # Windows app image: the bundled CPython, its packages and the Java runtime.
+    "Dream OS/app/resources/python/*",
+    "Dream OS/app/resources/python-site/*",
+    "Dream OS/runtime/*",
 ]
 
 
@@ -284,7 +290,7 @@ def scan_zip(path, data):
 
 
 def main():
-    if len(sys.argv) != 3 or sys.argv[1] not in ("repo", "apk"):
+    if len(sys.argv) != 3 or sys.argv[1] not in ("repo", "apk", "image"):
         print(__doc__)
         return 2
     mode, target = sys.argv[1], pathlib.Path(sys.argv[2])
@@ -293,8 +299,9 @@ def main():
     if mode == "apk":
         scan_file(target.name, target.read_bytes())
     else:
+        prefix = target.name + "/" if mode == "image" else ""
         for p in sorted(target.rglob("*")):
-            rel = p.relative_to(target).as_posix()
+            rel = prefix + p.relative_to(target).as_posix()
             if p.is_dir() or rel.startswith(".git/") or "/.git/" in rel:
                 continue
             if rel in ("tools/sources.local",):

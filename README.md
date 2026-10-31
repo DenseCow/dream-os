@@ -6,13 +6,19 @@
   </picture>
 </p>
 
-<p align="center"><b>Browse and play movies and shows on your Fire Stick and iPhone, using your own accounts.</b><br>
+<p align="center"><b>Browse and play movies and shows on your Fire Stick, iPhone and Windows PC, using your own accounts.</b><br>
 Free and open source under GPL-3.0. Dream OS ships with no content and no sources.</p>
 
 <p align="center">
   <a href="https://github.com/DenseCow/dream-os/releases/latest"><img alt="Latest release on GitHub" src="https://img.shields.io/github/v/release/DenseCow/dream-os?style=flat-square&color=2c2c2e&labelColor=0b0b0c&label=release"></a>
   <a href="LICENSE"><img alt="License: GPL-3.0" src="https://img.shields.io/badge/license-GPL--3.0-2c2c2e?style=flat-square&labelColor=0b0b0c"></a>
 </p>
+
+> [!NOTE]
+> **You may run into bugs.** Dream OS is made by a small team and changes quickly, so some things will break or
+> act oddly now and then. When that happens, please
+> [open an issue](https://github.com/DenseCow/dream-os/issues/new/choose) and tell us what you were doing, your
+> device and your Dream version. Every report helps us fix it sooner.
 
 <p align="center">
   <img alt="Dream OS on a Fire Stick: the Home screen with a large title image, ratings and a Play button" src="docs/screenshots/firestick/01-home.webp" width="900"><br>
@@ -28,7 +34,8 @@ Video. It plays from the accounts and scraper repositories you add yourself.
 
 ## What You Need
 
-- **A Fire Stick or an iPhone.** See [Tested Devices](#tested-devices) for the models Dream OS has been tried on.
+- **A Fire Stick, an iPhone or a Windows PC.** See [Tested Devices](#tested-devices) for what Dream OS has been
+  tried on.
 - **A free TMDB key.** Dream uses TMDB for posters, details, search and rows. Setup shows you how to get one in a
   couple of minutes.
 - **Your own debrid account.** Real-Debrid, AllDebrid, Premiumize or TorBox, signed in with a code on screen. Dream
@@ -74,13 +81,32 @@ AltStore, using your own Apple Account; no Mac needed. The [iPhone Install Guide
 how to build it from source. The app file, **Dream.ipa**, is on the
 [latest release](https://github.com/DenseCow/dream-os/releases/latest).
 
+### Windows
+
+Download
+[DreamOS-Windows-Setup.exe](https://github.com/DenseCow/dream-os/releases/latest/download/DreamOS-Windows-Setup.exe)
+and open it. It runs on Windows 10 and 11 (64-bit) and brings everything Dream needs with it. Setup installs Dream OS
+for your Windows account only, so it never asks for an administrator password, and Dream OS installs its own
+updates from inside the app. The [Windows Install Guide](INSTALL-WINDOWS.md) covers each step, the first-run setup
+and how to uninstall.
+
+> [!WARNING]
+> **Windows is brand new and still early.** 4.3.6 is the first Dream OS release for Windows, and it has had far
+> less use than the Fire Stick and iPhone apps. Expect bugs, and please
+> [report them](https://github.com/DenseCow/dream-os/issues/new/choose) with your Windows version and what
+> happened. Your reports help us choose what to fix first.
+
+The setup isn't code-signed, so the first time you open it Windows may say **Windows protected your PC**. Select
+**More info**, then **Run anyway**.
+
 ## Platforms
 
 | Platform | Status | Guide |
 | :-- | :-- | :-- |
 | Fire Stick | Available | [Install on Fire Stick](INSTALL-FIRESTICK.md) |
 | iPhone | Available (sideloaded) | [Install on iPhone](INSTALL-IOS.md) |
-| Windows, Mac, Linux | Coming soon | |
+| Windows 10 / 11, 64-bit | Available, new in 4.3.6 ([DreamOS-Windows-Setup.exe](https://github.com/DenseCow/dream-os/releases/latest/download/DreamOS-Windows-Setup.exe)) | [Install on Windows](INSTALL-WINDOWS.md) |
+| Mac, Linux | Coming soon | |
 
 ### Tested Devices
 
@@ -89,6 +115,7 @@ how to build it from source. The app file, **Dream.ipa**, is on the
 | Fire TV Stick 4K Max (1st gen, 2021) | AFTKA | Fire OS 7.7.1.3 (Android 9) | 4K with HDR and Dolby Vision |
 | Fire TV Stick HD | AFTSS | Fire OS 7.7.1.7 (Android 9) | 1080p |
 | iPhone Air | | iOS 27.2 (needs iOS 17 or later) | |
+| Windows PC | | Windows 11, 64-bit | |
 
 - **Fire TV Stick HD:** its video decoders stop at 1920x1088 and it outputs 1080p, so Dream OS
   picks 1080p copies on it automatically. It has about 1 GB of memory, so
@@ -96,6 +123,7 @@ how to build it from source. The app file, **Dream.ipa**, is on the
 - **Other Fire TV models and Fire OS versions are untested.** Fire TV devices running Vega OS can't install Dream OS
   at all, because they only install apps from the Amazon Appstore.
 - **Other iPhones are untested.** Older models may load more slowly, and HDR needs an HDR-capable screen.
+- **Windows has been tested on one PC so far.** Windows 10 and other PCs are untested.
 
 Tried it on another device? Reports are welcome in [Issues](https://github.com/DenseCow/dream-os/issues), with your
 model and OS version.
@@ -119,7 +147,8 @@ streaming services list it (shown as information only).
 ### Dream Player
 
 Subtitles, audio languages, Skip Intro and Skip Credits, an X-Ray style cast and info panel, Up Next with autoplay,
-and Start Over. On iPhone it also does Picture in Picture.
+and Start Over. On iPhone it also does Picture in Picture, and on Windows a mini player keeps the picture going in a
+small window that stays on top.
 
 ### Your Library and Profiles
 
@@ -137,6 +166,12 @@ Phone Remote, see whether your AirPods are connected, use the Dream screensaver,
 
 Portrait browsing, a landscape player and background audio, with the same accounts, profiles and library rules as
 the TV.
+
+### On Windows
+
+A layout made for a mouse and keyboard in a window you can resize, with F11 for full screen and right-click options
+on posters. The keyboard's media keys control Dream Player. Dream OS can open when you sign in to Windows, shows new
+episode alerts as Windows notifications, can unlock a profile with Windows Hello, and installs its own updates.
 
 ## Screenshots
 
@@ -176,7 +211,8 @@ Dream has no accounts, no tracking and no analytics. It has no servers of its ow
 developer.
 
 Your keys, accounts, profiles and history stay on your device. TMDB, OMDb, debrid and Trakt sign-ins are stored
-only on the device you entered them on (in the iPhone's Keychain on iOS).
+only on the device you entered them on (in the iPhone's Keychain on iOS; on Windows, debrid and Trakt sign-ins are
+sealed with Windows' own data protection for your Windows account).
 
 Dream talks straight to the services you use: TMDB, OMDb, Trakt, your debrid services and your scraper
 repositories. It also uses a few free public services for extras:
@@ -187,7 +223,8 @@ repositories. It also uses a few free public services for extras:
 - the video host TMDB lists for trailers
 - Cloudflare, only when you run the speed test
 - on the Fire Stick, Open-Meteo for the weather (with an approximate location from your internet address via
-  ipwho.is or GeoJS), and GitHub to check for Dream updates
+  ipwho.is or GeoJS)
+- on the Fire Stick and Windows, GitHub to check for Dream updates
 
 ## Source Code
 
@@ -199,6 +236,7 @@ change it and share it under the same terms. It builds on other open-source proj
 | :-- | :-- |
 | [`firestick/`](firestick) | The Fire Stick app (Kotlin, Android 7.1+ / Fire OS 6+) |
 | [`ios/`](ios) | The iPhone app (Swift and SwiftUI, iOS 17+) |
+| [`windows/`](windows) | The Windows app (Kotlin and Compose for desktop, Windows 10 / 11, 64-bit) |
 | [`docs/`](docs) | Brand images and screenshots |
 | [`tools/`](tools) | Publishing and release scripts |
 
@@ -222,7 +260,7 @@ devices. This doesn't mean Anthropic endorses or sponsors the project.
 Dream OS is an independent open-source project. It hosts, stores and distributes no movies, shows or streams, and
 includes no sources. You bring your own TMDB key, debrid accounts and scraper repositories, and you are responsible
 for following the law and the terms of the services you use where you live. Dream isn't affiliated with, endorsed
-by, or sponsored by Amazon, Apple, TMDB, any streaming service, any debrid service, Anthropic or anyone else it
+by, or sponsored by Amazon, Apple, Microsoft, TMDB, any streaming service, any debrid service, Anthropic or anyone else it
 mentions. It is provided as is, with no warranty. Please read the full [Disclaimers](DISCLAIMER.md).
 
 <p align="center">

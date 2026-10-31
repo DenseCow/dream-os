@@ -1,12 +1,13 @@
 # Building Dream OS
 
 This page is for developers who want to build Dream OS from source. To just install it, see the
-[Fire Stick](INSTALL-FIRESTICK.md) or [iPhone](INSTALL-IOS.md) install guide.
+[Fire Stick](INSTALL-FIRESTICK.md), [iPhone](INSTALL-IOS.md) or [Windows](INSTALL-WINDOWS.md) install guide.
 
 - [Repository Layout](#repository-layout)
 - [Keys and Where They Go](#keys-and-where-they-go)
 - [Fire Stick App](#fire-stick-app)
 - [iPhone App](#iphone-app)
+- [Windows App](#windows-app)
 - [Releases](#releases)
 
 <br>
@@ -22,9 +23,12 @@ This page is for developers who want to build Dream OS from source. To just inst
 | `ios/` | The iPhone app: a Swift package (`ios/app/`) built with xtool |
 | `ios/app/Vendor/Python/` | CPython 3.13 for iOS and its standard library (third party, unmodified) |
 | `ios/tools/` | `build.sh`, `install.sh`, `ipa.sh`, `gen-secrets.sh` and helpers |
+| `windows/` | The Windows app: Kotlin and Compose for desktop, Gradle modules `core`, `scrapers`, `player` and `app` |
+| `windows/installer/` | The setup wizard (`DreamOS.iss`, Inno Setup) and its images |
+| `windows/tools/` | `fetch-third-party.sh` (libmpv and Python), `build-installer.sh`, art scripts |
 | `tools/` | Publishing tools for this repository (privacy scan, release) |
 
-Desktop versions (Windows, Mac, Linux) will get their own folder here when they arrive.
+Mac and Linux versions will get their own folders here when they arrive.
 
 <br>
 
@@ -44,6 +48,8 @@ the app**, so leave them empty for builds you share. Without them, Dream asks ea
 
 Real-Debrid sign-in uses Real-Debrid's published client ID for open-source apps, so it needs nothing from you.
 Never commit `local.properties`, `secrets.properties` or `Secrets.swift`; they are git-ignored.
+
+The Windows app compiles no keys in at all. See [Keys on Windows](#keys-on-windows).
 
 <br>
 
@@ -171,13 +177,81 @@ idevicesyslog | grep --line-buffered 'DreamOS\['
 
 <br>
 
+## Windows App
+
+The Windows app is Kotlin with [Compose Multiplatform](https://github.com/JetBrains/compose-multiplatform) for
+desktop, in four Gradle modules: `core` (Dream Core: TMDB, rows, profiles, settings, debrid accounts, the source
+resolver, Trakt, updates), `scrapers` (runs scraper repositories in the bundled Python), `player` (Dream Player on
+libmpv through JNA) and `app` (the window and every page). The Gradle wrapper (Gradle 8.7) is included.
+
+### What You Need
+
+- **Windows 10 or 11, 64-bit**, with **Git for Windows**: the scripts are Bash and run in Git Bash
+- **JDK 17** (for example Microsoft Build of OpenJDK 17). Gradle's toolchain finds it, and its `jlink` and
+  `jpackage` make the Java runtime that ships inside the app
+- **[Inno Setup](https://jrsoftware.org/isinfo.php) 6.7 or newer**, only to build the setup
+  (`winget install --id JRSoftware.InnoSetup -e`, or set `ISCC` to its `ISCC.exe`)
+- **Python 3 with Pillow**, only to redraw the icon or the wizard images (`tools/make-icon.py`,
+  `tools/make-wizard-images.py`)
+
+### Bundled Programs
+
+```sh
+cd windows
+tools/fetch-third-party.sh
+```
+
+This fills `windows/third_party/` (git-ignored) with exact versions, each checked against a pinned SHA-256 before
+it's unpacked:
+
+- `mpv/libmpv-2.dll` from [shinchiro/mpv-winbuild-cmake](https://github.com/shinchiro/mpv-winbuild-cmake)
+  (`tools/fetch-mpv.sh`)
+- `python/`: the official Windows "embeddable" CPython (`tools/fetch-python.sh`), with Dream's own `._pth` file
+- `python-site/`: Requests and the packages it needs, from PyPI
+
+### Run, Test, Build the Setup
+
+```sh
+./gradlew :app:run                  # run from source
+./gradlew test                      # tests (add -Pdream.live=true for the live network tests)
+tools/build-installer.sh            # the setup, for release (About shows PUBLIC)
+tools/build-installer.sh --dev      # the same, marked DEV
+```
+
+`build-installer.sh` runs `fetch-third-party.sh`, builds the app image (`./gradlew :app:createDistributable`),
+runs the image's SelfCheck with no window (Java runtime, libmpv, Python, TLS, Skia) and stops if a check fails,
+then compiles `installer/DreamOS.iss`. The output is `windows/app/build/release/DreamOS-Windows-Setup.exe` and
+`DreamOS-Windows-Setup.exe.sha256`, the two files the in-app updater looks for.
+
+**Startup archive.** After the app image is built, Gradle launches it once with no window, no sound and a
+throwaway data folder (`app/build/startup-train`) to record the classes a start loads (`app\dream.classlist`), and
+makes a Java class archive (`app\dream.jsa`). Both make later starts faster; if a step fails, the app starts
+without them. With a TMDB key in `DREAM_TMDB_KEY` or `windows/local.properties`, that launch gets as far as Home's
+rows and records more classes. Release builds run it with no key.
+
+### Keys on Windows
+
+No key is compiled into the Windows app. Each viewer adds their own TMDB key, OMDb key, debrid accounts and Trakt
+app in setup or Settings. For your own runs from source, `windows/local.properties` (git-ignored) can hold
+`tmdb.key` and `premiumize.client_id`: they're read at run time from the working folder or the folder above it,
+and the TMDB key is added once as if you'd typed it in Settings. The updater always checks this repository
+(`UpdateCheck.REPO` in `core`); change it in a fork.
+
+### Logs
+
+`%APPDATA%\Dream OS\logs\dream.log`. Tests write theirs under `build/` instead.
+
+<br>
+
 ## Releases
 
 All platforms publish to this repository's [Releases](https://github.com/DenseCow/dream-os/releases). Every
 release must include the Fire Stick app as **`DreamOS.apk`** (plus `DreamOS.apk.sha256`), because the Downloader
 code and the in-app updater always fetch the newest release's `DreamOS.apk`. The iPhone build is attached as
-`Dream.ipa` when there is one.
+`Dream.ipa` when there is one. From 4.3.6 on, releases also carry **`DreamOS-Windows-Setup.exe`** (plus
+`DreamOS-Windows-Setup.exe.sha256`), which the Windows updater and the README's download link fetch.
 
-Maintainers use `tools/release.sh` in the repository root: it builds the APK from the committed Fire Stick code with
-no keys inside, runs the privacy scan on it, and publishes the release. For your own fork, set `update.repo` to
-your repository (or leave it empty) and sign with your own key.
+Maintainers use `tools/release.sh` in the repository root (`IPA=1` adds the iPhone build, `WIN=1` the Windows
+setup). It exports the committed code of each app, builds every file from that exported copy with no keys inside,
+runs the privacy scan on the code and on each built file, and publishes the release. For your own fork, set
+`update.repo` to your repository (or leave it empty) and sign with your own key.

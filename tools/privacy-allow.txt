@@ -55,3 +55,30 @@ network	BUILDING.md	-RemoteAddress 172.16.0.0/12
 # Fire Stick setup guide drawing: made-up example TMDB key and token (same fake key as the iPhone drawing; checked 2026-10-28, not the real key).
 credential	firestick/app/src/main/java/com/firehome/launcher/SetupGuide.kt	"8f3a1c9e2b7d4f60a5e1c3b9d2f7a4e8"
 credential	firestick/app/src/main/java/com/firehome/launcher/SetupGuide.kt	"eyJhbGciOiJIUzI1NiJ9.eyJhdWQiOiI4ZjNhMWM5ZTJiN2Q0ZjYwYTVlMWMzYjlkMmY3YTRlOCIs"
+
+# --- Windows (windows/) ---
+# Settings > TMDB key drawing: the same made-up example key and token as the Fire Stick and iPhone drawings (checked 2026-10-30).
+credential	windows/app/src/main/kotlin/com/dreamos/desktop/settings/MorePages.kt	"8f3a1c9e2b7d4f60a5e1c3b9d2f7a4e8"
+credential	windows/app/src/main/kotlin/com/dreamos/desktop/settings/MorePages.kt	"eyJhbGciOiJIUzI1NiJ9.eyJhdWQiOiI4ZjNhMWM5ZTJiN2Q0ZjYwYTVlMWMzYjlkMmY3YTRlOCIs"
+# Test function names (long words with digits), not keys.
+credential	windows/core/src/test/kotlin/com/dreamos/desktop/core/AccountsTest.kt	fun noticesKeepTheNewest50AndBannerOnlyKindsStayOut()
+credential	windows/core/src/test/kotlin/com/dreamos/desktop/core/AccountsTest.kt	fun updateCheckFindsANewerReleaseThenKeepsItOn304()
+credential	windows/core/src/test/kotlin/com/dreamos/desktop/core/playback/DebridTest.kt	fun realDebridRefreshesOn401AndSavesTheToken()
+# The published SHA-256 test vector for "abc" (FIPS 180-2).
+credential	windows/core/src/test/kotlin/com/dreamos/desktop/core/Round2Test.kt	"ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+# Pinned SHA-256 checksums and PyPI download paths of the public libmpv, Python and wheel files the build fetches.
+credential	windows/tools/fetch-mpv.sh	MPV_SHA256="
+credential	windows/tools/fetch-python.sh	PY_SHA256=
+credential	windows/tools/fetch-python.sh	|https://files.pythonhosted.org/packages/
+
+# --- Windows app image (tools/privacy_scan.py image, run by tools/iscc-scan.sh before Inno Setup packs it) ---
+# jpackage launcher config: Compose names each bundled jar with its content hash (public library jars).
+credential	Dream OS/app/Dream OS.cfg	app.classpath=$APPDIR\
+# Skiko ships the SHA-256 of its own Skia dll.
+credential	Dream OS/app/skiko-windows-x64.dll.sha256	
+# libmpv (shinchiro build) links libssh: its OpenSSH key type names and PEM header constants, not a key.
+token	Dream OS/app/resources/libmpv-2.dll	@openssh.com
+token	Dream OS/app/resources/libmpv-2.dll	OPENSSH PRIVATE KEY-----
+# Upstream Python / requests: the private-range table and documentation examples.
+network	Dream OS/app/resources/python/python313.zip!ipaddress.pyc	/
+network	Dream OS/app/resources/python-site/requests/utils.py	ip = 192.168.1.1

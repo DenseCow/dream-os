@@ -51,6 +51,7 @@ app are Dream's own designs, not official artwork.
 **Platforms**
 - Amazon: Fire TV, Fire OS, Amazon Appstore, Alexa
 - Apple: iPhone, iOS, App Store, AirPods, AirPlay
+- Microsoft: Windows, Microsoft Defender SmartScreen, Windows Hello
 
 **Data and ratings**
 - TMDB (The Movie Database)
@@ -89,6 +90,8 @@ Dream OS has been tested on these devices:
   it at all.
 - **iPhone:** an iPhone Air on iOS 27.2; requires iOS 17 or later. Other iPhone models and iOS versions are
   untested.
+- **Windows:** one PC running Windows 11 (64-bit). The Windows app is new in 4.3.6 and has had much less use than
+  the other two, so expect more bugs there. Windows 10 and other PCs are untested.
 
 Use on other devices at your own risk. Reports are welcome in
 [Issues](https://github.com/DenseCow/dream-os/issues).
@@ -99,6 +102,10 @@ The Fire Stick app installs from outside the Amazon Appstore, and the iPhone app
 Account instead of coming from the App Store. Neither has been reviewed by Amazon or Apple. Amazon's and Apple's
 terms for your devices and accounts still apply. The optional Fire Stick Home screen steps change system settings
 over ADB; you can undo them at any time (see the [install guide](INSTALL-FIRESTICK.md#undo-it)).
+
+The Windows setup isn't code-signed, so Microsoft Defender SmartScreen warns before it runs (see the
+[install guide](INSTALL-WINDOWS.md#download-and-install)). Each release lists the setup's SHA-256 so you can check
+that your download matches.
 
 ## No Warranty
 
@@ -119,6 +126,6 @@ Dream OS keeps your keys, accounts, profiles and watch history on your device an
 developer. It has no analytics, tracking or crash reporting. It connects directly to the services you set up
 (TMDB, OMDb, Trakt, your other accounts and your scraper repositories) and to a few free public services for
 extras: TVmaze (air times), TheIntroDB, AniSkip, ARM and Kitsu (skip markers), OpenSubtitles (subtitles),
-trailer streams from the video host TMDB lists, Cloudflare (only when you run the speed test), and on the Fire Stick
-Open-Meteo for the weather (using an approximate location from your internet address via ipwho.is or GeoJS) and
-GitHub (to check for Dream updates).
+trailer streams from the video host TMDB lists, Cloudflare (only when you run the speed test), on the Fire Stick
+Open-Meteo for the weather (using an approximate location from your internet address via ipwho.is or GeoJS), and on
+the Fire Stick and Windows GitHub (to check for Dream updates).
