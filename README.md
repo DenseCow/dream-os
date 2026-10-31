@@ -15,7 +15,7 @@ Free and open source under GPL-3.0. Dream OS ships with no content and no source
 </p>
 
 > [!NOTE]
-> **You may run into bugs.** Dream OS is made by a small team and changes quickly, so some things will break or
+> **You may run into bugs.** Some things will break or
 > act oddly now and then. When that happens, please
 > [open an issue](https://github.com/DenseCow/dream-os/issues/new/choose) and tell us what you were doing, your
 > device and your Dream version. Every report helps us fix it sooner.
