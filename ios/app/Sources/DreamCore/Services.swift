@@ -146,12 +146,17 @@ public protocol HistoryService: Sendable {
     func recent() async -> [HistoryEntry]
     /// A title's main play button: "Play", "Resume", "Play S1 E1", "Resume S2 E5" (PlayFlow.playLabel).
     func playLabel(for title: Title) async -> String
+    /// A show the viewer caught up on (it left Continue Watching after its latest episode): the episode out after it
+    /// now, aired or out early, as an Up Next entry, so Play jumps there ("Play S2 E1"). Nil when the show is still in
+    /// the row, was removed from it (that one starts fresh), or nothing newer is out (WatchHistory.kt `caughtUpNext`).
+    func caughtUpNext(for key: String) async -> HistoryEntry?
 }
 
 public extension HistoryService {
     func record(_ entry: HistoryEntry, exact: Bool) async { await record(entry) }
     func recent() async -> [HistoryEntry] { await continueWatching() }
     func playLabel(for title: Title) async -> String { title.kind == .tv ? "Play S1 E1" : "Play" }
+    func caughtUpNext(for key: String) async -> HistoryEntry? { nil }
 }
 
 public protocol MyListService: Sendable {

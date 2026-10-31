@@ -7,8 +7,11 @@ import DreamPlayer
 
 /// A title's trailer playing behind the title page's hero, where its backdrop was (HeroTrailer.kt, Netflix style).
 ///
-/// - Starts 4 s after the page rests with its hero on screen (the stream is looked up after half a second, so it's
-///   ready on time), only with Dream in front, the page showing and Dream Player neither up nor floating.
+/// - Starts after the page rests 1 s with its hero on screen, only with Dream in front, the page showing and Dream
+///   Player neither up nor floating. The stream is usually readied ahead (`TrailerAhead`: a card pressed, a hero
+///   slide on screen); during the rest the player opens hidden and muted, runs to its first picture and waits there
+///   paused, so the trailer fades in the moment the rest ends. A title not readied yet shows as soon as its picture
+///   is up.
 /// - The backdrop stays under it until real picture is on screen, then the video dissolves in over 900 ms; at the
 ///   end (or the moment the hero scrolls away, the page goes, the app leaves the front, Play is pressed) the still
 ///   fades back over it and the player is released. No loops: after a trailer ends, the next one waits until the
@@ -153,12 +156,21 @@ final class HeroTrailerModel {
     @ObservationIgnored private var observers: [NSObjectProtocol] = []
     @ObservationIgnored private var readyWatch: NSKeyValueObservation?
     @ObservationIgnored private var gen = 0
+    /// The rest is over: the picture shows the moment it's up.
+    @ObservationIgnored private var restOver = false
+    /// The hidden player reached its first picture during the rest and waits there paused.
+    @ObservationIgnored private var prerolled = false
+    /// When the page opened (timing log: page open to the trailer on screen).
+    @ObservationIgnored private var pageAt = Date()
+    /// For the timing log: the streams were found ahead ("yes"), joined a look-up under way ("joined") or not ("no"),
+    /// and whether the player came buffered from a card press.
+    @ObservationIgnored private var ahead = "no"
+    @ObservationIgnored private var primedPlayer = false
+    /// Other look-ahead waits while this trailer is looked up and loads its first picture (TrailerWindow).
+    @ObservationIgnored private var window: Int?
 
-    /// The TV rests 4 s; the phone 1 s (owner: start sooner), the stream looked up at once and buffered meanwhile.
+    /// The TV and the phone both rest 1 s (owner); the phone's stream is looked up at once (usually readied ahead).
     static let restSeconds = 1.0
-    static let lookupSeconds = 0.0
-    /// Streams found this session, by trailer key: a replay or a return to the page starts without a new lookup.
-    @MainActor static var found: [String: TrailerStream] = [:]
     static let startTimeout = 15.0
     static let volume: Float = 0.8
 
@@ -193,6 +205,7 @@ final class HeroTrailerModel {
     }
 
     func set(pageShowing: Bool) {
+        if pageShowing && !self.pageShowing { pageAt = Date() }
         self.pageShowing = pageShowing
         evaluate()
     }
@@ -204,6 +217,7 @@ final class HeroTrailerModel {
 
     func stopNow() {
         waitForUser = true
+        TrailerWindow.closeAll()
         stop()
     }
 
@@ -227,23 +241,22 @@ final class HeroTrailerModel {
         gen += 1
         let g = gen
         sound = BackgroundTrailers.mode == .sound
+        let armedAt = Date()
+        ahead = TrailerAhead.readiness(key)
+        if window == nil { window = TrailerWindow.begin() }
         arm = Task { [weak self] in
-            try? await Task.sleep(for: .seconds(Self.lookupSeconds))
-            guard !Task.isCancelled else { return }
-            // Looked up early so the trailer can start right on time.
-            let armedAt = Date().addingTimeInterval(-Self.lookupSeconds)
-            var found = await MainActor.run { Self.found[key] }
-            if found == nil { found = try? await Trailers.resolver.stream(forKey: key) }
-            if let f = found { await MainActor.run { Self.found[key] = f } }
+            // Usually readied ahead (a card pressed, a hero slide); else looked up now, joining a look-up under way.
+            let found = await TrailerAhead.stream(forKey: key)
             guard let self, !Task.isCancelled, g == self.gen else { return }
             self.arm = nil
             guard let found else {
                 Log.app.notice("Hero trailer: no stream")
+                self.closeWindow()
                 self.waitForUser = true
                 return
             }
-            // The player opens and buffers now (paused, hidden); it starts the moment the rest is over, so the
-            // picture is there on time instead of a buffering wait after it.
+            // The player opens now, hidden and muted, and runs to its first picture, where it waits paused for the
+            // rest to end: the picture is there on time instead of a buffering wait after it.
             self.begin(found, gen: g, playAt: armedAt.addingTimeInterval(Self.restSeconds))
         }
     }
@@ -253,13 +266,18 @@ final class HeroTrailerModel {
         // Dream Player up (it counts a moment longer after closing): look again shortly.
         if blocked { arm = Task { [weak self] in try? await Task.sleep(for: .seconds(1)); self?.arm = nil; self?.evaluate() }; return }
         stream = s
-        let item = AVPlayerItem(url: s.video)
+        guard let key else { return }
+        // Buffered ahead from the card press when there is one; else a new player on the asset opened ahead.
+        let (p, wasPrimed) = TrailerAhead.player(for: key, s)
+        guard let item = p.currentItem else { failed("could not open"); return }
+        primedPlayer = wasPrimed
         item.preferredForwardBufferDuration = 6
-        let p = AVPlayer(playerItem: item)
         p.isMuted = true
         p.volume = 0
         p.allowsExternalPlayback = false
         p.preventsDisplaySleepDuringVideoPlayback = true
+        // Hidden, it starts from the first data instead of a long buffer; turned back on once its picture is up.
+        p.automaticallyWaitsToMinimizeStalling = false
         player = p
         let started = Date()
         readyWatch = item.observe(\.status) { [weak self] it, _ in
@@ -269,29 +287,39 @@ final class HeroTrailerModel {
             MainActor.assumeIsolated { self?.ended() }
         })
         setSession(sound: false)
-        let wait = playAt.timeIntervalSinceNow
-        if wait > 0.05 {
+        // Hidden and muted, it plays to its first picture now; the watch below pauses it there until the rest ends.
+        prerolled = false
+        restOver = playAt.timeIntervalSinceNow <= 0.05
+        p.play()
+        if !restOver {
             Task { [weak self] in
-                try? await Task.sleep(for: .seconds(wait))
+                try? await Task.sleep(for: .seconds(playAt.timeIntervalSinceNow))
                 guard let self, g == self.gen, self.player === p else { return }
-                p.play()
+                self.restOver = true
+                if self.prerolled { p.play(); self.show(started) }
             }
-        } else {
-            p.play()
         }
-        // Watch for the first frame, the player coming up, and a start that never happens.
+        // Watch for the first picture, the player coming up, and a start that never happens (every 100 ms until the
+        // picture is on screen, then every 250 ms).
         watch = Task { [weak self] in
             while !Task.isCancelled {
-                try? await Task.sleep(for: .milliseconds(250))
+                let step = self?.revealed == true ? 250 : 100
+                try? await Task.sleep(for: .milliseconds(step))
                 guard let self, g == self.gen else { return }
                 if self.blocked { self.stopNow(); return }
                 if !self.revealed {
-                    if p.currentItem?.status == .readyToPlay, p.currentTime().seconds > 0.15 {
-                        self.revealed = true
-                        // No immersive fade on the phone (owner): the page stays up over the trailer.
-                        self.applySound(fade: true)
-                        Log.app.notice("Hero trailer: playing after \(String(format: "%.1f", Date().timeIntervalSince(started)), privacy: .public) s")
-                    } else if Date().timeIntervalSince(started) > Self.startTimeout {
+                    if !self.prerolled, p.currentItem?.status == .readyToPlay, p.currentTime().seconds > 0.15 {
+                        if self.restOver {
+                            self.show(started)
+                        } else {
+                            // Picture is up during the rest: it waits here, paused and hidden.
+                            p.pause()
+                            p.automaticallyWaitsToMinimizeStalling = true
+                            self.prerolled = true
+                            self.closeWindow()
+                            Log.app.notice("Hero trailer: ready hidden \(Self.ms(self.pageAt), privacy: .public) ms after the page opened")
+                        }
+                    } else if !self.prerolled, Date().timeIntervalSince(started) > Self.startTimeout {
                         self.failed("no picture in time")
                         return
                     }
@@ -302,8 +330,26 @@ final class HeroTrailerModel {
         }
     }
 
+    /// On screen: the still dissolves away and the sound (if on) fades up.
+    private func show(_ started: Date) {
+        guard !revealed else { return }
+        revealed = true
+        player?.automaticallyWaitsToMinimizeStalling = true
+        closeWindow()
+        // No immersive fade on the phone (owner): the page stays up over the trailer.
+        applySound(fade: true)
+        Log.app.notice("Hero trailer: on screen \(Self.ms(self.pageAt), privacy: .public) ms after the page opened (player open \(Self.ms(started), privacy: .public) ms, readied ahead \(self.ahead, privacy: .public), buffered from the card press \(self.primedPlayer ? "yes" : "no", privacy: .public))")
+    }
+
+    private func closeWindow() {
+        if let w = window { TrailerWindow.close(w); window = nil }
+    }
+
+    private static func ms(_ since: Date) -> Int { Int(Date().timeIntervalSince(since) * 1000) }
+
     private func failed(_ why: String) {
         Log.app.notice("Hero trailer: \(why, privacy: .public)")
+        if let key { TrailerAhead.forget(key) }
         waitForUser = true
         stop()
     }
@@ -315,6 +361,7 @@ final class HeroTrailerModel {
         Task { [weak self] in
             try? await Task.sleep(for: .milliseconds(400)) // the stop's fade frees the player
             guard let self else { return }
+            self.pageAt = Date() // the replay's timing counts from its own rest
             self.evaluate()
         }
     }
@@ -323,7 +370,10 @@ final class HeroTrailerModel {
     private func stop() {
         arm?.cancel(); arm = nil
         watch?.cancel(); watch = nil
+        closeWindow()
         gen += 1
+        prerolled = false
+        restOver = false
         guard player != nil else { return }
         if let p = player, let t = title, let k = key, revealed, p.currentTime().seconds > 1 {
             Self.last = Spot(titleKey: t.key, key: k, seconds: p.currentTime().seconds, at: Date())

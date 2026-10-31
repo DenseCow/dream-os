@@ -114,7 +114,11 @@ object NewReleases {
         val running = "$BASE$extra$skip&air_date.gte=$from&air_date.lte=${DreamTime.ymdPlus(0)}&first_air_date.lte=${DreamTime.ymdPlus(-days - 1)}" +
             "&vote_count.gte=${if (narrow) 15 else 50}"
         val airing = Tmdb.list(ctx, "/discover/tv", running, "tv")
-        return seasonPremieres(ctx, airing, from).filter { it.posterPath != null || it.backdropPath != null }
+        val history = try { WatchHistory.recent(ctx) } catch (e: Exception) { emptyList() }
+        // A show the viewer is caught up on has no new episode for them (NewEpisodes.caughtUp): it leaves until the next one airs.
+        fun caughtUp(t: Title) = synchronized(lastAired) { lastAired.get(t.id) }
+            ?.let { (s, e) -> NewEpisodes.caughtUp(ctx, t.id, s, e, history) } == true
+        return seasonPremieres(ctx, airing, from).filter { (it.posterPath != null || it.backdropPath != null) && !caughtUp(it) }
     }
 
     /**
@@ -196,13 +200,20 @@ object NewReleases {
             val d = s.optString("air_date")
             if (s.optInt("season_number") >= 1 && d.length >= 10 && d != "null" && d <= today && d > latest) latest = d
         }
-        json.optJSONObject("last_episode_to_air")?.let { ep -> episodeLine(ep)?.let { synchronized(lastEpisodes) { lastEpisodes.put(id, it) } } }
+        json.optJSONObject("last_episode_to_air")?.let { ep ->
+            episodeLine(ep)?.let { synchronized(lastEpisodes) { lastEpisodes.put(id, it) } }
+            val s = ep.optInt("season_number")
+            val n = ep.optInt("episode_number")
+            if (s >= 1 && n >= 1) synchronized(lastAired) { lastAired.put(id, s to n) }
+        }
         synchronized(premiereCache) { premiereCache.put(id, now to latest) }
         return latest
     }
 
     /** Each returning show's newest aired episode line, filled by [latestSeason] from the details call it already makes. */
     private val lastEpisodes = LruCache<Int, String>(600)
+    /** Each returning show's newest aired episode (season to number), from the same call: who is caught up. */
+    private val lastAired = LruCache<Int, Pair<Int, Int>>(600)
     private val GENERIC_EPISODE = Regex("^(Episode|Ep\\.?)\\s*\\d+$", RegexOption.IGNORE_CASE)
 
     /**

@@ -6,6 +6,8 @@ import DreamUI
 /// show's new episode on a dark panel, its still, "NEW EPISODE" in a still rainbow, the show, "S3 · E7  Episode Name",
 /// whether it's out, and Play (the rainbow), Go to Show and Dismiss. Gone while there is nothing to offer.
 struct NewEpisodeBannerView: View {
+    /// The panel's surface (the kicker's fading words are read against it).
+    static let panelHex: UInt32 = 0x0F0F10
     @Environment(ShellModel.self) private var shell
     private var spot: NewEpisodeSpot { NewEpisodeSpot.shared }
 
@@ -35,12 +37,15 @@ struct NewEpisodeBannerView: View {
                 .clipShape(RoundedRectangle(cornerRadius: Cinema.rCard, style: .continuous))
                 VStack(alignment: .leading, spacing: 5) {
                     HStack(spacing: 10) {
-                        Text(word)
-                            .font(.system(size: 11.5, weight: .semibold))
-                            .tracking(1.5)
-                            .foregroundStyle(Rainbow.linear)
-                            .lineLimit(1)
-                            .fixedSize()
+                        // The fading rainbow, lifted only as far as 4.5:1 on the panel needs.
+                        RainbowFade(interval: 1 / 15) { h in
+                            Text(word)
+                                .font(.system(size: 11.5, weight: .semibold))
+                                .tracking(1.5)
+                                .foregroundStyle(Color(hex: Rainbow.textOn(h, Self.panelHex)))
+                                .lineLimit(1)
+                                .fixedSize()
+                        }
                         if let a = spot.availability {
                             AvailabilityPill(a)
                         } else if let s = spot.statusWords(item) {
@@ -71,7 +76,7 @@ struct NewEpisodeBannerView: View {
             }
         }
         .padding(14)
-        .background(RoundedRectangle(cornerRadius: 16, style: .continuous).fill(Color(hex: 0x0F0F10)))
+        .background(RoundedRectangle(cornerRadius: 16, style: .continuous).fill(Color(hex: Self.panelHex)))
         .overlay(RoundedRectangle(cornerRadius: 16, style: .continuous).strokeBorder(Palette.hairline, lineWidth: 1))
         .padding(.horizontal, Cinema.gutter)
     }
@@ -99,14 +104,17 @@ struct NoticeBell: View {
                 .frame(width: 44, height: 44)
                 .overlay(alignment: .topTrailing) {
                     if board.unread > 0 {
-                        Text(board.unread > 9 ? "9+" : "\(board.unread)")
-                            .font(.system(size: 10.5, weight: .bold))
-                            .foregroundStyle(.white)
-                            .padding(.horizontal, 4)
-                            .frame(minWidth: 17, minHeight: 17)
-                            .background(Capsule().fill(LinearGradient(colors: Array(Rainbow.colors.prefix(3)), startPoint: .topLeading, endPoint: .bottomTrailing)))
-                            .overlay(Capsule().strokeBorder(Color(hex: 0x0C0C0E), lineWidth: 1.5))
-                            .offset(x: -3, y: 5)
+                        // The fading rainbow, the count in the readable ink for each hue.
+                        RainbowFade(interval: 1 / 15) { h in
+                            Text(board.unread > 9 ? "9+" : "\(board.unread)")
+                                .font(.system(size: 10.5, weight: .bold))
+                                .foregroundStyle(Rainbow.inkOn(h))
+                                .padding(.horizontal, 4)
+                                .frame(minWidth: 17, minHeight: 17)
+                                .background(Capsule().fill(Color(hex: h)))
+                                .overlay(Capsule().strokeBorder(Color(hex: 0x0C0C0E), lineWidth: 1.5))
+                        }
+                        .offset(x: -3, y: 5)
                     }
                 }
                 .contentShape(Rectangle())

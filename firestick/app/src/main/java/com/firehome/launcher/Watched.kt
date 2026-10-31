@@ -175,6 +175,15 @@ object Watched {
     fun episode(ctx: Context, show: Int, season: Int, episode: Int): Boolean =
         read(ctx) { b -> b.shows[show]?.episodes?.contains("$season:$episode") ?: false }
 
+    /** The latest episode of [show] the viewer finished (season to episode), null when none ([NewEpisodes.caughtUp]). */
+    fun furthest(ctx: Context, show: Int): Pair<Int, Int>? = read(ctx) { b ->
+        b.shows[show]?.episodes?.mapNotNull { k ->
+            val s = k.substringBefore(':').toIntOrNull()
+            val e = k.substringAfter(':').toIntOrNull()
+            if (s != null && e != null) s to e else null
+        }?.maxWithOrNull(compareBy<Pair<Int, Int>>({ it.first }, { it.second }))
+    }
+
     /** Every aired episode finished, and nothing newer has aired since TMDB was asked. */
     fun show(ctx: Context, id: Int): Boolean = read(ctx) { b ->
         val s = b.shows[id] ?: return@read false

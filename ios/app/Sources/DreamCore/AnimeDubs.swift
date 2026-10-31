@@ -13,11 +13,36 @@ public enum AnimeDubs {
     public enum Rank: Sendable { case none, dub, plain }
 
     /// Anime as the anime sections define it: Japanese animation, and Chinese or Korean animated series that aren't
-    /// for kids or families (RowMix.isAnime reads this).
+    /// for kids or families (RowMix.isAnime reads this). Also animation made in Japan in another language that isn't
+    /// for kids or families: Cyberpunk: Edgerunners is English on TMDB, made by a Japanese studio (origin JP), and
+    /// showed as the Windows app's Home hero on 2026-10-30. The origin comes from the list result (shows) or a details
+    /// answer already fetched (movies, [origin]).
     public static func isAnime(_ t: Title) -> Bool {
         guard t.genreIds.contains(16) else { return false }
         if t.lang == "ja" { return true }
-        return t.kind == .tv && ["zh", "cn", "ko"].contains(t.lang) && !t.genreIds.contains(10762) && !t.genreIds.contains(10751)
+        let forKids = t.genreIds.contains(10762) || t.genreIds.contains(10751)
+        if !forKids && origin(t).contains("JP") { return true }
+        return t.kind == .tv && ["zh", "cn", "ko"].contains(t.lang) && !forKids
+    }
+
+    // Origin countries from TMDB details answers already fetched (title pages, history, look-ahead): TMDB's movie list
+    // results carry none, and [isAnime] reads it. Memory only, never a request of its own; cleared at 1,000 entries.
+    private static let originLock = NSLock()
+    nonisolated(unsafe) private static var origins: [String: [String]] = [:]
+
+    /// A "/movie/{id}" or "/tv/{id}" answer said where [key] ("movie:603") was made.
+    public static func noteOrigin(_ key: String, _ countries: [String]) {
+        guard !countries.isEmpty else { return }
+        originLock.withLock {
+            if origins.count >= 1000 { origins.removeAll(keepingCapacity: true) }
+            origins[key] = countries
+        }
+    }
+
+    /// [t]'s origin countries: its own, else what a details answer said; empty when neither knows.
+    public static func origin(_ t: Title) -> [String] {
+        if !t.originCountry.isEmpty { return t.originCountry }
+        return originLock.withLock { origins[t.key] } ?? []
     }
 
     // MARK: The setting (per profile, next to the audio and subtitle languages)

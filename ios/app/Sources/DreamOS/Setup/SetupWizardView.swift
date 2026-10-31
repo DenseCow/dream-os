@@ -336,16 +336,15 @@ private struct TimeZonePickPage: View {
     }
 }
 
-/// The send-off: "Dream OS" in the middle, the rainbow halo, "Welcome to Dream OS".
+/// The send-off: "Dream OS" in the middle, the halo, "Welcome to Dream OS", both in the fading rainbow.
 struct Celebration: View {
     var name: String
     @State private var on = false
     var body: some View {
         VStack(spacing: 22) {
             ZStack {
-                Circle().fill(Rainbow.gradient).blur(radius: 30).opacity(on ? 0.55 : 0).frame(width: 180, height: 180)
-                    .rotationEffect(.degrees(on ? 90 : 0))
-                Text("Dream OS").font(.system(size: 40, weight: .bold)).foregroundStyle(Rainbow.linear)
+                RainbowFade { h in Circle().fill(Color(hex: h)) }.blur(radius: 30).opacity(on ? 0.55 : 0).frame(width: 180, height: 180)
+                RainbowFade { h in Text("Dream OS").font(.system(size: 40, weight: .bold)).foregroundStyle(Color(hex: h)) }
                     .scaleEffect(on ? 1 : 0.9).opacity(on ? 1 : 0)
             }
             Text("Welcome to Dream OS").font(.system(size: 18, weight: .medium)).foregroundStyle(Palette.textSecondary).opacity(on ? 1 : 0)

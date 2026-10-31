@@ -317,7 +317,7 @@ class PremiumSettings(
                 maxLines = 1
                 ellipsize = android.text.TextUtils.TruncateAt.END
                 gravity = Gravity.CENTER_VERTICAL
-                setCompoundDrawablesRelative(icon, null, if (s.badge) badgeDot() else null, null)
+                setCompoundDrawablesRelative(icon, null, if (s.badge) badgeDot(this) else null, null)
                 compoundDrawablePadding = 14.dp
                 setPadding(18.dp, 0, 14.dp, 0)
                 tag = "cat:${s.title}"
@@ -334,10 +334,11 @@ class PremiumSettings(
         catScroll.post { if (!released) fadeCats() }
     }
 
-    /** The category's badge: a small disc in the brand's rainbow (like the bell's count), never tinted with the row. */
-    private fun badgeDot(): Drawable = GradientDrawable(GradientDrawable.Orientation.TL_BR, intArrayOf(Rainbow.COLORS[0], Rainbow.COLORS[1], Rainbow.COLORS[2])).apply {
+    /** The category's badge on [row]: a small disc in the fading rainbow (like the bell's count), never tinted with the row. */
+    private fun badgeDot(row: View): Drawable = GradientDrawable().apply {
         shape = GradientDrawable.OVAL
         setBounds(0, 0, 9.dp, 9.dp)
+        Rainbow.fadeFill(row, this)
     }
 
     /** Category tints: ink on the glow, full pearl for the open one, the rest sit back. */

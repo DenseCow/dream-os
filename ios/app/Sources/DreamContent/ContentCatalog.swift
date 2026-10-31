@@ -239,7 +239,7 @@ final class ContentCatalog: CatalogService, @unchecked Sendable {
     /// Search's Trending Now: no anime outside the anime sections, nothing adult, nothing not out yet (fire-home cd3927b).
     func trending() async -> [Title] {
         Array(((try? await Tmdb.trending()) ?? []).filter {
-            $0.posterPath != nil && !RowMix.isAnime($0) && !$0.adult && RowMix.released($0)
+            $0.posterPath != nil && !RowMix.animeHidden($0) && !$0.adult && RowMix.released($0)
         }.prefix(40))
     }
 

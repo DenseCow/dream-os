@@ -35,6 +35,10 @@ public struct CardButtonStyle: ButtonStyle {
 @MainActor
 public enum CardLookAhead {
     public static var title: ((Title) -> Void)?
+    /// A hero slide has been on screen `heroRestSeconds` (its page showing, the app active): what More Info opens is
+    /// readied (the app sets it: the title page's trailer).
+    public static var heroRest: ((Title) -> Void)?
+    public static let heroRestSeconds: Double = 1.5
 }
 
 /// One entry of a card's long-press menu.

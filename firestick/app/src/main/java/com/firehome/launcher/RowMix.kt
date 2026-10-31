@@ -214,13 +214,18 @@ object RowMix {
 
     /**
      * Anime: Japanese animation, and Chinese or Korean animated series that aren't for kids or families
-     * (donghua and aeni look like anime; their CGI films and preschool cartoons don't). It shows only in
-     * the anime sections ([RowClaims], [tidy]), never in Animation, Adult Animation, Action and the rest.
+     * (donghua and aeni look like anime; their CGI films and preschool cartoons don't). Also animation made in
+     * Japan in another language that isn't for kids or families: Cyberpunk: Edgerunners is English on TMDB, made by
+     * a Japanese studio (origin JP), and showed as the Windows app's Home hero on 2026-10-30. The origin comes from
+     * the list result (shows) or an earlier details call (movies, [Tmdb.origin]). It shows only in the anime
+     * sections ([RowClaims], [tidy]), never in Animation, Adult Animation, Action and the rest.
      */
     fun isAnime(t: Title): Boolean {
         if (16 !in t.genreIds) return false
         if (t.lang == "ja") return true
-        return t.type == "tv" && (t.lang == "zh" || t.lang == "cn" || t.lang == "ko") && 10762 !in t.genreIds && 10751 !in t.genreIds
+        val forKids = 10762 in t.genreIds || 10751 in t.genreIds
+        if (!forKids && "JP" in Tmdb.origin(t)) return true
+        return t.type == "tv" && (t.lang == "zh" || t.lang == "cn" || t.lang == "ko") && !forKids
     }
 
     /**

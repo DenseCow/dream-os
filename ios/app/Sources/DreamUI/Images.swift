@@ -186,10 +186,14 @@ public final class ImageStore: @unchecked Sendable {
 
     private func markMissing(_ url: URL) { lock.withLock { _ = missing.insert(url) } }
 
-    /// Fetches ahead (the hero's next slide).
-    public func prefetch(_ url: URL?) {
+    /// Fetches ahead (the hero's next slide). `afterTrailer`: art below the fold waits while a trailer is being readied
+    /// (`TrailerWindow`, 2 s at most); art the page shows first never does.
+    public func prefetch(_ url: URL?, afterTrailer: Bool = false) {
         guard let url, cached(url) == nil else { return }
-        Task.detached(priority: .utility) { _ = await self.image(url, urgent: false, kind: "prefetch") }
+        Task.detached(priority: .utility) {
+            if afterTrailer { await TrailerWindow.yield() }
+            _ = await self.image(url, urgent: false, kind: "prefetch")
+        }
     }
 }
 

@@ -1,9 +1,11 @@
 import SwiftUI
 
 // Dream Cinema's brand for touch (fire-home Rainbow.kt, CinemaStyle.kt, PearlFocus; docs STANDARDS §2).
-// TV focus becomes press/selection on the phone: Play-type actions fill with the rainbow fade while pressed,
-// every other button is a pearl box with dark ink and a rainbow border while pressed or selected, cards and images
-// take the rainbow border alone. Nothing animates at rest: the rainbow's clock runs only while something is pressed.
+// TV focus becomes press/selection on the phone: Play-type actions wear the rainbow fade at all times, every other
+// button is a pearl box with dark ink and a rainbow border while pressed or selected, cards and images take the
+// rainbow border alone. Every rainbow is the one fading color (owner, 2026-10-30: "all should be color cycle"), never
+// a static spectrum: rings, rails, bars, badges and brand words draw in `Rainbow.fadeHex` inside a `RainbowFade`,
+// whose clock rests in a page that isn't showing and holds one hue under Reduce Motion.
 
 public enum Palette {
     /// Page: #000000 -> #050506, never tinted.
@@ -33,7 +35,6 @@ public enum Palette {
 public enum Rainbow {
     /// Rainbow.kt COLORS: electric blue, violet, magenta, coral, orange, yellow, lime, aqua.
     public static let hexes: [UInt32] = [0x2F7BFF, 0x8B5CFF, 0xFF3DC8, 0xFF4D6D, 0xFF8A1F, 0xFFD21F, 0x7CFF4F, 0x19E3D6]
-    public static let colors: [Color] = hexes.map { Color(hex: $0) }
     /// How long the fade rests on each hue.
     public static let hueSeconds: Double = 2.2
 
@@ -49,17 +50,34 @@ public enum Rainbow {
         return mixHex(hexes[i], hexes[(i + 1) % hexes.count], e)
     }
 
-    public static var gradient: AngularGradient { AngularGradient(colors: colors + [colors[0]], center: .center) }
-    public static var linear: LinearGradient { LinearGradient(colors: colors, startPoint: .leading, endPoint: .trailing) }
     /// The hue at `index`, wrapping (genre cards run the rainbow across them).
     public static func hue(_ index: Int) -> UInt32 { hexes[((index % hexes.count) + hexes.count) % hexes.count] }
 
-    /// Readable ink on `fill`: white or the dark ink, whichever has the higher contrast (never a blend).
+    /// Readable ink on `fill`: white or `inkHex`, whichever has the higher contrast (never a blend).
     public static func inkOn(_ fill: UInt32) -> Color {
         let l = luminance(fill)
         let onWhite = 1.05 / (l + 0.05)
-        let onInk = (l + 0.05) / (luminance(0x111114) + 0.05)
-        return onInk >= onWhite ? Palette.ink : .white
+        let onInk = (l + 0.05) / (inkLuminance + 0.05)
+        return onInk >= onWhite ? Color(hex: inkHex) : .white
+    }
+
+    /// The words on the fade (Rainbow.kt PLAY_INK, the Windows app's too): its darkest moment, #6C66FF between blue
+    /// and violet, gives Palette.ink #111114 only 4.47:1; #0A0A0C holds 4.69:1 there and more everywhere else round
+    /// the cycle (antislop contrast-check), so small words pass AA all the way round.
+    public static let inkHex: UInt32 = 0x0A0A0C
+    private static let inkLuminance = luminance(inkHex)
+
+    /// `hex` as words on `bg`: the hue itself when it reads at 4.5:1 there, else lifted toward white in small steps
+    /// until it does (the fade's darkest moment on a raised surface needs a few percent).
+    public static func textOn(_ hex: UInt32, _ bg: UInt32) -> UInt32 {
+        let lb = luminance(bg)
+        var t = hex
+        for k in 0...20 {
+            let l = luminance(t)
+            if (max(l, lb) + 0.05) / (min(l, lb) + 0.05) >= 4.6 { return t }
+            t = mixHex(hex, 0xFFFFFF, Double(k + 1) * 0.02)
+        }
+        return t
     }
 
     static func luminance(_ c: UInt32) -> Double {
@@ -89,6 +107,35 @@ public struct DreamBackground: View {
     public init() {}
     public var body: some View {
         LinearGradient(colors: [Palette.page, Palette.pageBottom], startPoint: .top, endPoint: .bottom).ignoresSafeArea()
+    }
+}
+
+/// The fading rainbow's hue (0xRRGGBB) for `content`, stepped while the page shows (`pageActive`), the way the Play
+/// button's fill is; resting in a hidden tab and holding one hue under Reduce Motion. Every rainbow decoration (a ring,
+/// a rail, a bar, a badge, a brand word) draws through this instead of a gradient across the palette.
+public struct RainbowFade<Content: View>: View {
+    let interval: Double
+    let content: (UInt32) -> Content
+    @Environment(\.pageActive) private var active
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    /// `interval`: the step; the fade is slow (2.2 s a hue), so 15 a second already reads as smooth.
+    public init(interval: Double = 1 / 15, @ViewBuilder content: @escaping (UInt32) -> Content) {
+        self.interval = interval
+        self.content = content
+    }
+    public var body: some View {
+        TimelineView(.animation(minimumInterval: interval, paused: !active || reduceMotion)) { ctx in
+            content(Rainbow.fadeHex(ctx.date))
+        }
+    }
+}
+
+/// A thin ring in the fading rainbow (emblems, avatars, glyph discs): `Circle().strokeBorder` in the hue of the moment.
+public struct RainbowRing: View {
+    let lineWidth: CGFloat
+    public init(lineWidth: CGFloat) { self.lineWidth = lineWidth }
+    public var body: some View {
+        RainbowFade { h in Circle().strokeBorder(Color(hex: h), lineWidth: lineWidth) }
     }
 }
 

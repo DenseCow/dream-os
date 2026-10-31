@@ -1,9 +1,10 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
-  The Dream OS loading ring (LoadingCurtain.Spinner): a faint track and a 300° arc running through the
-  rainbow from a clear tail, turning once every 0.9 s. An AnimatedVectorDrawable, so the turn runs on the
-  RenderThread and keeps going while the main thread is busy (the play hand-off). Drawn for 20 dp with a
-  2.5 dp stroke.
+  The Dream OS loading ring (LoadingCurtain.Spinner): a faint track and a 100° arc in the fading rainbow, one hue at
+  a time (as every rainbow in Dream OS, Rainbow.fadeColor: 2.2 s per hue, easing between them), turning once every
+  0.9 s. An AnimatedVectorDrawable, so the turn and the hue both run on the RenderThread and keep going while the main
+  thread is busy (the play hand-off), with no clock of their own on the main thread. Drawn for 20 dp with a 2.5 dp
+  stroke. Keep the hues in step with Rainbow.COLORS.
 -->
 <animated-vector xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:aapt="http://schemas.android.com/aapt">
@@ -22,26 +23,11 @@
                 android:pivotX="10"
                 android:pivotY="10">
                 <path
-                    android:pathData="M18.35,10 A8.35,8.35 0 1,1 14.175,2.769"
+                    android:name="arc"
+                    android:pathData="M18.35,10 A8.35,8.35 0 0,1 8.55,18.223"
                     android:strokeWidth="2.5"
-                    android:strokeLineCap="round">
-                    <aapt:attr name="android:strokeColor">
-                        <gradient
-                            android:type="sweep"
-                            android:centerX="10"
-                            android:centerY="10">
-                            <item android:offset="0" android:color="#00000000" />
-                            <item android:offset="0.125" android:color="#FF2F7BFF" />
-                            <item android:offset="0.25" android:color="#FF8B5CFF" />
-                            <item android:offset="0.375" android:color="#FFFF3DC8" />
-                            <item android:offset="0.5" android:color="#FFFF4D6D" />
-                            <item android:offset="0.625" android:color="#FFFF8A1F" />
-                            <item android:offset="0.75" android:color="#FFFFD21F" />
-                            <item android:offset="0.875" android:color="#FF7CFF4F" />
-                            <item android:offset="1" android:color="#FF19E3D6" />
-                        </gradient>
-                    </aapt:attr>
-                </path>
+                    android:strokeLineCap="round"
+                    android:strokeColor="#FF2F7BFF" />
             </group>
         </vector>
     </aapt:attr>
@@ -55,6 +41,28 @@
                 android:duration="900"
                 android:repeatCount="infinite"
                 android:interpolator="@android:anim/linear_interpolator" />
+        </aapt:attr>
+    </target>
+    <target android:name="arc">
+        <aapt:attr name="android:animation">
+            <objectAnimator
+                android:duration="17600"
+                android:repeatCount="infinite"
+                android:interpolator="@android:anim/linear_interpolator">
+                <propertyValuesHolder
+                    android:propertyName="strokeColor"
+                    android:valueType="colorType">
+                        <keyframe android:fraction="0" android:value="#FF2F7BFF" />
+                        <keyframe android:fraction="0.125" android:value="#FF8B5CFF" android:interpolator="@android:anim/accelerate_decelerate_interpolator" />
+                        <keyframe android:fraction="0.25" android:value="#FFFF3DC8" android:interpolator="@android:anim/accelerate_decelerate_interpolator" />
+                        <keyframe android:fraction="0.375" android:value="#FFFF4D6D" android:interpolator="@android:anim/accelerate_decelerate_interpolator" />
+                        <keyframe android:fraction="0.5" android:value="#FFFF8A1F" android:interpolator="@android:anim/accelerate_decelerate_interpolator" />
+                        <keyframe android:fraction="0.625" android:value="#FFFFD21F" android:interpolator="@android:anim/accelerate_decelerate_interpolator" />
+                        <keyframe android:fraction="0.75" android:value="#FF7CFF4F" android:interpolator="@android:anim/accelerate_decelerate_interpolator" />
+                        <keyframe android:fraction="0.875" android:value="#FF19E3D6" android:interpolator="@android:anim/accelerate_decelerate_interpolator" />
+                        <keyframe android:fraction="1" android:value="#FF2F7BFF" android:interpolator="@android:anim/accelerate_decelerate_interpolator" />
+                </propertyValuesHolder>
+            </objectAnimator>
         </aapt:attr>
     </target>
 </animated-vector>

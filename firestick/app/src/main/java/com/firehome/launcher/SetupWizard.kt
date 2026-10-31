@@ -1598,7 +1598,7 @@ class SetupWizard(
 
     /**
      * The send-off after Start Watching: the page dims away, "You're All Set" appears alone in the center,
-     * then the Dream OS mark rises out of a slowly turning rainbow halo with "Welcome to Dream OS" under it, then [then].
+     * then the Dream OS mark rises out of a halo in the fading rainbow with "Welcome to Dream OS" under it, then [then].
      * About 6 s; every animation ends, and keys are ignored meanwhile.
      */
     private fun celebrate(then: () -> Unit) {
@@ -1610,14 +1610,12 @@ class SetupWizard(
         rail.animate().alpha(0f).setDuration(300).start()
         val layer = FrameLayout(ctx).apply { isClickable = true; isFocusable = true; isFocusableInTouchMode = true }
         val halo = View(ctx).apply {
-            background = GradientDrawable().apply {
-                shape = GradientDrawable.OVAL
-                gradientType = GradientDrawable.SWEEP_GRADIENT
-                colors = Rainbow.COLORS + Rainbow.COLORS[0]
-            }
+            val disc = GradientDrawable().apply { shape = GradientDrawable.OVAL }
+            background = disc
+            Rainbow.fadeFill(this, disc)
             alpha = 0f; scaleX = 0.4f; scaleY = 0.4f
         }
-        // A soft black core over the halo leaves only a glowing rainbow rim.
+        // A soft black core over the halo leaves only a glowing rim in the fade's hue.
         val core = View(ctx).apply {
             background = GradientDrawable().apply {
                 gradientType = GradientDrawable.RADIAL_GRADIENT
@@ -1641,7 +1639,7 @@ class SetupWizard(
         val brand = welcome.indexOf("Dream OS")
         val sub = k.label("", 24f, k.text, k.medium).apply {
             gravity = Gravity.CENTER; alpha = 0f
-            text = Rainbow.still(welcome, brand, welcome.length, 180.dp.toFloat())
+            text = Rainbow.fadeText(this, welcome, brand, welcome.length, Color.BLACK)
         }
         val enjoy = k.label("Enjoy!", 18f, k.dim, k.font).apply { gravity = Gravity.CENTER; alpha = 0f }
         // Three beats: "You're All Set" alone, then the mark rising out of the halo, then the welcome under it.
@@ -1659,8 +1657,8 @@ class SetupWizard(
         title.animate().alpha(1f).scaleX(1f).scaleY(1f).setStartDelay(300).setDuration(600).setInterpolator(Ui.EASE).start()
         view.postDelayed({
             title.animate().alpha(0f).scaleX(1.04f).scaleY(1.04f).setStartDelay(0).setDuration(380).setInterpolator(Ui.EXIT).start()
-            // 2. The halo turns in and the mark pops up out of it (2.1 s → 3.2 s).
-            halo.animate().alpha(0.85f).scaleX(1f).scaleY(1f).rotation(160f).setStartDelay(200).setDuration(2600).setInterpolator(Ui.EASE).start()
+            // 2. The halo grows in and the mark pops up out of it (2.1 s → 3.2 s).
+            halo.animate().alpha(0.85f).scaleX(1f).scaleY(1f).setStartDelay(200).setDuration(2600).setInterpolator(Ui.EASE).start()
             core.animate().alpha(1f).setStartDelay(200).setDuration(500).start()
             mark.animate().alpha(1f).scaleX(1f).scaleY(1f).setStartDelay(380).setDuration(720)
                 .setInterpolator(android.view.animation.OvershootInterpolator(1.6f)).start()

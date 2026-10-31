@@ -411,8 +411,9 @@ class CinemaKit(val ctx: Context) {
     // ---- controls ----
 
     /**
-     * Netflix's buttons: [primary] (Play) is a pearl capsule with ink text, the others translucent with
-     * pearl text; focused, any of them turns pearl, lifts a touch and glows in the current hue.
+     * Netflix's buttons: [primary] (Play) wears the fading rainbow with ink text at all times, the others are
+     * translucent with pearl text and turn pearl when focused; focused, any of them lifts a touch and glows in the
+     * current hue.
      */
     fun button(label: String, iconRes: Int?, primary: Boolean, onClick: () -> Unit) = TextView(ctx).apply {
         text = label
@@ -421,9 +422,9 @@ class CinemaKit(val ctx: Context) {
         gravity = Gravity.CENTER
         includeFontPadding = false
         maxLines = 1
-        // Play rests white; focused, it wears the rainbow as one solid color slowly fading from hue to hue
-        // (Rainbow.fade), its text and icon following in a readable ink. The others are dark gray glass at rest;
-        // focused, a pearl box with dark ink, the rainbow glow around it (same corners).
+        // Play wears the rainbow as one solid color slowly fading from hue to hue at all times (Rainbow.fade), its
+        // text and icon following in a readable ink; focused, the glow and lift mark it. The others are dark gray
+        // glass at rest; focused, a pearl box with dark ink, the rainbow glow around it (same corners).
         val rest = if (primary) Color.WHITE else this@CinemaKit.text
         val colors = ColorStateList(arrayOf(intArrayOf(android.R.attr.state_focused), IntArray(0)), intArrayOf(if (primary) Color.WHITE else ink, rest))
         setTextColor(colors)
@@ -493,12 +494,6 @@ class CinemaKit(val ctx: Context) {
             val s = if (has) 1.06f else 1f
             v.animate().scaleX(s).scaleY(s).setStartDelay(0).setDuration(CinemaStyle.FOCUS_MS).setInterpolator(Ui.EASE).start()
         }
-    }
-
-    /** Four glow hues from [start] on, deepened a touch so white text reads on all of them (Play's fill). */
-    fun rainbowFrom(start: Int): IntArray {
-        val i = CinemaStyle.GLOW_HUES.indexOf(start).coerceAtLeast(0)
-        return IntArray(4) { Ui.mix(CinemaStyle.glowColor(i + it), Color.BLACK, 0.18f) }
     }
 
     /** A quiet empty state: a line icon in a soft disc, a title and a hint. */

@@ -100,7 +100,7 @@ class PremiumKit(val ctx: Context) {
 
     /**
      * The one button: the focus glow (the highlight into its dream shift) with ink text when focused,
-     * pearl (primary) or glass (secondary) at rest. Springs up, one light sweep across as it lands.
+     * the fading rainbow (primary) or glass (secondary) at rest. Springs up, one light sweep across as it lands.
      * Always the Dream focus look ([PearlFocus]), a primary being Play-type ([dream] is kept for callers; it changes nothing).
      */
     @Suppress("UNUSED_PARAMETER")
@@ -123,10 +123,10 @@ class PremiumKit(val ctx: Context) {
     }
 
     /**
-     * [pill]'s Dream look: a capsule of half its height. Primary (Play-type): pearl at rest, the fading
-     * rainbow fill while focused, its label and icon in the fill's readable ink. Otherwise neutral glass at
-     * rest, the pearl face with dark ink when focused. Both wear the rainbow border while focused, dropped
-     * at once on the way out. No colored shadow: the glow is the depth.
+     * [pill]'s Dream look: a capsule of half its height. Primary (Play-type): the fading rainbow fill at all
+     * times, its label and icon in the fill's readable ink. Otherwise neutral glass at rest, the pearl face with
+     * dark ink when focused. Both wear the rainbow border while focused (with the lift and sheen), dropped at once
+     * on the way out. No colored shadow: the glow is the depth.
      */
     private fun dreamPill(v: TextView, primary: Boolean, heightDp: Int) {
         val r = heightDp / 2

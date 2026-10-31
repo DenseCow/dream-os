@@ -225,6 +225,14 @@ public struct SpotlightHero: View {
             autoMoved = true
             withAnimation(.easeInOut(duration: 0.6)) { current = next }
         }
+        // A slide on screen 1.5 s: its title page's trailer is readied, so More Info opens onto a trailer that starts
+        // after the page's own rest. Same pauses as the advance (background, hidden tab).
+        .task(id: "ahead|\(shown?.id ?? "")|\(phase == .active && pageActive)") {
+            guard let shown, phase == .active, pageActive else { return }
+            try? await Task.sleep(for: .seconds(CardLookAhead.heroRestSeconds))
+            guard !Task.isCancelled else { return }
+            CardLookAhead.heroRest?(shown.title)
+        }
     }
 }
 

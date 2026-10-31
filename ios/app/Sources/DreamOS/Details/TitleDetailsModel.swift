@@ -98,8 +98,10 @@ final class TitleDetailsModel {
     }
 
     /// Redone whenever the page shows again (a viewing may have ended behind it): Resume never uses a stale spot.
+    /// A show the viewer caught up on takes the episode out after it now, so Play jumps there ("Play S2 E1").
     func refreshHistory() async {
-        let e = await Services.shared.history.entry(for: title.key)
+        var e = await Services.shared.history.entry(for: title.key)
+        if e == nil, isShow { e = await Services.shared.history.caughtUpNext(for: title.key) }
         if history != e { history = e }
     }
 
@@ -210,10 +212,10 @@ final class TitleDetailsModel {
         var fallbackFetched = false
         for e in eps.sorted(by: { $0.number < $1.number }).prefix(first) {
             if let u = e.still(EpisodeCard.stillSize) {
-                ImageStore.shared.prefetch(u)
+                ImageStore.shared.prefetch(u, afterTrailer: true)
             } else if !fallbackFetched, let u = episodeFallbackArt(season: e.season).compactMap({ $0 }).first {
                 // No still on TMDB (new episodes often have none yet): the card shows the fallback, fetched once.
-                ImageStore.shared.prefetch(u)
+                ImageStore.shared.prefetch(u, afterTrailer: true)
                 fallbackFetched = true
             }
         }

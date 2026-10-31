@@ -5,14 +5,12 @@ import android.content.Context
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.LinearGradient
-import android.graphics.Matrix
 import android.graphics.Paint
 import android.graphics.Path
 import android.graphics.PathMeasure
 import android.graphics.RadialGradient
 import android.graphics.RectF
 import android.graphics.Shader
-import android.graphics.SweepGradient
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
 import android.os.SystemClock
@@ -23,12 +21,11 @@ import android.widget.TextView
 /**
  * The setup's illustrations in the Dream OS line-art look ([GlyphPen]): one monoline pearl icon with
  * round caps and joins, lots of air, no fills, no shading, centered on a dark-glass disc ringed in a
- * thin rainbow with a faint rainbow glow behind (the brand signature). Green and red appear only as
- * status (Final Check's result). Drawn in a 100 × 100 box, crisp at any size, no bitmaps.
+ * thin line of the fading rainbow with a faint glow of it behind (the brand signature). Green and red
+ * appear only as status (Final Check's result). Drawn in a 100 × 100 box, crisp at any size, no bitmaps.
  *
- * Motion: Final Check's ring turns while the check runs, then its arc closes into a check (or a
- * mark); Done's ring turns slowly. Both only while on screen. Everything else is still (no per-frame
- * work at all).
+ * Motion: the ring's hue steps on Cinema's shared clock while on screen ([Rainbow.redrawOnFade]); Final
+ * Check's arc turns while the check runs (30 fps, only then), then closes into a check (or a mark).
  */
 class SetupArt(ctx: Context, private val kind: Kind) : View(ctx) {
     enum class Kind { CLOCK, ACCOUNTS, SCRAPERS, CHECK, PERSONALIZE, DONE, INTRO, PLAYBACK, SPEED, PROFILES, BACKUP, UNLOCK }
@@ -54,9 +51,10 @@ class SetupArt(ctx: Context, private val kind: Kind) : View(ctx) {
     private var closing = 0f
     private var close: ValueAnimator? = null
     private val startedAt = SystemClock.uptimeMillis()
-    private var turn = 0f
 
-    private val animated get() = kind == Kind.DONE || (kind == Kind.CHECK && checkState == CheckState.RUNNING)
+    private val animated get() = kind == Kind.CHECK && checkState == CheckState.RUNNING
+
+    init { Rainbow.redrawOnFade(this) }
 
     override fun onAttachedToWindow() { super.onAttachedToWindow(); tick() }
     override fun onDetachedFromWindow() { close?.cancel(); super.onDetachedFromWindow() }
@@ -68,9 +66,7 @@ class SetupArt(ctx: Context, private val kind: Kind) : View(ctx) {
         val save = canvas.save()
         canvas.translate(width / 2f - 50f * s, height / 2f - 50f * s)
         canvas.scale(s, s)
-        // The ring turns only while something is happening; otherwise it stays where it stopped.
-        if (animated) turn = ((SystemClock.uptimeMillis() - startedAt) / 1000f * TURN_DEG_PER_S) % 360f
-        g.backdrop(canvas, turn, glow = if (kind == Kind.DONE) 1.5f else 1f)
+        g.backdrop(canvas, glow = if (kind == Kind.DONE) 1.5f else 1f)
         when (kind) {
             Kind.CLOCK -> clock(canvas)
             Kind.ACCOUNTS -> accounts(canvas)
@@ -240,8 +236,6 @@ class SetupArt(ctx: Context, private val kind: Kind) : View(ctx) {
     }
 
     companion object {
-        /** How fast the ring turns while something is happening (degrees a second): slow. */
-        private const val TURN_DEG_PER_S = 30f
         val PEARL = PearlFocus.PEARL
         val INK = PearlFocus.INK
         val GREEN = 0xFF30D158.toInt()
@@ -275,14 +269,13 @@ internal class GlyphPen(val weight: Float, private val ring: Float) {
     private val line = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE; strokeCap = Paint.Cap.ROUND; strokeJoin = Paint.Join.ROUND }
     private val glass = LinearGradient(0f, 11f, 0f, 89f, 0xFF2A2A31.toInt(), 0xFF0B0B0E.toInt(), Shader.TileMode.CLAMP)
     private val light = RadialGradient(50f, 14f, 46f, Color.argb(22, 255, 255, 255), Color.TRANSPARENT, Shader.TileMode.CLAMP)
-    private val rainbow = SweepGradient(50f, 50f, Rainbow.COLORS + Rainbow.COLORS[0], null)
-    private val spin = Matrix()
-    private var turned = Float.NaN
 
-    /** The disc: a soft rainbow glow, the dark glass lit faintly from the top, the thin ring. [turn] in degrees. */
-    fun backdrop(c: Canvas, turn: Float = 0f, glow: Float = 1f) {
-        if (turn != turned) { turned = turn; spin.setRotate(turn, 50f, 50f); rainbow.setLocalMatrix(spin) }
-        line.shader = rainbow; line.color = Color.WHITE
+    /**
+     * The disc: a soft glow, the dark glass lit faintly from the top, the thin ring, the glow and ring in the fading
+     * rainbow's hue of the moment ([Rainbow.fadeColor]; the view redraws on Cinema's clock, [Rainbow.redrawOnFade]).
+     */
+    fun backdrop(c: Canvas, glow: Float = 1f) {
+        line.shader = null; line.color = Rainbow.fadeColor()
         for ((w, a) in GLOW) {
             line.strokeWidth = w; line.alpha = (a * glow).toInt().coerceAtMost(255)
             c.drawCircle(50f, 50f, R + 1f, line)
@@ -292,7 +285,6 @@ internal class GlyphPen(val weight: Float, private val ring: Float) {
         fill.shader = null
         line.alpha = 255; line.strokeWidth = ring
         c.drawCircle(50f, 50f, R, line)
-        line.shader = null
     }
 
     private fun tone(color: Int, alpha: Int) {

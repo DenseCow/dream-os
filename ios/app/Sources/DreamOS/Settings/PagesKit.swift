@@ -494,7 +494,7 @@ struct PageMonogram: View {
     var body: some View {
         ZStack {
             Circle().fill(Palette.surfaceRaised)
-            Circle().strokeBorder(Rainbow.gradient, lineWidth: 1.5).opacity(0.85)
+            RainbowRing(lineWidth: 1.5).opacity(0.85)
             Text(text)
                 .font(.system(size: size * (text.count > 1 ? 0.34 : 0.42), weight: .bold))
                 .foregroundStyle(Palette.pearl)
@@ -531,7 +531,7 @@ struct PageArt: View {
     private var standIn: some View {
         ZStack {
             Circle().fill(LinearGradient(colors: [Color(hex: 0x1C1C1F), Color(hex: 0x0E0E10)], startPoint: .topLeading, endPoint: .bottomTrailing))
-            Circle().strokeBorder(Rainbow.gradient, lineWidth: max(1.5, size * 0.018))
+            RainbowRing(lineWidth: max(1.5, size * 0.018))
             Image(systemName: symbol)
                 .font(.system(size: size * 0.38, weight: .light))
                 .foregroundStyle(Palette.pearl)

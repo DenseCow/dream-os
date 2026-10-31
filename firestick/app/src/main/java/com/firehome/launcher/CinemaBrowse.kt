@@ -1,13 +1,14 @@
 package com.firehome.launcher
 
+import android.graphics.Color
 import android.view.View
 import android.widget.LinearLayout
 
 /**
  * Cinema's Browse (the bar's Browse tab): two big entry tiles (TV Shows and Movies,
  * wearing this week's most popular art), Browse by Genre (cards tinted with the rainbow's hues), Browse by
- * Service (the brand tiles), and at the bottom the Discover wall, inline: three lines of filter
- * chips (type, order, genre; saved per profile) over a poster wall of every title, seven
+ * Service (the brand tiles), and at the bottom the Discover wall, inline: a line of three filter
+ * pickers (type, order, genre; saved per profile) over a poster wall of every title, seven
  * across with the name under each, that pages in as you near its end. Every page Browse opens comes back
  * here, onto the tile that opened it ([focusTile]).
  *
@@ -24,9 +25,10 @@ class CinemaBrowse(shell: CinemaShell) : CinemaRowsPage(shell) {
     private val serviceSpecs: List<ServiceSpec>
 
     // ---- the wall ----
-    /** Only type, order and genre are Cinema's chips: any other saved filters are kept in storage, not applied here. */
+    /** Only type, order and genre are Cinema's pickers: any other saved filters are kept in storage, not applied here. */
     private val f = Discover.load(ctx).let { DiscoverFilters(type = it.type, genre = it.genre, sort = it.sort) }
-    private lateinit var genreChips: CinemaChips
+    /** The wall's filter line, once the wall is built. */
+    private var pickers: CinemaPickerLine? = null
     private var wallFrom = 0
     private val wallLines = ArrayList<CinemaRow>()
     private val wallKeys = HashSet<String>()
@@ -119,37 +121,42 @@ class CinemaBrowse(shell: CinemaShell) : CinemaRowsPage(shell) {
         }.also { shell.post(it, PREFETCH_REST_MS) }
     }
 
-    /** The wall's title, its three chip lines, then the wall itself. */
+    /**
+     * The wall's title, its filters, then the wall itself. The filters are one line of three pickers in the
+     * iPhone's words and order (Movies or TV Shows, Sort By, Genres), each naming its current choice and opening
+     * a full-height panel of big rows ([CinemaPicker]).
+     */
     private fun wall() {
         add(kit.label("Every Movie and Show", CinemaStyle.T_ROW, kit.text, kit.semibold).apply {
             setPadding(kit.gutter, 0, kit.gutter, 0)
         }, gap = 16)
-        add(CinemaChips(kit, listOf("Movies", "TV Shows")) { i ->
-            f.switchType(if (i == 0) "movie" else "tv")
-            val fresh = genreChipsFor()
-            replace(genreChips, fresh)
-            genreChips = fresh
+        val kinds = listOf(PickItem("movie", "Movies"), PickItem("tv", "TV Shows"))
+        val sorts = Discover.SORT_ORDER.map { PickItem(it.toString(), Discover.SORTS[it]) }
+        lateinit var genres: CinemaPicker
+        val kind = CinemaPicker(kit, shell.root, "Movies or TV Shows", kinds, f.type) { id ->
+            f.switchType(id)
+            genres.set(genreItems(), f.genre.toString())
             changed()
-        }.apply { mark(if (f.type == "tv") 1 else 0) }, gap = 14)
-        add(CinemaChips(kit, Discover.SORT_ORDER.map { Discover.SORTS[it] }) { i -> f.sort = Discover.SORT_ORDER[i]; changed() }.apply {
-            mark(Discover.SORT_ORDER.indexOf(f.sort).coerceAtLeast(0))
-        }, gap = 14)
-        genreChips = genreChipsFor()
-        add(genreChips, gap = 26)
+        }
+        val sort = CinemaPicker(kit, shell.root, "Sort By", sorts, f.sort.toString()) { id -> f.sort = id.toInt(); changed() }
+        genres = CinemaPicker(kit, shell.root, "Genres", genreItems(), f.genre.toString()) { id -> f.genre = id.toInt(); changed() }
+        pickers = CinemaPickerLine(kit, listOf(kind, sort, genres))
+        add(pickers!!, gap = 26)
         wallFrom = sectionCount()
         loadWall(reset = true)
     }
 
-    /** The categories, the same set for movies and shows ([Discover.CATEGORIES]: Horror is on TV Shows too). */
-    private fun genreChipsFor(): CinemaChips {
-        val list = Discover.categories(f.type)
-        return CinemaChips(kit, listOf("Any Genre") + list.map { it.name }) { i ->
-            f.genre = if (i == 0) 0 else list[i - 1].id(f.type)
-            changed()
-        }.apply { mark((list.indexOfFirst { it.id(f.type) == f.genre } + 1).coerceAtLeast(0)) }
+    /**
+     * The categories as picker choices, the same set for movies and shows ([Discover.CATEGORIES]: Horror is on
+     * TV Shows too): Any Genre first, each with its drawn glyph in a soft rainbow tint (as on the iPhone).
+     */
+    private fun genreItems(): List<PickItem> {
+        fun tint(i: Int) = Ui.mix(CinemaStyle.glowColor(i), Color.WHITE, 0.35f)
+        return listOf(PickItem("0", "Any Genre", "Any", tint(0))) +
+            Discover.categories(f.type).mapIndexed { i, c -> PickItem(c.id(f.type).toString(), c.name, c.name, tint(i + 1)) }
     }
 
-    /** A chip changed the filters: saved for this profile (other saved filters untouched), the wall starts over. */
+    /** A picker changed the filters: saved for this profile (other saved filters untouched), the wall starts over. */
     private fun changed() {
         val saved = Discover.load(ctx)
         saved.type = f.type
@@ -224,6 +231,16 @@ class CinemaBrowse(shell: CinemaShell) : CinemaRowsPage(shell) {
         val w = kit.fit(RowKind.POSTER.w)
         val card = kit.poster(t, w, w * 3 / 2)
         return kit.unit(card, null, t.name, kit.subline(t)) to card
+    }
+
+    override fun onHide() {
+        super.onHide()
+        pickers?.dismiss()
+    }
+
+    override fun release() {
+        pickers?.dismiss()
+        super.release()
     }
 
     /** Nearing the wall's end (three lines left): the next page comes in under it. */

@@ -9,8 +9,8 @@ enum LevelKind: Equatable {
 }
 
 /// The slim level bar beside the picture while the viewer swipes brightness or volume (VLC / Infuse style):
-/// a dark-glass capsule with a thin track filling bottom to top in the rainbow (the brand's only colour, with its
-/// soft glow) and a drawn sun or speaker under it, 14 pt clear of the track.
+/// a dark-glass capsule with a thin track filling bottom to top in the fading rainbow (the brand's only colour, one hue
+/// at a time, with its soft glow) and a drawn sun or speaker under it, 14 pt clear of the track.
 struct LevelBar: View {
     let kind: LevelKind
     let level: Double
@@ -23,13 +23,14 @@ struct LevelBar: View {
         VStack(spacing: 14) {
             ZStack(alignment: .bottom) {
                 Capsule().fill(Color.white.opacity(0.16))
-                // The whole rainbow spans the track and the level uncovers it, so the colours never squeeze.
-                Capsule()
-                    .fill(LinearGradient(colors: Rainbow.colors, startPoint: .bottom, endPoint: .top))
-                    .mask(alignment: .bottom) {
-                        Capsule().frame(height: max(0, Self.trackHeight * l))
-                    }
-                    .shadow(color: Rainbow.fadeColor().opacity(l > 0 ? 0.55 : 0), radius: 5)
+                RainbowFade { h in
+                    Capsule()
+                        .fill(Color(hex: h))
+                        .mask(alignment: .bottom) {
+                            Capsule().frame(height: max(0, Self.trackHeight * l))
+                        }
+                        .shadow(color: Color(hex: h).opacity(l > 0 ? 0.55 : 0), radius: 5)
+                }
             }
             .frame(width: Self.trackWidth, height: Self.trackHeight)
             Image(systemName: glyph(l))

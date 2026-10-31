@@ -226,14 +226,14 @@ private struct MiniPlayerBar: View {
     }
 }
 
-/// The running time as a thin rainbow line along the bar's foot (its own view, so only it redraws as time passes).
+/// The running time as a thin line in the fading rainbow along the bar's foot (its own view, so only it redraws).
 private struct MiniProgressLine: View {
     var body: some View {
         let progress = PlayerPresentation.shared.progress
         GeometryReader { g in
             ZStack(alignment: .leading) {
                 Rectangle().fill(Color.white.opacity(0.12))
-                Rectangle().fill(Rainbow.linear).frame(width: g.size.width * progress)
+                RainbowFade { h in Rectangle().fill(Color(hex: h)) }.frame(width: g.size.width * progress)
             }
         }
         .frame(height: 2)
@@ -270,7 +270,8 @@ private struct MiniRoundStyle: ButtonStyle {
     }
 }
 
-/// The calm loading ring, small: a faint track and a rainbow arc turning once every 1.1 s.
+/// The calm loading ring, small: a faint track and an arc in the fading rainbow turning once every 1.1 s (the hue read
+/// in the turn's own frames).
 private struct MiniRing: View {
     var body: some View {
         TimelineView(.animation) { ctx in
@@ -278,7 +279,7 @@ private struct MiniRing: View {
             ZStack {
                 Circle().stroke(Color.white.opacity(0.16), lineWidth: 2.5)
                 Circle().trim(from: 0, to: 100 / 360)
-                    .stroke(AngularGradient(colors: Rainbow.colors, center: .center), style: StrokeStyle(lineWidth: 2.5, lineCap: .round))
+                    .stroke(Color(hex: Rainbow.fadeHex(ctx.date)), style: StrokeStyle(lineWidth: 2.5, lineCap: .round))
                     .rotationEffect(.degrees(a - 90))
             }
             .frame(width: 22, height: 22)

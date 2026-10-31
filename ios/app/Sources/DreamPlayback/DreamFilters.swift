@@ -437,6 +437,19 @@ public enum CellularSaver {
     public static func start() { _ = PlaybackPath.shared }
     /// This session's answer (none until asked).
     public static var answer: Answer { session.lock.withLock { session.answer } }
+    /// Look-ahead that only saves time (a trailer readied before its page asks) may use the network now: Wi-Fi that
+    /// isn't metered or in Low Data Mode, or mobile data when the viewer chose full use (the saver Off, or Not Now this
+    /// session). A hotspot, Low Data Mode, Always On and an unanswered Ask Me fetch nothing ahead. Off the main
+    /// thread: the first read waits up to 0.3 s for the network monitor.
+    public static var lookAheadAllowed: Bool {
+        if PlaybackPath.shared.unmetered { return true }
+        guard onMobileData else { return false }
+        switch mode {
+        case .off: return true
+        case .on: return false
+        case .ask: return answer == .notNow
+        }
+    }
     /// The prompt decision ([why]: where the app would show it), read fresh, with one log line naming the interfaces,
     /// `isExpensive` and `isConstrained`, so a test shows exactly why it asked or didn't. Logs only when Ask Me is
     /// unanswered (the network is then the deciding fact).

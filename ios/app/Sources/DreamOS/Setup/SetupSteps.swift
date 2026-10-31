@@ -3,7 +3,8 @@ import DreamCore
 import DreamUI
 import DreamPlayback
 
-// Welcome, Get Ready and Connect. Finished sign-ins, keys, repositories and the check move on by themselves.
+// Welcome, Get Ready and Connect. A finished key and a passed check move on by themselves. A debrid sign-in and an
+// added repository return to their step instead: there can be several, so Continue is the viewer's call.
 
 // MARK: Welcome
 
@@ -182,8 +183,6 @@ struct DebridStep: View {
     @Environment(SetupFlow.self) private var flow
     @State private var states: [String: DebridAccountState] = [:]
     @State private var checking: Set<String> = []
-    @State private var ready = false
-    @State private var readyAtOpen = false
     @State private var linking: ServiceTarget?
     @State private var detail: ServiceTarget?
     @State private var help = false
@@ -204,7 +203,7 @@ struct DebridStep: View {
         }
         .task { await load(checkLinked: true) }
         .onReceive(NotificationCenter.default.publisher(for: .dreamAccountsChanged)) { _ in Task { await load() } }
-        .sheet(item: $linking, onDismiss: { Task { await linkClosed() } }) { t in
+        .sheet(item: $linking, onDismiss: { Task { await load() } }) { t in
             NavigationStack { LinkAccountView(service: t.id, autoClose: true) { Task { await load() } } }
                 .dreamNavigationLook()
                 .presentationBackground(Palette.page)
@@ -246,7 +245,7 @@ struct DebridStep: View {
         let caption = s.linked ? (s.user.map { "Signed in as \($0)" } ?? DebridServices.site(key)) : DebridServices.site(key)
         return Button {
             PageHaptics.tap()
-            if s.linked { detail = ServiceTarget(id: key) } else { readyAtOpen = ready; linking = ServiceTarget(id: key) }
+            if s.linked { detail = ServiceTarget(id: key) } else { linking = ServiceTarget(id: key) }
         } label: {
             PageRowContent(title: DebridServices.name(key), caption: caption,
                            value: words.components(separatedBy: " · ").first, valueTone: tone,
@@ -268,14 +267,7 @@ struct DebridStep: View {
                 checking.remove(key)
             }
         }
-        ready = await SetupGate.accountsBlocker() == nil
         if flow.blocker != nil, flow.step == .accounts { flow.blocker = await SetupGate.accountsBlocker() }
-    }
-
-    private func linkClosed() async {
-        await load()
-        // A sign-in that's approved and verified moves on (the sheet showed the result first).
-        if ready && !readyAtOpen { flow.forward() }
     }
 
     private func next() async {
@@ -290,12 +282,11 @@ struct ScrapersStep: View {
     @State private var st = ScraperStatus()
     @State private var loaded = false
     @State private var adding = false
-    @State private var readyAtOpen = false
     @State private var help = false
 
     var body: some View {
         let none = loaded && st.repos.isEmpty
-        SetupFrame(primary: none ? SetupAction(title: "Add Repository") { readyAtOpen = st.ready; adding = true }
+        SetupFrame(primary: none ? SetupAction(title: "Add Repository") { adding = true }
                                  : SetupAction(title: "Continue") { Task { await next() } },
                    secondary: none ? [helpAction] : [SetupAction(title: "Manage Scrapers") { flow.path.append(.manageScrapers) }, helpAction],
                    blocker: flow.blocker, shake: flow.shake) {
@@ -323,7 +314,7 @@ struct ScrapersStep: View {
         }
         .task { await load() }
         .onReceive(NotificationCenter.default.publisher(for: .dreamScrapersChanged)) { _ in Task { await load() } }
-        .sheet(isPresented: $adding, onDismiss: { Task { await addClosed() } }) {
+        .sheet(isPresented: $adding, onDismiss: { Task { await load() } }) {
             NavigationStack { AddRepoView(inSetup: true) { Task { await load() } } }
                 .dreamNavigationLook()
                 .presentationBackground(Palette.page)
@@ -342,11 +333,6 @@ struct ScrapersStep: View {
         st = await PagesServices.scrapers.status()
         loaded = true
         if flow.blocker != nil, flow.step == .scrapers { flow.blocker = st.ready ? nil : await SetupGate.scrapersBlocker() }
-    }
-
-    private func addClosed() async {
-        await load()
-        if st.ready && !readyAtOpen { flow.forward() }
     }
 
     private func next() async {

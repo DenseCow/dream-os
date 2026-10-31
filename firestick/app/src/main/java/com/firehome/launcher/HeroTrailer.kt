@@ -54,9 +54,9 @@ import kotlin.math.abs
  * playing trailer, and the host consumes that key); after [UI_IDLE_MS] without a key it goes full screen
  * again. Focus leaving the hero (e.g. onto the synopsis) stops it.
  *
- * - Starts 4 s after focus rests on the hero (any focus move off it restarts the wait), only with Dream OS
- *   in front, its window focused, nothing over it ([blocked]) and enough free memory. The lookup starts
- *   after half a second, so the streams are ready on time.
+ * - Starts [REST_MS] (1 s) after focus rests on the hero (any focus move off it restarts the wait), only with
+ *   Dream OS in front, its window focused, nothing over it ([blocked]) and enough free memory. The lookup
+ *   starts after half a second; a title not looked up yet starts as soon as its streams are found.
  * - One ExoPlayer on a SurfaceView (composited by the display hardware, so the weak GPU never redraws
  *   the UI per video frame). A copy of the backdrop covers it until real picture is on screen, then
  *   dissolves away; at the end (or the moment anything changes) the still fades back over it and the
@@ -86,7 +86,7 @@ class HeroTrailer private constructor(
     /** A trailer ended (or failed) by itself: the next one waits for the user to move. */
     private var waitForUser = false
 
-    /** ARMED: the 10 s wait runs; RESOLVING: waiting for the stream; STARTING: the still covers the first frames. */
+    /** ARMED: the [REST_MS] wait runs; RESOLVING: waiting for the stream; STARTING: the still covers the first frames. */
     private enum class Phase { IDLE, ARMED, RESOLVING, STARTING, PLAYING, STOPPING }
     private var phase = Phase.IDLE
     /** Bumped on every arm/disarm, so a late stream lookup can't start a trailer for an older wait. */
@@ -99,6 +99,8 @@ class HeroTrailer private constructor(
     private var cover: ImageView? = null
     private var volumeAnim: ValueAnimator? = null
     private var startedAt = 0L
+    /** When the last rest began (timing log: rest start to the picture on screen). */
+    private var armedAt = 0L
     private var firstFrameAt = 0L
     private var videoW = 0
     private var videoH = 0
@@ -278,6 +280,7 @@ class HeroTrailer private constructor(
     private fun arm() {
         phase = Phase.ARMED
         gen++
+        armedAt = SystemClock.elapsedRealtime()
         main.removeCallbacks(prefetch)
         main.removeCallbacks(go)
         // Resolve early (a second or three of network) so the trailer can start right on time.
@@ -511,6 +514,8 @@ class HeroTrailer private constructor(
         if (phase != Phase.STARTING) return
         val cv = cover ?: return
         phase = Phase.PLAYING
+        Log.w(TAG, "on screen ${SystemClock.elapsedRealtime() - armedAt} ms after the rest began " +
+            "(rest ${REST_MS} ms, player start to first frame ${firstFrameAt - startedAt} ms)")
         cv.animate().cancel()
         cv.animate().alpha(0f).setStartDelay(0).setDuration(REVEAL_MS).setInterpolator(Ui.EASE).withEndAction {
             // Hidden under the video: let it go of the bitmap's texture (the backdrop below keeps showing it).
@@ -711,7 +716,8 @@ class HeroTrailer private constructor(
             return (mi.availMem / (1024 * 1024)).toInt()
         }
 
-        private const val REST_MS = 4_000L
+        /** Focus at rest on the details page this long before the trailer starts (owner, 2026-10-30: was 4 s). */
+        private const val REST_MS = 1_000L
         private const val PREFETCH_MS = 500L
         /** The UI shown over a playing trailer fades away again after this long without a key. */
         private const val UI_IDLE_MS = 4_000L

@@ -398,15 +398,23 @@ internal object SetupGuide {
 }
 
 /**
- * A drawing of TMDB's API page (Dream Cinema look, no screenshot): the short API Key lit with a still rainbow border
- * and "Use This One", the long API Read Access Token dimmed with "Not This One". Drawn once into a bitmap when it is
- * sized, then only that bitmap is drawn: nothing animates and no offscreen layer is used.
+ * A drawing of TMDB's API page (Dream Cinema look, no screenshot): the short API Key lit with a border in the fading
+ * rainbow and "Use This One", the long API Read Access Token dimmed with "Not This One". The page is drawn once into
+ * a bitmap when it is sized; on screen, that bitmap and the lit border (one stroke in [Rainbow.fadeColor], redrawn on
+ * Cinema's shared clock) are all that's drawn. No offscreen layer.
  */
 internal class TmdbKeyArt(ctx: Context, private val k: PremiumKit) : View(ctx) {
     private var bmp: Bitmap? = null
     private val dp = ctx.resources.displayMetrics.density
+    /** The lit field's border, drawn live over the bitmap. */
+    private val litEdge = RectF()
+    private val edge = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE; strokeWidth = 1.5f * dp }
 
-    init { isFocusable = false; contentDescription = "On TMDB's API page, use the short API Key, not the long API Read Access Token." }
+    init {
+        isFocusable = false
+        contentDescription = "On TMDB's API page, use the short API Key, not the long API Read Access Token."
+        Rainbow.redrawOnFade(this)
+    }
 
     override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
         super.onSizeChanged(w, h, oldw, oldh)
@@ -421,7 +429,13 @@ internal class TmdbKeyArt(ctx: Context, private val k: PremiumKit) : View(ctx) {
 
     override fun onDetachedFromWindow() { super.onDetachedFromWindow(); bmp?.recycle(); bmp = null }
 
-    override fun onDraw(c: Canvas) { bmp?.let { c.drawBitmap(it, 0f, 0f, null) } }
+    override fun onDraw(c: Canvas) {
+        val b = bmp ?: return
+        c.drawBitmap(b, 0f, 0f, null)
+        if (litEdge.isEmpty) return
+        edge.color = Rainbow.fadeColor()
+        c.drawRoundRect(litEdge, px(10f), px(10f), edge)
+    }
 
     private fun px(v: Float) = v * dp
 
@@ -451,13 +465,8 @@ internal class TmdbKeyArt(ctx: Context, private val k: PremiumKit) : View(ctx) {
         val p = Paint(Paint.ANTI_ALIAS_FLAG)
         p.color = Ui.alpha(Color.WHITE, if (lit) 0.07f else 0.03f)
         c.drawRoundRect(r, px(10f), px(10f), p)
-        if (lit) {
-            // A still rainbow edge (the brand's only accent), drawn once.
-            p.style = Paint.Style.STROKE; p.strokeWidth = px(1.5f)
-            p.shader = Rainbow.gradient(r.width())
-            c.drawRoundRect(RectF(r.left + px(0.75f), r.top + px(0.75f), r.right - px(0.75f), r.bottom - px(0.75f)), px(10f), px(10f), p)
-            p.shader = null; p.style = Paint.Style.FILL
-        }
+        // The lit field's edge is the fading rainbow (the brand's only accent), drawn live in onDraw.
+        if (lit) litEdge.set(r.left + px(0.75f), r.top + px(0.75f), r.right - px(0.75f), r.bottom - px(0.75f))
         val name = Paint(Paint.ANTI_ALIAS_FLAG).apply { typeface = k.semibold; textSize = px(13f); color = if (lit) SetupBrand.TEXT else SetupBrand.DIM }
         c.drawText(label, r.left + px(12f), r.top + px(20f), name)
         // The tag capsule at the right.

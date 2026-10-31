@@ -156,4 +156,6 @@ extension DreamCorePlayback: PlaybackExtras {
         return f
     }
     func hasNextLink(for request: PlayRequest) -> Bool { core.hasAlternate(request) }
+    func fresh(_ request: PlayRequest) { core.fresh(request) }
+    func waiting(for request: PlayRequest) -> String? { core.waiting(request) }
 }

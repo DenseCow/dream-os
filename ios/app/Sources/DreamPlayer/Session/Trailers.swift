@@ -5,6 +5,12 @@ import DreamCore
 /// Nothing on screen ever names the service behind it.
 public protocol TrailerStreamResolver: Sendable {
     func stream(forKey key: String) async throws -> TrailerStream
+    /// Readies what every look-up needs (a few KB, once per run at most) so the first one is as quick as the rest.
+    func warm() async
+}
+
+public extension TrailerStreamResolver {
+    func warm() async {}
 }
 
 public enum Trailers {
@@ -21,6 +27,10 @@ public enum Trailers {
         get { lock.withLock { _resolver } }
         set { lock.withLock { _resolver = newValue } }
     }
+
+    /// Called a few seconds after launch, off the main thread, at low priority (the app skips it while Dream Player is
+    /// up, in Low Power Mode, when trailers are off and when look-ahead may not use the network).
+    public static func warm() async { await resolver.warm() }
 }
 
 /// Stand-in: every trailer is unavailable (the curtain shows "Trailer Unavailable").

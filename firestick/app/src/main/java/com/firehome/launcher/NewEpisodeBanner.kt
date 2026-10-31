@@ -367,6 +367,8 @@ class NewEpisodeBanner(
         outlineProvider = ViewOutlineProvider.BACKGROUND
         clipToOutline = true
     }
+    /** The panel's surface (the kicker's fading words are lifted only as far as they need to read on it). */
+    private val panelFill = Ui.mix(kit.bg, kit.text, 0.06f)
     private val kicker = kit.label("", CinemaStyle.T_CARD_KICKER, kit.text, kit.semibold, tracking = 0.14f)
     private val status = kit.label("", CinemaStyle.T_META, kit.dim, kit.medium)
     /** Available Now / CAM Only / Not Available Yet (Availability), once known. */
@@ -388,7 +390,7 @@ class NewEpisodeBanner(
             clipChildren = false
             clipToPadding = false
             // A dark neutral panel (no tint), a hairline edge: the page's own surface, one step up.
-            background = Ui.rounded(ctx, Ui.mix(kit.bg, kit.text, 0.06f), 16, 1f, Ui.alpha(kit.text, 0.08f))
+            background = Ui.rounded(ctx, panelFill, 16, 1f, Ui.alpha(kit.text, 0.08f))
             setPadding(PAD.dp, PAD.dp, PAD.dp, PAD.dp)
         }
         panel.addView(still, LinearLayout.LayoutParams(STILL_W.dp, STILL_H.dp))
@@ -472,7 +474,7 @@ class NewEpisodeBanner(
 
     private fun bind(item: NewEpisodes.Item) {
         val word = if (item.lastNumber > item.ep.number) "NEW EPISODES" else "NEW EPISODE"
-        kicker.text = Rainbow.still(word, 0, word.length, 150.dp.toFloat())
+        kicker.text = Rainbow.fadeText(kicker, word, 0, word.length, panelFill)
         name.text = item.show.name
         code.text = NewEpisodeSpot.code(item)
         epName.text = if (item.lastNumber > item.ep.number) "${item.lastNumber - item.ep.number + 1} Episodes"

@@ -147,14 +147,15 @@ private enum CheckPath {
     }
 }
 
-/// A rainbow arc turning, the live banner's loader (runs only while a live banner is working).
+/// An arc in the fading rainbow turning, the live banner's loader (runs only while a live banner is working; the hue is
+/// read in the turn's own frames).
 struct NoticeLoader: View {
     var body: some View {
         TimelineView(.animation(minimumInterval: 1 / 30)) { t in
             let a = t.date.timeIntervalSinceReferenceDate.truncatingRemainder(dividingBy: 1.1) / 1.1 * 360
             Circle()
                 .trim(from: 0, to: 0.72)
-                .stroke(AngularGradient(colors: Rainbow.colors, center: .center), style: StrokeStyle(lineWidth: 2.4, lineCap: .round))
+                .stroke(Color(hex: Rainbow.fadeHex(t.date)), style: StrokeStyle(lineWidth: 2.4, lineCap: .round))
                 .rotationEffect(.degrees(a))
         }
         .accessibilityHidden(true)
@@ -191,7 +192,7 @@ struct NoticeFace: View {
                 .scaleEffect(haloUp ? 1.22 : 1)
                 .opacity(haloUp ? 0.9 : 0.35)
             Circle().fill(Color(hex: 0x26262C)).frame(width: size - 6, height: size - 6)
-            Circle().strokeBorder(Rainbow.gradient, lineWidth: 1.2).opacity(0.8).frame(width: size - 6, height: size - 6)
+            RainbowRing(lineWidth: 1.2).opacity(0.8).frame(width: size - 6, height: size - 6)
             if state.face == .working {
                 NoticeLoader().frame(width: size * 0.5, height: size * 0.5)
             } else {

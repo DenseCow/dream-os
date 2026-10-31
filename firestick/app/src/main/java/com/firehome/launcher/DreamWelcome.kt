@@ -57,11 +57,14 @@ internal object WelcomeFeatures {
 
 /**
  * One feature's glyph in the Dream OS line-art look ([GlyphPen], same as [SetupArt]): a monoline pearl
- * icon on the dark-glass disc with its thin rainbow ring. Lines are a little heavier than the setup
- * art's so they stay clear at ~42 dp. Static: drawn once, nothing per frame.
+ * icon on the dark-glass disc with its thin ring in the fading rainbow. Lines are a little heavier than
+ * the setup art's so they stay clear at ~42 dp. Only the ring's hue moves, redrawn on Cinema's shared
+ * clock while on screen ([Rainbow.redrawOnFade]); nothing per frame.
  */
 internal class WelcomeGlyph(ctx: Context, private val kind: Int) : View(ctx) {
     private val g = GlyphPen(weight = 4.2f, ring = 2.4f)
+
+    init { Rainbow.redrawOnFade(this) }
 
     override fun onDraw(c: Canvas) {
         val s = minOf(width, height) / 100f

@@ -19,10 +19,11 @@ struct DreamTabBar: View {
                         Text(t.title)
                             .font(.system(size: 10.5, weight: current ? .semibold : .medium))
                             .lineLimit(1)
-                        Capsule()
-                            .fill(Rainbow.linear)
-                            .frame(width: 18, height: 3)
-                            .opacity(current ? 1 : 0)
+                        // The current tab's line in the fading rainbow (only that one runs the clock).
+                        Group {
+                            if current { RainbowFade { h in Capsule().fill(Color(hex: h)) } } else { Color.clear }
+                        }
+                        .frame(width: 18, height: 3)
                     }
                     .foregroundStyle(current ? Palette.text : Palette.text.opacity(0.55))
                     .frame(maxWidth: .infinity)

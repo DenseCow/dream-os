@@ -174,7 +174,7 @@ struct ChapterRail: View {
                 let done = CGFloat(chapter.rawValue) * (seg + gap) + seg * CGFloat(fraction)
                 ZStack(alignment: .leading) {
                     Color.white.opacity(0.16)
-                    Rainbow.linear.frame(width: max(0, done))
+                    RainbowFade { h in Color(hex: h) }.frame(width: max(0, done))
                 }
                 .mask {
                     HStack(spacing: gap) {

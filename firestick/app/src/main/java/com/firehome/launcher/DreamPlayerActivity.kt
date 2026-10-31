@@ -397,7 +397,7 @@ class DreamPlayerActivity : Activity(), PlayerHost {
         Trakt.onPlayerClosed(this)
         stopComponents()
         dreamSubs.end()
-        if (waiting) PlayFlow.cancel(this)
+        if (waiting) PlayFlow.cancel(this, request)
         exo.release()
         session?.run { isActive = false; release() }
         session = null
@@ -422,7 +422,9 @@ class DreamPlayerActivity : Activity(), PlayerHost {
     /** Curtain up for [req] until its stream arrives. */
     private fun startWaiting(req: PlaybackRequest) {
         endTrailerMode()
-        val same =waiting && request?.let { it.tmdbId == req.tmdbId && it.season == req.season && it.episode == req.episode } == true
+        // Already waiting for this title behind a curtain that is still loading (not its error screen, which the
+        // new Play must replace): the same curtain, with a new deadline for this Play.
+        val same = waiting && curtain.isLoading && request?.let { it.tmdbId == req.tmdbId && it.season == req.season && it.episode == req.episode } == true
         if (!same) {
             endSession()
             request = req
@@ -431,6 +433,7 @@ class DreamPlayerActivity : Activity(), PlayerHost {
             warmPlayerClasses()
         } else {
             request = req
+            curtain.renew()
         }
         updateMetadata()
         updatePlaybackState()
@@ -443,7 +446,8 @@ class DreamPlayerActivity : Activity(), PlayerHost {
         // The user backed out of this title while it was still being found: don't pop back up.
         if (PlayFlow.isCancelled(carried ?: request)) {
             Log.w(TAG, "dream player: ignoring late stream for a cancelled title")
-            if (created || !exo.hasSource) close()
+            // The curtain's error (its deadline cancelled the Play) stays up for Try Again; the player isn't closed under it.
+            if (created || !exo.hasSource && !curtain.isShowing) close()
             return
         }
         endTrailerMode() // the stream takes over (a trailer never comes through here)
@@ -815,7 +819,9 @@ class DreamPlayerActivity : Activity(), PlayerHost {
         if (isFinishing) return
         saveProgress(force = true)
         Trakt.onPlayerClosed(this)
-        if (waiting) PlayFlow.cancel(this)
+        if (waiting) PlayFlow.cancel(this, request)
+        // Cancelled once, here: onDestroy comes later, maybe after the next Play started (even of this same title).
+        waiting = false
         stopComponents()
         // Back to Dream OS: its task goes in front first, then the player's task is removed entirely.
         returnToDreamOs(applicationContext)
@@ -855,6 +861,7 @@ class DreamPlayerActivity : Activity(), PlayerHost {
         val again = req.copy(startMs = at)
         endSession()
         startWaiting(again)
+        PlayFlow.picked(again) // the picked stream is this Play's, even after the curtain's deadline cancelled the last one
         return again
     }
 
@@ -886,10 +893,10 @@ class DreamPlayerActivity : Activity(), PlayerHost {
         val next = try { NativeResolver.nextLink(req) } catch (e: Exception) { null }
         if (next != null) {
             Log.w(TAG, "dream player: $why; switching to the next ready source quietly ($silentTries of $SILENT_TRIES, no lookup)")
-            handler.post { if (request === req && !isFinishing) playAlternate(req, next) }
+            handler.post { if (request === req && !isFinishing && !curtainGaveUp()) playAlternate(req, next) }
         } else {
             Log.w(TAG, "dream player: $why; switching to the next source quietly ($silentTries of $SILENT_TRIES)")
-            handler.post { if (request === req && !isFinishing) tryAnotherSource() }
+            handler.post { if (request === req && !isFinishing && !curtainGaveUp()) tryAnotherSource() }
         }
         return true
     }
@@ -925,7 +932,8 @@ class DreamPlayerActivity : Activity(), PlayerHost {
         silentFallback("no first frame after ${START_WATCH_MS / 1000} s")
     }
 
-    fun tryAnotherSource() {
+    /** [fresh] (Try Again on the curtain): a lookup for this title still under way is never joined; a new one starts. */
+    fun tryAnotherSource(fresh: Boolean = false) {
         if (trailerMode) return retryTrailer()
         val req = request ?: return close() // nothing to resolve again: back to Dream OS
         val at = if (exo.hasSource && firstFrame) exo.positionMs else req.startMs
@@ -933,7 +941,33 @@ class DreamPlayerActivity : Activity(), PlayerHost {
         NativeResolver.forget(req) // "another" source: not the torrent that just played
         endSession()
         startWaiting(again)
-        PlayFlow.resolve(this, again)
+        PlayFlow.resolve(this, again, fresh = fresh)
+    }
+
+    /** The curtain shows its error (its deadline passed meanwhile): a quiet switch posted just before doesn't start a new Play. */
+    private fun curtainGaveUp() = curtain.isShowing && !curtain.isLoading
+
+    /** Where this Play waits, for the log when the curtain's deadline passes. */
+    internal fun waitingIn(): String = when {
+        trailerMode -> "trailer"
+        !waiting && exo.hasSource && !firstFrame -> "player start (" + (if (exo.isBuffering) "buffering" else "no picture") +
+            ", ${(exo.bufferedMs - exo.positionMs).coerceAtLeast(0) / 100 / 10.0} s buffered ahead, source switches $silentTries of $SILENT_TRIES)"
+        else -> PlayFlow.phase(request)
+    }
+
+    /**
+     * The curtain's deadline passed: a stream loaded without a picture stops (it must not start behind the error
+     * screen and lift it), and no quiet source switch follows. The lookup side is stopped by [PlayFlow.timedOut].
+     */
+    internal fun stopStart() {
+        handler.removeCallbacks(startWatch)
+        waiting = false // a quiet switch's fast start still under way (playAlternate) doesn't load behind the error
+        if (exo.hasSource && !firstFrame) {
+            stopComponents()
+            exo.clear()
+            subtitleView.setCues(emptyList())
+            updatePlaybackState()
+        }
     }
 
     /** Subtitle look (the controls agent's subtitle settings). [textSizeFraction] is of the video height. */

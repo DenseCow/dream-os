@@ -1314,10 +1314,10 @@ class MainActivity : Activity() {
         }
     }
 
-    /** The status line with its leading word (or "Loading Complete") in the flowing Dream rainbow, bold. */
+    /** The status line with its leading word (or "Loading Complete") in the fading Dream rainbow, bold. */
     private fun colorizeBoot(view: TextView, text: String, done: Boolean): CharSequence {
         val end = if (done) "Loading Complete".length else text.indexOf(' ').takeIf { it > 0 } ?: text.length
-        val span = android.text.SpannableString(Rainbow.flow(view, text, 0, end, 220.dp.toFloat()))
+        val span = android.text.SpannableString(Rainbow.fadeText(view, text, 0, end, INTRO_UNDER_TEXT))
         span.setSpan(android.text.style.StyleSpan(Typeface.BOLD), 0, end, 0)
         return span
     }
@@ -1478,10 +1478,10 @@ class MainActivity : Activity() {
     }
 
     /**
-     * What the Play button plays for [t]: the movie; a show's episode from the watch history, else
-     * (Dream Player's button says "Play S1 E1") the first aired season's first episode; null when it
-     * would ask instead. [done] on the main thread (the season lookup runs in the background). Shared
-     * by Play and Instant Play's pre-resolve, so both mean the very same request.
+     * What the Play button plays for [t]: the movie; a show's episode from the watch history; a caught-up show's
+     * newer episode once it's out ([WatchHistory.caughtUpNext], "Play S2 E1"); else (the button says "Play S1 E1")
+     * the first aired season's first episode; null when it would ask instead. [done] on the main thread (the
+     * lookups run in the background). Shared by Play and Instant Play's pre-resolve, so both mean the very same request.
      */
     private fun playTarget(t: Title, done: (PlaybackRequest?) -> Unit) {
         val year = t.year.take(4).toIntOrNull()
@@ -1490,8 +1490,10 @@ class MainActivity : Activity() {
         if (t.type != "tv") return done(req(false, year, null))
         val next = nextEpisode(t)
         if (next != null) return done(req(true, next.year, next.imdb, next.season, next.episode))
-        Net.background({ airedSeasons(t.id).firstOrNull()?.first }) { first ->
-            done(first?.let { req(true, year, null, it, 1) })
+        Net.background({
+            WatchHistory.caughtUpNext(this, t.key)?.let { it.season to it.episode } ?: airedSeasons(t.id).firstOrNull()?.first?.let { it to 1 }
+        }) { ep ->
+            done(ep?.let { (s, e) -> req(true, year, null, s, e) })
         }
     }
 
@@ -1545,9 +1547,11 @@ class MainActivity : Activity() {
     /** Menu-sheet chooser: a ready-to-play first row (next episode, or S1 E1), then the aired seasons. */
     private fun chooseEpisode(t: Title) {
         val owner = details
-        val next = nextEpisode(t)
-        Net.background({ airedSeasons(t.id) }) { seasons ->
+        val inRow = nextEpisode(t)
+        Net.background({ (inRow ?: WatchHistory.caughtUpNext(this, t.key)) to airedSeasons(t.id) }) { found ->
             if (details !== owner || menuOverlay != null) return@background
+            val next = found?.first ?: inRow
+            val seasons = found?.second
             if (seasons.isNullOrEmpty()) {
                 Toast.makeText(this, "Couldn't find episodes of ${t.name}", Toast.LENGTH_SHORT).show()
                 return@background
@@ -2348,8 +2352,7 @@ class MainActivity : Activity() {
     /**
      * Settings, grouped like a TV's own: who's watching, the services Dream Core plays from, alerts,
      * how things play, what sources are allowed, how Dream OS looks, Home, devices, network, the
-     * system, Advanced (API keys) and
-     * About. Every row does something; values sit on the right, a short caption under the name.
+     * system and About. Your own TMDB and OMDb keys sit in Accounts & Scrapers. Every row does something; values sit on the right, a short caption under the name.
      */
     private fun settingsSections(): List<PremiumSettings.Section> {
         fun I(label: String, value: String?, icon: Int?, toggle: Boolean?, caption: String? = null, tone: Int? = null, action: () -> Unit) =
@@ -2389,6 +2392,15 @@ class MainActivity : Activity() {
             ) + TraktPage.settingsItems(this) { refreshSettings() } + listOf( // TraktPage.kt: always shown (own Trakt app when the build has no keys)
                 I("Scrapers", DreamSettingsPage.scrapersValue(this), R.drawable.ic_info, null, "Your Scraper Repositories and Providers") {
                     closeSettings { DreamSettingsPage.open(this, DreamSettingsPage.SCRAPERS) }
+                },
+                // Your own keys sit with the accounts (owner, 2026-10-30; the same order on all three apps). The key
+                // pages (KeyPages.kt): Added / Not Added, Show Me How, If Something Goes Wrong, What to Try.
+                I("TMDB Key", if (Tmdb.hasKey(this)) "Added" else "Not Added", R.drawable.ic_movie, null, "Titles, Artwork and Search") {
+                    DreamPanelPage.openKey(this, KeyPages.Kind.TMDB) { refreshSettings(); showPage(page, force = true) }
+                },
+                // Rotten Tomatoes and IMDb scores (Ratings.kt); without a key those badges just stay hidden.
+                I("OMDb Key", if (Ratings.omdbEnabled(this)) "Added" else "Not Added", R.drawable.ic_movie, null, "Rotten Tomatoes and IMDb Scores") {
+                    DreamPanelPage.openKey(this, KeyPages.Kind.OMDB) { refreshSettings(); showPage(page, force = true) }
                 },
                 // DreamSetupMore.kt: the same page as setup's Playback Preferences.
                 I("Sources & Quality", PlaybackPrefs.summary(this), R.drawable.ic_settings, null, "Quality, Languages, Subtitles and Size Limits") {
@@ -2535,17 +2547,6 @@ class MainActivity : Activity() {
                 I("Accessibility", null, R.drawable.ic_info, null) { startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)) },
                 I("All Fire Stick Settings", null, R.drawable.ic_settings, null, "The Amazon Menu") { openAmazonSettings() },
                 I("Close Dream OS", null, R.drawable.ic_home, null, "Back to the Fire TV Home · Open Dream OS From Your Apps") { closeToAmazonHome() },
-            )),
-            // Advanced: API keys for title data and ratings.
-            PremiumSettings.Section("Advanced", LineIcon.GEAR, listOf(
-                // The key pages (KeyPages.kt): Added / Not Added, Show Me How, If Something Goes Wrong, What to Try.
-                I("TMDB Key", if (Tmdb.hasKey(this)) "Added" else "Not Added", R.drawable.ic_movie, null, "Titles, Artwork and Search") {
-                    DreamPanelPage.openKey(this, KeyPages.Kind.TMDB) { refreshSettings(); showPage(page, force = true) }
-                },
-                // Rotten Tomatoes and IMDb scores (Ratings.kt); without a key those badges just stay hidden.
-                I("OMDb Key", if (Ratings.omdbEnabled(this)) "Added" else "Not Added", R.drawable.ic_movie, null, "Rotten Tomatoes and IMDb Scores") {
-                    DreamPanelPage.openKey(this, KeyPages.Kind.OMDB) { refreshSettings(); showPage(page, force = true) }
-                },
             )),
             // UpdatePage.kt: Dream OS's own updates; hidden when the build has no releases repository. The dot: a new version waits.
             PremiumSettings.Section("Updates", SettingsGlyph.SPARKLE, UpdatePage.settingsItems(this) { refreshSettings() },
@@ -2704,7 +2705,7 @@ class MainActivity : Activity() {
         }
         val sparkles = SparkleView(this)
         val glowPulse = View(this).apply {
-            background = rainbowGlow()
+            background = rainbowGlow(this)
             alpha = 0f
             scaleX = 0.6f
             scaleY = 0.6f
@@ -2736,10 +2737,9 @@ class MainActivity : Activity() {
             setShadowLayer(10f, 0f, 2f, Color.argb(220, 0, 0, 0))
         }
         val fill = View(this).apply {
-            background = GradientDrawable(GradientDrawable.Orientation.LEFT_RIGHT,
-                Rainbow.COLORS).apply {
-                cornerRadius = 3.dp.toFloat()
-            }
+            val bar = GradientDrawable().apply { cornerRadius = 3.dp.toFloat() }
+            background = bar
+            Rainbow.fadeFill(this, bar)
             pivotX = 0f
             scaleX = 0f
         }
@@ -2831,11 +2831,11 @@ class MainActivity : Activity() {
         }
     }
 
-    /** "Dream OS \u00b7 Version 4.1 (DEV)" (BuildConfig, never written in code): the number in the Dream rainbow, the channel in its status color. */
+    /** "Dream OS \u00b7 Version 4.1 (DEV)" (BuildConfig, never written in code): the number in the fading rainbow, the channel in its status color. */
     private fun introVersion() = TextView(this).apply {
         val name = BuildConfig.VERSION_NAME
         val line = "Dream OS  \u00b7  Version $name"
-        text = android.text.SpannableStringBuilder(Rainbow.still(line, line.length - name.length, line.length, 36.dp.toFloat())).apply {
+        text = android.text.SpannableStringBuilder(Rainbow.fadeText(this, line, line.length - name.length, line.length, INTRO_UNDER_TEXT)).apply {
             setSpan(StyleSpan(Typeface.BOLD), length - name.length, length, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
             // The build channel: (PUBLIC) in green for builds published by tools/release.sh, (DEV) in red for every other.
             append(" ")
@@ -2855,27 +2855,38 @@ class MainActivity : Activity() {
     }
 
     /**
-     * The intro's welcome pulse: a halo in the logo's rainbow (hues round the circle, a soft white heart,
-     * fading to nothing at the rim). Painted once into a small bitmap on the CPU and drawn scaled with
-     * filtering: a blurry glow loses nothing at 256 px, and the GPU samples one texture per pixel instead
-     * of evaluating two gradients across a 1440 px square while the sweep runs.
+     * The intro's welcome pulse: a halo in the fading rainbow (one hue, as every rainbow; a soft white heart, fading to
+     * nothing at the rim) on [view]. Both are small alpha masks painted once on the CPU and drawn scaled with
+     * filtering: a blurry glow loses nothing at 256 px, and the GPU samples one texture per pixel instead of evaluating
+     * gradients across a 1440 px square while the sweep runs. A hue step is the halo paint's color and a redraw.
      */
-    private fun rainbowGlow(): android.graphics.drawable.Drawable {
+    private fun rainbowGlow(view: View): android.graphics.drawable.Drawable {
         val n = 256
         val c = n / 2f
-        val bmp = android.graphics.Bitmap.createBitmap(n, n, android.graphics.Bitmap.Config.ARGB_8888)
-        val canvas = android.graphics.Canvas(bmp)
-        val hues = android.graphics.SweepGradient(c, c, Rainbow.COLORS + Rainbow.COLORS[0], null)
-        val falloff = android.graphics.RadialGradient(c, c, c, intArrayOf(Color.argb(60, 0, 0, 0), Color.argb(150, 0, 0, 0),
-            Color.argb(70, 0, 0, 0), Color.TRANSPARENT), floatArrayOf(0f, 0.32f, 0.62f, 1f), android.graphics.Shader.TileMode.CLAMP)
-        canvas.drawCircle(c, c, c, android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
-            shader = android.graphics.ComposeShader(hues, falloff, android.graphics.PorterDuff.Mode.DST_IN)
-        })
-        canvas.drawCircle(c, c, c * 0.5f, android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
-            shader = android.graphics.RadialGradient(c, c, c * 0.5f, Color.argb(120, 255, 255, 255), Color.TRANSPARENT,
-                android.graphics.Shader.TileMode.CLAMP)
-        })
-        return android.graphics.drawable.BitmapDrawable(resources, bmp).apply { isFilterBitmap = true }
+        fun mask(draw: (android.graphics.Canvas) -> Unit) = android.graphics.Bitmap.createBitmap(n, n, android.graphics.Bitmap.Config.ALPHA_8)
+            .also { draw(android.graphics.Canvas(it)) }
+        val falloff = mask { canvas ->
+            canvas.drawCircle(c, c, c, android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
+                shader = android.graphics.RadialGradient(c, c, c, intArrayOf(Color.argb(60, 0, 0, 0), Color.argb(150, 0, 0, 0),
+                    Color.argb(70, 0, 0, 0), Color.TRANSPARENT), floatArrayOf(0f, 0.32f, 0.62f, 1f), android.graphics.Shader.TileMode.CLAMP)
+            })
+        }
+        val heart = mask { canvas ->
+            canvas.drawCircle(c, c, c * 0.5f, android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
+                shader = android.graphics.RadialGradient(c, c, c * 0.5f, Color.argb(120, 0, 0, 0), Color.TRANSPARENT,
+                    android.graphics.Shader.TileMode.CLAMP)
+            })
+        }
+        // An alpha mask draws in its paint's color: the halo in the fade, the heart white.
+        val halo = android.graphics.drawable.BitmapDrawable(resources, falloff).apply { isFilterBitmap = true; paint.color = Rainbow.fadeColor() }
+        val core = android.graphics.drawable.BitmapDrawable(resources, heart).apply { isFilterBitmap = true; paint.color = Color.WHITE }
+        CinemaStyle.followFade(view) { v, hue ->
+            ((v.background as? android.graphics.drawable.LayerDrawable)?.getDrawable(0) as? android.graphics.drawable.BitmapDrawable)?.let {
+                it.paint.color = hue
+                it.invalidateSelf()
+            }
+        }
+        return android.graphics.drawable.LayerDrawable(arrayOf(halo, core))
     }
 
     private var pendingIntro: (() -> Unit)? = null
@@ -2907,6 +2918,11 @@ class MainActivity : Activity() {
     private val Int.dp get() = (this * resources.displayMetrics.density).toInt()
 
     companion object {
+        /**
+         * What the intro's fading words are read against: the version's smoked-glass chip over the art's dark foot
+         * (the status line sits on the same dark foot, under a text shadow). [Rainbow.textOn] lifts the violet a hair here.
+         */
+        private const val INTRO_UNDER_TEXT = 0xFF121214.toInt()
         /** How long the boot intro stays up in all, loading included, before its fade. */
         private const val SPLASH_TOTAL_MS = 8_000L
         /** Home's first draw happens under the opaque intro this long before the intro starts fading. */

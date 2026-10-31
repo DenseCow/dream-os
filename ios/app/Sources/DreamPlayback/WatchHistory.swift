@@ -48,7 +48,7 @@ public final class WatchHistory: @unchecked Sendable {
         public var asHistoryEntry: HistoryEntry {
             HistoryEntry(title: title, season: isShow ? season : nil, episode: isShow ? episode : nil, episodeName: episodeTitle,
                          stillPath: stillPath, positionMs: positionMs, durationMs: durationMs, upNext: upNext,
-                         updatedAt: Date(timeIntervalSince1970: Double(updatedAt) / 1000))
+                         updatedAt: Date(timeIntervalSince1970: Double(updatedAt) / 1000), hidden: hidden)
         }
     }
 
@@ -127,16 +127,27 @@ public final class WatchHistory: @unchecked Sendable {
         return e.progress > 0 ? max(e.positionMs, 0) : nil
     }
 
-    /// Label for a title's main play button ("Play", "Resume", "Play S1 E1", "Resume S2 E5").
-    public func playLabel(_ t: Title) -> String {
+    /// Label for a title's main play button ("Play", "Resume", "Play S1 E1", "Resume S2 E5"). [jump]: the
+    /// `caughtUpNext` answer for a show that left the row, when the caller has one.
+    public func playLabel(_ t: Title, jump: Entry? = nil) -> String {
         if t.kind != .tv {
             let e = entries().first { $0.key == t.key }
             let resume = e.map { $0.progress > 0 && $0.progress < Self.finished && Self.ours($0) } ?? false
             return resume ? "Resume" : "Play"
         }
-        guard let next = entries().first(where: { $0.key == t.key }) else { return "Play S1 E1" }
+        guard let next = entries().first(where: { $0.key == t.key }) ?? jump else { return "Play S1 E1" }
         let verb = next.upNext || next.progress <= 0 ? "Play" : "Resume"
         return "\(verb) S\(next.season) E\(next.episode)"
+    }
+
+    /// A show the viewer caught up on (finished its latest episode with nothing after it yet, so it left Continue
+    /// Watching): the episode out after it now (aired, or out early with a source), as an Up Next entry. The title
+    /// page's Play button jumps there ("Play S2 E1"). Nil when the show is still in the row, the viewer removed it from
+    /// the row (that one starts fresh at S1 E1), or nothing newer is out (WatchHistory.kt `caughtUpNext`).
+    public func caughtUpNext(_ key: String) async -> Entry? {
+        guard let e = lock.withLock({ load() }).first(where: { $0.key == key }), e.isShow, e.hidden, !e.upNext,
+              e.progress >= Self.finished, e.season > 0, e.episode > 0 else { return nil }
+        return await nextEpisode(e)
     }
 
     // MARK: Recording
@@ -317,5 +328,8 @@ struct DreamHistoryService: HistoryService {
         return Double(h.historyStartMs(request) ?? 0) / 1000
     }
     func recent() async -> [HistoryEntry] { h.recent().map(\.asHistoryEntry) }
-    func playLabel(for title: Title) async -> String { h.playLabel(title) }
+    func playLabel(for title: Title) async -> String {
+        title.kind == .tv ? h.playLabel(title, jump: await h.caughtUpNext(title.key)) : h.playLabel(title)
+    }
+    func caughtUpNext(for key: String) async -> HistoryEntry? { await h.caughtUpNext(key)?.asHistoryEntry }
 }

@@ -267,7 +267,7 @@ struct CellularPromptView: View {
     private func mark(size: CGFloat) -> some View {
         ZStack {
             Circle().fill(Color.white.opacity(0.06))
-            Circle().strokeBorder(AngularGradient(colors: Rainbow.colors + [Rainbow.colors[0]], center: .center), lineWidth: 1.6)
+            RainbowRing(lineWidth: 1.6)
             Image(systemName: "antenna.radiowaves.left.and.right")
                 .font(.system(size: size * 0.4, weight: .regular))
                 .foregroundStyle(Palette.pearl)

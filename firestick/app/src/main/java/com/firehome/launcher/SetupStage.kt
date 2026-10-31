@@ -4,10 +4,8 @@ import android.animation.ValueAnimator
 import android.content.Context
 import android.graphics.Canvas
 import android.graphics.Color
-import android.graphics.LinearGradient
 import android.graphics.Paint
 import android.graphics.RectF
-import android.graphics.Shader
 import android.util.TypedValue
 import android.view.Gravity
 import android.view.View
@@ -23,9 +21,10 @@ import android.widget.TextView
  */
 
 /**
- * The four chapters of setup as labeled segments over one thin track. The finished part of the track is the
+ * The four chapters of setup as labeled segments over one thin track. The finished part of the track is the fading
  * rainbow (the brand's only accent, and here it means progress); the current chapter's name is white, finished
- * ones a lighter gray, the rest dim. One view, drawn in one pass; it eases to a new position and then rests.
+ * ones a lighter gray, the rest dim. One view, drawn in one pass; it eases to a new position, and then only the
+ * hue moves (redrawn on Cinema's shared clock while on screen, [Rainbow.redrawOnFade]).
  */
 internal class ChapterRail(ctx: Context, private val k: PremiumKit) : View(ctx) {
     private val Int.dpf get() = this * resources.displayMetrics.density
@@ -40,7 +39,11 @@ internal class ChapterRail(ctx: Context, private val k: PremiumKit) : View(ctx) 
     private val fill = Paint(Paint.ANTI_ALIAS_FLAG)
     private val rect = RectF()
 
-    init { isFocusable = false; importantForAccessibility = IMPORTANT_FOR_ACCESSIBILITY_NO }
+    init {
+        isFocusable = false
+        importantForAccessibility = IMPORTANT_FOR_ACCESSIBILITY_NO
+        Rainbow.redrawOnFade(this)
+    }
 
     /** [now]: the current chapter (-1 before the first); [progress]: how far each chapter is, 0 to 1. */
     fun set(chapters: List<String>, now: Int, progress: FloatArray) {
@@ -69,12 +72,6 @@ internal class ChapterRail(ctx: Context, private val k: PremiumKit) : View(ctx) 
         setMeasuredDimension(MeasureSpec.getSize(widthMeasureSpec), h)
     }
 
-    /** Where the finished part ends (px): the rainbow is stretched over exactly that, so all its colors always show. */
-    private var shaderEnd = -1f
-    /** One rainbow over 0..1, stretched to [shaderEnd] by its matrix: nothing is allocated while the bar moves. */
-    private val rainbow = LinearGradient(0f, 0f, 1f, 0f, Rainbow.COLORS, null, Shader.TileMode.CLAMP)
-    private val stretch = android.graphics.Matrix()
-
     override fun onDetachedFromWindow() { anim?.cancel(); super.onDetachedFromWindow() }
 
     override fun onDraw(c: Canvas) {
@@ -86,14 +83,7 @@ internal class ChapterRail(ctx: Context, private val k: PremiumKit) : View(ctx) 
         val base = -fm.ascent
         val barTop = height - 4.dpf
         val r = 2.dpf
-        var end = 0f
-        for (i in 0 until n) { val f = shown.getOrElse(i) { 0f }.coerceIn(0f, 1f); if (f > 0f) end = i * (seg + gap) + seg * f }
-        if (end > 0f && Math.abs(end - shaderEnd) > 0.5f) {
-            shaderEnd = end
-            stretch.setScale(end, 1f)
-            rainbow.setLocalMatrix(stretch)
-            if (fill.shader !== rainbow) fill.shader = rainbow
-        }
+        fill.color = Rainbow.fadeColor()
         for (i in 0 until n) {
             val x = i * (seg + gap)
             label.typeface = if (i == at) k.semibold else k.medium
@@ -115,12 +105,14 @@ internal class ChapterRail(ctx: Context, private val k: PremiumKit) : View(ctx) 
 }
 
 /**
- * A step's emblem for steps without their own [SetupArt] drawing: the same dark-glass disc in the thin rainbow
- * ring ([GlyphPen]), with the step's line icon in pearl. Drawn once; nothing moves.
+ * A step's emblem for steps without their own [SetupArt] drawing: the same dark-glass disc in the thin ring of the
+ * fading rainbow ([GlyphPen]), with the step's line icon in pearl. Only the ring's hue moves, on Cinema's clock.
  */
 internal class IconArt(ctx: Context, icon: Int) : View(ctx) {
     private val g = GlyphPen(weight = 3f, ring = 1.7f)
     private val d = try { ctx.getDrawable(icon)?.mutate()?.apply { setTint(PearlFocus.PEARL) } } catch (e: Exception) { null }
+
+    init { Rainbow.redrawOnFade(this) }
 
     override fun onDraw(canvas: Canvas) {
         val s = minOf(width, height) / 100f

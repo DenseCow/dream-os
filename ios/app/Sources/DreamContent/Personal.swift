@@ -164,6 +164,11 @@ actor NewEpisodes {
             for s in shows { g.addTask { await Self.items(s) } }
             for await (r, u) in g { if let r { recent.append(r) }; if let u { upcoming.append(u) } }
         }
+        // Caught up (the drop's last episode, or a later one, finished): not new to this viewer until a newer one airs.
+        let history = await Services.shared.history.recent()
+        func unseen(_ i: Item) -> Bool { !Self.caughtUp(show: i.show.id, season: i.season, episode: i.lastNumber, history: history) }
+        recent = recent.filter(unseen)
+        upcoming = upcoming.filter(unseen)
         recent.sort { ($0.airDate, $0.at ?? .distantPast, $1.show.name) > ($1.airDate, $1.at ?? .distantPast, $0.show.name) }
         upcoming = upcoming.filter { u in !recent.contains { $0.key == u.key } }.sorted { ($0.airDate, $0.at ?? .distantPast) < ($1.airDate, $1.at ?? .distantPast) }
         // New ones (not seen by an earlier load) get the badge; the very first load only learns.
@@ -174,6 +179,23 @@ actor NewEpisodes {
         DreamStore.shared.set(Array(keys), "newep_known", perProfile: true)
         DreamStore.shared.set(Array(f.intersection(keys)), "newep_fresh", perProfile: true)
         return (recent, upcoming)
+    }
+
+    /// The viewer is past S`season`E`episode` of `show`, so it isn't a new episode to them (NewEpisodes.kt `caughtUp`):
+    /// they finished it or a later one (WatchedLedger, Trakt's history included), or their watch history is on a later
+    /// episode (in progress or Up Next), or holds this very episode finished or removed from Continue Watching. The one
+    /// rule every "new episode" surface goes by (New Episodes for You, the banner and its notice, NEW EPISODE badges,
+    /// the general New Episodes rows), the same on the TV and Windows. Local and instant.
+    nonisolated static func caughtUp(show: Int, season: Int, episode: Int, history: [HistoryEntry]) -> Bool {
+        past(WatchedLedger.shared.furthest(show: show), history.first { $0.title.kind == .tv && $0.title.id == show }, season, episode)
+    }
+
+    /// `caughtUp` on its inputs: `finished` the latest finished episode, `entry` the show's history entry.
+    nonisolated static func past(_ finished: (season: Int, episode: Int)?, _ entry: HistoryEntry?, _ season: Int, _ episode: Int) -> Bool {
+        if let f = finished, (f.season, f.episode) >= (season, episode) { return true }
+        guard let e = entry, let es = e.season, let en = e.episode else { return false }
+        if (es, en) > (season, episode) { return true }
+        return es == season && en == episode && !e.upNext && (e.hidden || e.progress >= 0.92)
     }
 
     func isNew(_ key: String) -> Bool { fresh.contains(key) }

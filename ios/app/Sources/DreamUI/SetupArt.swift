@@ -1,12 +1,12 @@
 import SwiftUI
 
 /// The setup's illustrations in the Dream OS line-art look (SetupArt.kt + GlyphPen): one monoline pearl icon with
-/// round caps and joins, lots of air, no fills, no shading, centered on a dark-glass disc ringed in a thin rainbow
-/// with a faint rainbow glow behind (the brand signature). Green and red appear only as status (the check's result).
-/// Drawn in a 100 × 100 box, crisp at any size, no bitmaps.
+/// round caps and joins, lots of air, no fills, no shading, centered on a dark-glass disc ringed in a thin line of the
+/// fading rainbow with a faint glow of it behind (the brand signature). Green and red appear only as status (the
+/// check's result). Drawn in a 100 × 100 box, crisp at any size, no bitmaps.
 ///
-/// Motion: the check's ring turns while it runs, then its arc closes into a check (or a mark); Done's ring turns
-/// slowly. Both only while on screen; everything else is still (nothing redraws while idle).
+/// Motion: the ring's hue fades (15 steps a second while the page shows, held under Reduce Motion); the check's arc
+/// turns while it runs (30 a second), then closes into a check (or a mark).
 public struct SetupArt: View {
     public enum Kind: String, Sendable, CaseIterable {
         case clock, accounts, scrapers, check, personalize, done, intro, playback, speed, profiles, backup, unlock
@@ -27,19 +27,22 @@ public struct SetupArt: View {
         self.kind = kind; self.size = size; self.check = check; self.gauge = min(1, max(0, gauge))
     }
 
-    private var turning: Bool { kind == .done || (kind == .check && check == .running) }
+    @Environment(\.pageActive) private var active
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    private var turning: Bool { kind == .check && check == .running }
 
     public var body: some View {
         let _ = settled
-        TimelineView(.animation(minimumInterval: 1.0 / 30, paused: !turning && !closing(Date()).isRunning)) { tl in
+        let moving = turning || closing(Date()).isRunning
+        TimelineView(.animation(minimumInterval: moving ? 1.0 / 30 : 1.0 / 15, paused: !moving && (!active || reduceMotion))) { tl in
             Canvas { ctx, sz in
                 let s = min(sz.width, sz.height) / 100
                 ctx.translateBy(x: sz.width / 2 - 50 * s, y: sz.height / 2 - 50 * s)
                 ctx.scaleBy(x: s, y: s)
                 let t = tl.date.timeIntervalSince(startedAt)
                 let pen = GlyphPen(weight: 3, ring: 1.7)
-                // The ring turns only while something is happening; otherwise it stays put.
-                pen.backdrop(&ctx, turn: turning ? (t * 30).truncatingRemainder(dividingBy: 360) : 0, glow: kind == .done ? 1.5 : 1)
+                pen.backdrop(&ctx, hue: Rainbow.fadeColor(tl.date), glow: kind == .done ? 1.5 : 1)
                 draw(&ctx, pen, t: t, closing: closing(tl.date).value)
             }
         }
@@ -192,7 +195,7 @@ public struct SetupArt: View {
 }
 
 /// The Dream OS line-art pen (GlyphPen.kt), shared by `SetupArt` and any drawn illustration. Everything is in a
-/// 100 × 100 box: `backdrop` lays the dark-glass disc (r 39) with its thin rainbow ring and faint rainbow glow; `pen`
+/// 100 × 100 box: `backdrop` lays the dark-glass disc (r 39) with its thin ring and faint glow in the fading rainbow; `pen`
 /// strokes a monoline shape in pearl (round caps and joins); `knock` clears a gap around a shape in front so
 /// overlapping lines never touch.
 public struct GlyphPen: Sendable {
@@ -206,11 +209,10 @@ public struct GlyphPen: Sendable {
         .linearGradient(Self.glass, startPoint: CGPoint(x: 50, y: 11), endPoint: CGPoint(x: 50, y: 89))
     }
 
-    /// The disc: a soft rainbow glow, the dark glass lit faintly from the top, the thin ring. [turn] in degrees.
-    public func backdrop(_ c: inout GraphicsContext, turn: Double = 0, glow: Double = 1) {
-        let center = CGPoint(x: 50, y: 50)
-        let rainbow = GraphicsContext.Shading.conicGradient(Gradient(colors: Rainbow.colors + [Rainbow.colors[0]]), center: center,
-                                                            angle: .degrees(turn))
+    /// The disc: a soft glow, the dark glass lit faintly from the top, the thin ring; glow and ring in [hue], the
+    /// fading rainbow's color of the moment (`Rainbow.fadeColor`).
+    public func backdrop(_ c: inout GraphicsContext, hue: Color, glow: Double = 1) {
+        let rainbow = GraphicsContext.Shading.color(hue)
         let edge = Self.circle(50, 50, Self.radius + 1)
         for (w, a) in [(12.0, 20.0), (6.0, 46.0)] {
             var g = c

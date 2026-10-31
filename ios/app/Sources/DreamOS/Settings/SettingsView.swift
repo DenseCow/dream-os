@@ -5,7 +5,7 @@ import DreamPlayback
 
 /// Settings (PremiumSettings.kt + MainActivity.settingsSections), grouped the same way minus the Fire TV-only parts:
 /// who's watching, the accounts and scrapers Dream Core plays from, how things play, the look, time and region,
-/// your own keys, About. Every row does something; values sit on the right, a short caption under the name.
+/// About. Your own TMDB and OMDb keys sit in Accounts & Scrapers. Every row does something; values sit on the right, a short caption under the name.
 /// Push it inside a NavigationStack (or present `SettingsSheet`).
 struct SettingsView: View {
     @State private var profile: Profile?
@@ -24,7 +24,7 @@ struct SettingsView: View {
     @State private var clock = DreamTime.clockSummary()
     @State private var zone = DreamTime.summary()
     @State private var tmdbSet = SecureStore.get("tmdb.key") != nil
-    @State private var omdbSet = SecureStore.get("omdb.key") != nil
+    @State private var omdbSet = !Keys.omdb.isEmpty
     @State private var choosingProfile = false
     @State private var runningSetup = false
     @State private var trakt = (value: TraktWords.value, caption: TraktWords.caption, tone: TraktWords.tone)
@@ -46,6 +46,13 @@ struct SettingsView: View {
                                 lead: .monogram("T")) { TraktView() }
                     PageLinkRow(title: "Scrapers", caption: "Your Scraper Repositories and Providers", value: scrapers, valueTone: scrapersTone,
                                 lead: .symbol("magnifyingglass")) { ScrapersView() }
+                    // Your own keys sit with the accounts (owner, 2026-10-30; the same order on all three apps). TMDB
+                    // has no built-in key (Keys.tmdb), so a missing one is Not Added with the warning mark; OMDb falls
+                    // back to the build's own key, which counts as Added.
+                    PageLinkRow(title: "TMDB Key", caption: "Titles, Artwork and Search", value: tmdbSet ? "Added" : "Not Added",
+                                lead: .symbol("film"), trailingMark: tmdbSet ? .none : .warn) { KeyEntryView(kind: .tmdb) }
+                    PageLinkRow(title: "OMDb Key", caption: "Rotten Tomatoes and IMDb Scores", value: omdbSet ? "Added" : "Not Added",
+                                lead: .symbol("star.leadinghalf.filled")) { KeyEntryView(kind: .omdb) }
                     // DreamSetupMore.kt: the same page as setup's Playback Preferences.
                     PageLinkRow(title: "Sources & Quality", caption: "Quality, Languages, Subtitles and Size Limits",
                                 value: PlaybackPrefs.summary, lead: .symbol("slider.horizontal.3")) { SourcesQualityView() }
@@ -99,12 +106,6 @@ struct SettingsView: View {
                     // Unlock/UnlockFireStickView.swift: the TV's one-time ADB grants, done from this iPhone (no computer).
                     PageLinkRow(title: "Unlock Fire Stick", caption: "Home Button, Voice Search and More on Your Fire Stick",
                                 lead: .symbol("tv")) { UnlockFireStickView() }
-                }
-                group("Advanced") {
-                    PageLinkRow(title: "TMDB Key", caption: "Titles, Artwork and Search", value: tmdbSet ? "Set" : "Built In",
-                                lead: .symbol("film")) { KeyEntryView(kind: .tmdb) }
-                    PageLinkRow(title: "OMDb Key", caption: "Rotten Tomatoes and IMDb Scores", value: omdbSet ? "Set" : "Built In",
-                                lead: .symbol("star.leadinghalf.filled")) { KeyEntryView(kind: .omdb) }
                 }
                 group("About") {
                     // AboutView.swift: version (from the bundle), update status, source code, disclaimer, credits.
@@ -197,7 +198,7 @@ struct SettingsView: View {
         else if st.ready { scrapers = "\(st.providers.filter(\.enabled).count) On"; scrapersTone = Palette.greenText }
         else { scrapers = "Turn One On"; scrapersTone = Palette.amberText }
         tmdbSet = SecureStore.get("tmdb.key") != nil
-        omdbSet = SecureStore.get("omdb.key") != nil
+        omdbSet = !Keys.omdb.isEmpty
         trailers = BackgroundTrailers.mode
         animeApart = AnimePrefs.apart
         zone = DreamTime.summary()
@@ -227,7 +228,7 @@ struct ThemesView: View {
                     ZStack(alignment: .bottomLeading) {
                         LinearGradient(colors: [Palette.page, Color(hex: 0x111113)], startPoint: .top, endPoint: .bottom)
                         VStack(alignment: .leading, spacing: 8) {
-                            Capsule().fill(Rainbow.linear).frame(width: 64, height: 4)
+                            RainbowFade { h in Capsule().fill(Color(hex: h)) }.frame(width: 64, height: 4)
                             RoundedRectangle(cornerRadius: 6).fill(Palette.pearl).frame(width: 92, height: 22)
                             HStack(spacing: 6) {
                                 ForEach(0..<4, id: \.self) { _ in RoundedRectangle(cornerRadius: 5).fill(Color.white.opacity(0.10)).frame(width: 44, height: 62) }
@@ -237,7 +238,7 @@ struct ThemesView: View {
                     }
                     .frame(height: 150)
                     .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
-                    .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous).strokeBorder(Rainbow.gradient, lineWidth: 2))
+                    .overlay(RainbowFade { h in RoundedRectangle(cornerRadius: 14, style: .continuous).strokeBorder(Color(hex: h), lineWidth: 2) })
                     HStack(spacing: 10) {
                         Text("Dream Cinema").font(.system(size: 19, weight: .semibold)).foregroundStyle(Palette.text)
                         Spacer(minLength: 8)

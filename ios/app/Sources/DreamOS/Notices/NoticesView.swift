@@ -105,7 +105,7 @@ struct NoticesView: View {
         VStack(spacing: 16) {
             ZStack {
                 Circle().fill(LinearGradient(colors: [Color(hex: 0x1C1C1F), Color(hex: 0x0E0E10)], startPoint: .topLeading, endPoint: .bottomTrailing))
-                Circle().strokeBorder(Rainbow.gradient, lineWidth: 1.8)
+                RainbowRing(lineWidth: 1.8)
                 NoticeGlyph(kind: .bell, weight: 5).frame(width: 44, height: 44)
             }
             .frame(width: 96, height: 96)
@@ -222,7 +222,7 @@ struct NoticeRenewView: View {
             VStack(alignment: .leading, spacing: 18) {
                 ZStack {
                     Circle().fill(LinearGradient(colors: [Color(hex: 0x1C1C1F), Color(hex: 0x0E0E10)], startPoint: .topLeading, endPoint: .bottomTrailing))
-                    Circle().strokeBorder(Rainbow.gradient, lineWidth: 1.8)
+                    RainbowRing(lineWidth: 1.8)
                     NoticeGlyph(kind: .hourglass, weight: 5).frame(width: 46, height: 46)
                 }
                 .frame(width: 96, height: 96)

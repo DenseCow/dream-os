@@ -248,7 +248,13 @@ enum NewReleases {
             for (i, t) in airing.enumerated() { g.addTask { (i, await latestSeason(t.id)) } }
             for await (i, d) in g { dates[i] = d }
         }
-        return withArt(airing.enumerated().filter { dates[$0.offset] >= from }.map(\.element))
+        // A show the viewer is caught up on has no new episode for them (NewEpisodes.caughtUp): it leaves until the next one airs.
+        let history = await Services.shared.history.recent()
+        func caughtUp(_ t: Title) -> Bool {
+            guard let (s, e) = lastAired.get(t.id) else { return false }
+            return NewEpisodes.caughtUp(show: t.id, season: s, episode: e, history: history)
+        }
+        return withArt(airing.enumerated().filter { dates[$0.offset] >= from && !caughtUp($0.element) }.map(\.element))
     }
 
     /// A show's latest season premiere up to today ("" when none), cached with the details call.
@@ -260,7 +266,10 @@ enum NewReleases {
             let d = Tmdb.str(s, "air_date")
             if (s["season_number"] as? Int ?? 0) >= 1 && d.count >= 10 && d <= today && d > latest { latest = d }
         }
-        if let ep = o["last_episode_to_air"] as? [String: Any] { lastEpisodes.put(id, episodeLine(ep)) }
+        if let ep = o["last_episode_to_air"] as? [String: Any] {
+            lastEpisodes.put(id, episodeLine(ep))
+            if let s = ep["season_number"] as? Int, let n = ep["episode_number"] as? Int, s >= 1, n >= 1 { lastAired.put(id, (s, n)) }
+        }
         return latest
     }
 
@@ -275,6 +284,8 @@ enum NewReleases {
 
     /// Each returning show's newest episode line, filled by `returning` (from the details call it already makes).
     static let lastEpisodes = EpisodeLines()
+    /// Each returning show's newest aired episode (season, number), from the same call: who is caught up.
+    static let lastAired = LastAired()
 
     /// The New Episodes rows' card decoration: the newest episode as the subtitle.
     static let episodeSub: @Sendable (Title) -> (kicker: String?, subtitle: String?, badge: String?) = { t in
@@ -307,4 +318,12 @@ final class EpisodeLines: @unchecked Sendable {
     private var lines: [Int: String] = [:]
     func put(_ id: Int, _ line: String?) { lock.withLock { lines[id] = line } }
     func get(_ id: Int) -> String? { lock.withLock { lines[id] } }
+}
+
+/// Show id -> its newest aired episode (season, number), safe from any thread.
+final class LastAired: @unchecked Sendable {
+    private let lock = NSLock()
+    private var eps: [Int: (Int, Int)] = [:]
+    func put(_ id: Int, _ ep: (Int, Int)) { lock.withLock { eps[id] = ep } }
+    func get(_ id: Int) -> (Int, Int)? { lock.withLock { eps[id] } }
 }

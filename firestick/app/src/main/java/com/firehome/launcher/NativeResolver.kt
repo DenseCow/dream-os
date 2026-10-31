@@ -150,6 +150,38 @@ object NativeResolver {
         @Volatile var ran: DebridPurpose? = null
         /** It ended below Play with sources found but none passing the user's filters: a Play re-runs it (it may relax them). */
         @Volatile var strictEmpty = false
+        val startedAt = SystemClock.elapsedRealtime()
+        /** What started it (below [DebridPurpose.PLAY]: a look-ahead a Play may join). */
+        val origin = purpose
+        /** Where it is, for the log when a Play gives up on it: "scrape" (scrapers and ranking) or "debrid" (the services' check). */
+        @Volatile var step = "scrape"
+
+        /** Past its own deadline by [STALE_GRACE_MS], or older than [LOOKUP_MAX_MS]: hung, never joined again. */
+        fun stale(now: Long) = now > deadline + STALE_GRACE_MS || now - startedAt > LOOKUP_MAX_MS
+    }
+
+    /** A lookup still listed this long after its deadline is hung (it ends at its deadline plus a request's time). */
+    private const val STALE_GRACE_MS = 15_000L
+    /** No lookup lives this long (the scrape stops at 20 s, a Play's budget is 8 s); older ones are never joined. */
+    private const val LOOKUP_MAX_MS = 60_000L
+
+    /**
+     * Where [req]'s lookup under way is ("joining a look-ahead, scrape for 12.0 s"), for the log when a Play gives up;
+     * null when none is under way.
+     */
+    fun phase(req: PlaybackRequest): String? {
+        val l = inFlight[key(req)] ?: return null
+        return (if (l.origin < DebridPurpose.PLAY) "joining a look-ahead, " else "") + "${l.step} for ${secs(now() - l.startedAt)}"
+    }
+
+    /**
+     * Drops [req]'s lookup under way from the list Plays join (the curtain's deadline gave up on it, or Try Again wants
+     * a fresh one). It still runs to its own end and remembers what it finds; nothing joins it any more.
+     */
+    fun dropLookup(req: PlaybackRequest, why: String) {
+        val k = key(req)
+        val l = inFlight[k] ?: return
+        if (inFlight.remove(k, l)) Log.w(TAG, "Dream Core: ${label(req)}: dropped the lookup under way for ${secs(now() - l.startedAt)} (${l.step}): $why")
     }
 
     /**
@@ -207,8 +239,11 @@ object NativeResolver {
      * The lookup runs on a background thread and every caller waits at most its own [budgetMs], so the
      * budget holds even where a single request's timeout (at least 1 s) would overshoot it; a lookup
      * that outlives its caller still finishes (until its own deadline) and remembers what it finds.
+     *
+     * A lookup under way that is hung ([Lookup.stale]) is dropped, never joined: every later Play would wait out its
+     * budget on it and fail, until the app restarts. [fresh] (Try Again): whatever is under way is dropped, a new one starts.
      */
-    fun find(ctx: Context, req: PlaybackRequest, budgetMs: Long = 8_000, purpose: DebridPurpose = DebridPurpose.PLAY): Found? {
+    fun find(ctx: Context, req: PlaybackRequest, budgetMs: Long = 8_000, purpose: DebridPurpose = DebridPurpose.PLAY, fresh: Boolean = false): Found? {
         if (req.trailer) return null
         val k = key(req)
         val deadline = SystemClock.elapsedRealtime() + budgetMs
@@ -216,6 +251,10 @@ object NativeResolver {
         ledger(app)
         SourceMemory.init(app)
         if (purpose == DebridPurpose.PLAY) misses.remove(k)
+        inFlight[k]?.let { old ->
+            if (old.stale(now())) dropLookup(req, "stale (deadline passed ${secs(now() - old.deadline)} ago); a new one starts")
+            else if (fresh) dropLookup(req, "Try Again starts a new one")
+        }
         return try {
             peek(req) ?: run {
                 var res: Found? = null
@@ -654,7 +693,9 @@ object NativeResolver {
                 if (ran == DebridPurpose.PAGE) { Log.w(TAG, "Instant play: ranked ${kept.size} for ${label(req)} (debrid step on Play)"); return null }
                 return none("AllDebrid is at its magnet limit and no other service is linked")
             }
+            l.step = "debrid"
             val won = race(k, svcs, top.map { it.c }, ran, l.deadline, label(req))
+            l.step = "scrape"
             if (won != null) {
                 val (found, others) = won
                 links[k] = Stamped(found)

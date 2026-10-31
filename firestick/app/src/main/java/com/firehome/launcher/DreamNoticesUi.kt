@@ -904,22 +904,23 @@ class DreamNoticesUi(private val act: Activity, private val host: Host) : DreamN
         }
 
         /**
-         * The bell's unread badge: a small disc in the brand's rainbow (blue to pink, white count), at the
-         * bell's top right. [update] sets the count (0 hides it).
+         * The bell's unread badge: a small disc in the fading rainbow, its count in the readable ink for each hue
+         * ([Rainbow.inkOn]: white or near-black), at the bell's top right. [update] sets the count (0 hides it).
          */
         fun badge(ctx: Context): TextView = TextView(ctx).apply {
             val d = ctx.resources.displayMetrics.density
             textSize = 10f
             typeface = Theme.typeface(ctx, android.graphics.Typeface.BOLD)
-            setTextColor(Color.WHITE)
             gravity = Gravity.CENTER
             includeFontPadding = false
             setPadding((4 * d).toInt(), 0, (4 * d).toInt(), 0)
             minWidth = (17 * d).toInt()
-            background = GradientDrawable(GradientDrawable.Orientation.TL_BR, intArrayOf(Rainbow.COLORS[0], Rainbow.COLORS[1], Rainbow.COLORS[2])).apply {
+            val disc = GradientDrawable().apply {
                 cornerRadius = 9 * d
                 setStroke((1.5f * d).toInt().coerceAtLeast(1), 0xFF0C0C0E.toInt())
             }
+            background = disc
+            Rainbow.fadeFill(this, disc) { v, ink -> (v as TextView).setTextColor(ink) }
             isFocusable = false
             visibility = View.GONE
         }

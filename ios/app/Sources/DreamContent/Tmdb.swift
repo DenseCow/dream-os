@@ -179,7 +179,17 @@ enum Tmdb {
     /// Any TMDB object (cached 30 min), for details-style calls.
     static func object(_ path: String, _ query: String = "") async throws -> [String: Any] {
         guard let u = url(path, query) else { throw DreamError("Something went wrong. Try again.") }
-        return try await ObjectCache.shared.get(u) { JSONBox(v: try await TmdbDisk.object(u)) }.v
+        let o = try await ObjectCache.shared.get(u) { JSONBox(v: try await TmdbDisk.object(u)) }.v
+        noteOrigin(path, o)
+        return o
+    }
+
+    /// A title's details answer ("/movie/603", "/tv/1396") tells [AnimeDubs.isAnime] where it was made; movie list
+    /// results don't say.
+    private static func noteOrigin(_ path: String, _ o: [String: Any]) {
+        let parts = path.split(separator: "/")
+        guard parts.count == 2, parts[0] == "movie" || parts[0] == "tv", let id = Int(parts[1]) else { return }
+        AnimeDubs.noteOrigin("\(parts[0]):\(id)", (o["origin_country"] as? [String] ?? []).filter { $0.count == 2 })
     }
 
     static func str(_ o: [String: Any]?, _ k: String) -> String {

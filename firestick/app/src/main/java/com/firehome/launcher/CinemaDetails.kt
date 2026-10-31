@@ -61,7 +61,10 @@ class CinemaDetails(private val ctx: Context, private val t: Title, private val 
     private val screenH = ctx.resources.displayMetrics.heightPixels
     private val Int.dp get() = (this * density).toInt()
     private val isShow = t.type == "tv"
-    /** A show's in-progress or up-next episode; looked up again when the watch history changes ([historyChanged]). */
+    /**
+     * A show's in-progress or up-next episode; looked up again when the watch history changes ([historyChanged]).
+     * A caught-up show's newer episode fills it in shortly after, once found ([findNewEpisode]).
+     */
     private var next: WatchHistory.Entry? = if (isShow) host.nextEpisode(t) else null
     private val playable = host.canPlay()
     private var details: Details? = Tmdb.cachedDetails(t)
@@ -262,6 +265,7 @@ class CinemaDetails(private val ctx: Context, private val t: Title, private val 
         loadRating()
         val d = details
         buildButtons(d)
+        findNewEpisode()
         fillMeta(d)
         loadLangPills() // the saved answer on the first frame, not after the details
         if (d != null) applyDetails(d) else Net.background({ Tmdb.details(ctx, t) }) { r ->
@@ -295,6 +299,21 @@ class CinemaDetails(private val ctx: Context, private val t: Title, private val 
         if (released || closing) return
         if (isShow) next = host.nextEpisode(t)
         if (playSig() != playSig) buildButtons(details)
+        findNewEpisode()
+    }
+
+    /**
+     * Caught up on a show (it left Continue Watching after its latest episode) and a newer one is out now, aired or
+     * out early: Play jumps to it ("Play S2 E1"), the same episode [TitlePage.Host.watch] plays. Off the main thread.
+     */
+    private fun findNewEpisode() {
+        if (!isShow || next != null) return
+        val app = ctx.applicationContext
+        Net.background({ WatchHistory.caughtUpNext(app, t.key) }) { e ->
+            if (released || closing || e == null || next != null) return@background
+            next = e
+            if (playSig() != playSig) buildButtons(details)
+        }
     }
 
     override fun handleBack(): Boolean {
@@ -680,9 +699,9 @@ class CinemaDetails(private val ctx: Context, private val t: Title, private val 
 
     /**
      * An action: icon (or a glyph such as My List's + / ✓) and label with a real gap between them, on one
-     * corner radius. Play (the primary): white at rest, the fading rainbow fill while focused ([Rainbow.fade],
-     * as Home's Play). The rest: neutral dark glass at rest; focused, a pearl box with dark ink and the rainbow
-     * glowing border around it ([PearlFocus]), fading in step with Play.
+     * corner radius. Play (the primary): the fading rainbow fill at all times ([Rainbow.fade], as Home's Play);
+     * focused, the rainbow glow around it and the lift. The rest: neutral dark glass at rest; focused, a pearl box
+     * with dark ink and the rainbow glowing border around it ([PearlFocus]), fading in step with Play.
      */
     private fun button(key: String, title: String, icon: Int, glyph: String?, primary: Boolean, lead: View? = null,
                        labels: List<String>? = null, onClick: () -> Unit): GlowBox {
@@ -722,7 +741,7 @@ class CinemaDetails(private val ctx: Context, private val t: Title, private val 
             setOnClickListener { onClick() }
             setOnFocusChangeListener { _, has ->
                 if (has) remembered[buttons] = this
-                if (fade != null) fade.focus(has) else {
+                if (fade != null) { fade.focus(has); focusGlow(box, has) } else {
                     focusGlow(box, has)
                     row.background = if (has) focusFill else idleFill
                     recolor(row, if (has) PearlFocus.INK else inkRest)

@@ -378,7 +378,7 @@ private struct NewVersionGlyph: View {
     var body: some View {
         ZStack {
             Circle().fill(Palette.surfaceRaised)
-            Circle().strokeBorder(Rainbow.gradient, lineWidth: max(2, size * 0.08))
+            RainbowRing(lineWidth: max(2, size * 0.08))
             Canvas { ctx, sz in
                 let u = min(sz.width, sz.height) / 100
                 let c = CGPoint(x: sz.width / 2, y: sz.height / 2)

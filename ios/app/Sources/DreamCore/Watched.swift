@@ -141,6 +141,18 @@ public final class WatchedLedger: @unchecked Sendable {
 
     public func movieWatched(_ id: Int) -> Bool { read { $0.movies.contains(id) } }
 
+    /// The latest episode of `show` the viewer finished (season, episode), nil when none (NewEpisodes.caughtUp).
+    public func furthest(show: Int) -> (season: Int, episode: Int)? {
+        read { b in
+            let eps = b.shows["\(show)"]?.episodes ?? []
+            return eps.compactMap { k -> (season: Int, episode: Int)? in
+                let p = k.split(separator: ":")
+                guard p.count == 2, let s = Int(p[0]), let e = Int(p[1]) else { return nil }
+                return (s, e)
+            }.max { ($0.season, $0.episode) < ($1.season, $1.episode) }
+        }
+    }
+
     /// The viewer finished this episode.
     public func episodeWatched(show: Int, season: Int, episode: Int) -> Bool {
         read { $0.shows["\(show)"]?.episodes.contains("\(season):\(episode)") ?? false }

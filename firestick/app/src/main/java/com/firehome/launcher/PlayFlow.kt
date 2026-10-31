@@ -63,6 +63,7 @@ object PlayFlow {
     /** The stream file's size in bytes on a Dream Core stream intent (the fast start plans its ranges with it). */
     const val EXTRA_SIZE = "dream.size"
     private val PLAYER_CLASS = DreamPlayerActivity::class.java.name
+    /** The curtain's deadline for a whole Play, Play to first frame (LoadingCurtain extends it a little while the stream moves). */
     const val RESOLVE_TIMEOUT_MS = 45_000L
     private val main = Handler(Looper.getMainLooper())
 
@@ -248,9 +249,16 @@ object PlayFlow {
         @Volatile var failureText: Pair<String, String>? = null
         /** A short note about what plays ("Only a CAM Version Is Available"): on the curtain, then once as the picture starts. */
         @Volatile var note: String? = null
+        /** Where the Play waits, for the log when the curtain's deadline gives up: [RESOLVE], [LOOKUP], [HAND_OFF], [PLAYER]. */
+        @Volatile var phase = RESOLVE
 
         fun isFor(r: PlaybackRequest?) = r != null && r.tmdbId == request.tmdbId && r.season == request.season && r.episode == request.episode
     }
+
+    private const val RESOLVE = "resolve"
+    private const val LOOKUP = "lookup"
+    private const val HAND_OFF = "hand-off"
+    private const val PLAYER = "player start"
 
     @Volatile var session: Session? = null
         private set
@@ -306,15 +314,17 @@ object PlayFlow {
     internal fun deliver(ctx: Context, r: PlaybackRequest, link: PreResolve.Link) {
         Log.w(TAG, "Play flow: instant play, stream ready ${(SystemClock.elapsedRealtime() - link.at) / 1000} s ago")
         val app = ctx.applicationContext
+        val s = session
+        s?.phase = HAND_OFF
         val send = {
             app.startActivity(Intent(link.intent).setClass(app, DreamPlayerActivity::class.java)
                 .putExtra(EXTRA_REQUEST, toJson(r).toString())
                 .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_NO_ANIMATION))
+            s?.phase = PLAYER
         }
         val url = link.intent.dataString
         if (url == null || StreamCache.ready(url)) return send()
         NativeResolver.peek(r)?.takeIf { it.url == url }?.let { NativeResolver.handing(it) }
-        val s = session
         val fast = {
             StreamCache.fastStart(app, url, emptyMap(), r.startMs, knownDuration(app, r), link.intent.getLongExtra(EXTRA_SIZE, 0))
             if (s?.cancelled != true && session === s) send()
@@ -345,8 +355,9 @@ object PlayFlow {
      * ([streamIntent]). Also for the player itself without opening the screen again ([PlayerHost.playNext],
      * Try Again). [loose] (Search All Sources): the same, with the source filters set aside for this one search.
      * Nothing found: the curtain says why ([NOT_YET_TEXT], [NOT_READY_TEXT], or what's missing in setup).
+     * [fresh] (Try Again): a lookup for this title still under way is never joined; a new one starts.
      */
-    fun resolve(ctx: Context, req: PlaybackRequest, loose: Boolean = false): Session {
+    fun resolve(ctx: Context, req: PlaybackRequest, loose: Boolean = false, fresh: Boolean = false): Session {
         val app = ctx.applicationContext
         session?.let { if (!it.done) it.cancelled = true } // superseded
         val s = Session(req)
@@ -356,11 +367,13 @@ object PlayFlow {
             // title under way is joined by find() below; one for another title is dropped.
             if (PreResolve.handOver(app, req)) return@runNow
             val t0 = SystemClock.elapsedRealtime()
+            s.phase = LOOKUP
             // Concurrent lookups for the same title share one (a pre-resolve under way, the player's retry).
-            val found = if (loose) NativeResolver.findLoose(app, req) else NativeResolver.find(app, req)
+            val found = if (loose) NativeResolver.findLoose(app, req) else NativeResolver.find(app, req, fresh = fresh)
             val secs = (SystemClock.elapsedRealtime() - t0) / 100 / 10.0
             if (s.cancelled || session !== s) return@runNow
             if (found != null) {
+                s.phase = HAND_OFF
                 Log.w(TAG, "Play flow: Dream Core stream (${found.service.uppercase()} ${found.quality}) in $secs s")
                 // Nothing passed the user's filters (only a CAM copy, say): played anyway, with a short note.
                 NativeResolver.relaxed(req, found)?.let { rx ->
@@ -373,6 +386,7 @@ object PlayFlow {
                 if (s.cancelled || session !== s) return@runNow
                 try {
                     app.startActivity(streamIntent(app, found.url, req, found.sizeBytes))
+                    s.phase = PLAYER
                 } catch (e: Exception) {
                     Log.w(TAG, "Play flow: couldn't open Dream Player with the Dream Core stream: $e")
                     fail(s, "couldn't open the player: $e")
@@ -431,12 +445,44 @@ object PlayFlow {
         return s.cancelled && req != null && s.request.tmdbId == req.tmdbId && s.request.season == req.season && s.request.episode == req.episode
     }
 
-    /** The user backed out (BACK on the curtain): the resolve's result is dropped (its lookup finishes and is remembered). */
-    fun cancel(ctx: Context) {
+    /**
+     * The user backed out (BACK on the curtain): the resolve's result is dropped (its lookup finishes and is remembered).
+     * Only [req]'s own session: a player screen going away late (its onDestroy after the next one opened) must never
+     * cancel the next title's Play, whose curtain would then wait with nothing coming.
+     */
+    fun cancel(ctx: Context, req: PlaybackRequest?) {
         val s = session ?: return
-        if (s.done || s.cancelled) return
+        if (s.done || s.cancelled || req != null && !s.isFor(req)) return
         s.cancelled = true
         Log.w(TAG, "Play flow: cancelled ${s.request.title}")
+    }
+
+    /**
+     * Where [req]'s Play waits: "resolve", the lookup's step ("joining a look-ahead, scrape for 12.0 s", "debrid ..."),
+     * "hand-off" (the fast start, opening the player) or "player start". For the log when the curtain's deadline fires.
+     */
+    fun phase(req: PlaybackRequest?): String {
+        val s = session?.takeIf { it.isFor(req) } ?: return "no Play under way"
+        if (s.phase != LOOKUP) return s.phase
+        return "lookup, " + (NativeResolver.phase(s.request) ?: "search all sources")
+    }
+
+    /**
+     * The curtain's deadline gave up on [req]'s Play: its session is cancelled (a stream that still comes is dropped)
+     * and its lookup under way is dropped, so the next Play or Try Again never joins it.
+     */
+    fun timedOut(ctx: Context, req: PlaybackRequest?) {
+        cancel(ctx, req)
+        req?.let { NativeResolver.dropLookup(it, "the curtain's deadline passed") }
+    }
+
+    /**
+     * A source picked by hand ([SourcePicker]) goes to the player for [req]: a session of its own, so a curtain timeout
+     * that cancelled the last one doesn't make the player drop the picked stream as late.
+     */
+    fun picked(req: PlaybackRequest) {
+        session?.let { if (!it.done) it.cancelled = true }
+        session = Session(req).also { it.phase = PLAYER }
     }
 
     /** Brings the paused Dream Player back to the front (Back from a title page X-Ray opened). */
@@ -533,17 +579,79 @@ class LoadingCurtain(private val host: PlayerHost) {
 
     val isShowing get() = root != null
 
+    /** Up and still waiting for a picture (not the error state). */
+    val isLoading get() = root != null && resolving
+
+    /** This curtain's listener for the play flow; cleared only while it is still the one set (another player may own it). */
+    private val listen: (PlayFlow.Session) -> Unit = { onSession(it) }
+
+    /**
+     * The Play's deadline (uptime): the whole Play, from Play to the first frame (the lookup, the hand-off, the
+     * player's start), is bounded here on the main Looper, whatever any background thread does. Set when a Play's
+     * curtain goes up ([PlayFlow.RESOLVE_TIMEOUT_MS]); kept through quiet source switches behind the same curtain
+     * (a switch only counts as progress); extended [EXTEND_MS] at most [MAX_EXTENSIONS] times, and only while the
+     * stream visibly moves (a switch just happened, or more of it was buffered in the last [SAMPLE_MS]). Then
+     * whatever is pending stops and the error shows. Cancelled by the first frame ([hide]), errors, Back and detach.
+     */
+    private var deadlineAt = 0L
+    private var shownAt = 0L
+    private var extensions = 0
+    private var switchedAt = 0L
+    /** The engine's buffered position [SAMPLE_MS] before the deadline (-1: not taken). */
+    private var bufferedSample = -1L
+
+    private val sample = Runnable { bufferedSample = host.engine.bufferedMs }
+
     private val timeout = Runnable {
         if (root == null || !resolving) return@Runnable
-        // The stream already came and is loading (slow start): keep waiting for its first frame.
-        if (host.engine.isBuffering || host.engine.durationMs > 0) { main.postDelayed(timeoutAgain, 15_000); return@Runnable }
-        PlayFlow.cancel(ctx)
-        // Never a spinner forever: the resolve's time is up, the curtain says so plainly.
-        showError("resolve timed out", PlayFlow.NOT_READY_TEXT)
+        val now = SystemClock.uptimeMillis()
+        val buffered = host.engine.bufferedMs
+        val why = when {
+            switchedAt > 0 && now - switchedAt < EXTEND_MS -> "a source switch ${(now - switchedAt) / 1000} s ago"
+            bufferedSample >= 0 && buffered > bufferedSample -> "the stream is buffering (${(buffered - bufferedSample) / 100 / 10.0} s more in the last ${SAMPLE_MS / 1000} s)"
+            else -> null
+        }
+        if (why != null && extensions < MAX_EXTENSIONS) {
+            extensions++
+            Log.w(TAG, "Play flow: curtain deadline extended ${EXTEND_MS / 1000} s ($extensions of $MAX_EXTENSIONS): $why")
+            arm(now + EXTEND_MS)
+            return@Runnable
+        }
+        // Never a spinner forever: whatever the Play waits on is stopped, the curtain says so plainly.
+        val player = host as? DreamPlayerActivity
+        val phase = player?.waitingIn() ?: PlayFlow.phase(req)
+        Log.w(TAG, "Play flow: curtain deadline passed after ${(now - shownAt) / 1000} s ($extensions extensions), waiting in $phase; stopped")
+        PlayFlow.timedOut(ctx, req)
+        player?.stopStart()
+        showError("deadline passed in $phase", PlayFlow.NOT_READY_TEXT)
     }
-    private val timeoutAgain: Runnable = Runnable { timeout.run() }
+
+    /** The deadline at [at] (uptime), with the buffer sampled [SAMPLE_MS] before it. */
+    private fun arm(at: Long) {
+        deadlineAt = at
+        bufferedSample = -1L
+        val now = SystemClock.uptimeMillis()
+        main.removeCallbacks(timeout)
+        main.removeCallbacks(sample)
+        main.postDelayed(sample, (at - now - SAMPLE_MS).coerceAtLeast(0))
+        main.postDelayed(timeout, (at - now).coerceAtLeast(0))
+    }
+
+    /** Play was pressed again for the title this curtain waits for (the player was behind Dream OS): a new deadline. */
+    fun renew() {
+        if (!isLoading || req?.trailer == true) return
+        shownAt = SystemClock.uptimeMillis()
+        extensions = 0
+        switchedAt = 0L
+        arm(shownAt + PlayFlow.RESOLVE_TIMEOUT_MS)
+    }
 
     fun show(req: PlaybackRequest?) {
+        // Back up for the same title while still waiting (a quiet switch to the next source): the same Play, the same
+        // deadline. Anything else (a new title, Try Again from the error, a source picked by hand) starts a new one.
+        val old = this.req
+        val continuing = isLoading && req != null && !req.trailer && old != null && !old.trailer &&
+            old.tmdbId == req.tmdbId && old.season == req.season && old.episode == req.episode
         main.removeCallbacksAndMessages(null)
         spinner?.stop()
         root?.let { old -> root = null; (old.parent as? ViewGroup)?.removeView(old) }
@@ -579,8 +687,8 @@ class LoadingCurtain(private val host: PlayerHost) {
                 } else if (root === v) {
                     main.removeCallbacksAndMessages(null)
                     spinner?.stop()
-                    PlayFlow.listener = null // static: mustn't keep the player alive
-                    if (resolving) { resolving = false; PlayFlow.cancel(ctx) }
+                    if (PlayFlow.listener === listen) PlayFlow.listener = null // static: mustn't keep the player alive
+                    if (resolving) { resolving = false; PlayFlow.cancel(ctx, this@LoadingCurtain.req) }
                     root = null
                 }
             }
@@ -681,10 +789,20 @@ class LoadingCurtain(private val host: PlayerHost) {
             }
         }
         // Failures (and notes) from the play flow.
-        PlayFlow.listener = { onSession(it) }
+        PlayFlow.listener = listen
         // A resolve already under way (or failed) for this title; checked after the caller's play() has run.
         main.post { PlayFlow.session?.let { onSession(it) } }
-        main.postDelayed(timeout, PlayFlow.RESOLVE_TIMEOUT_MS)
+        val t = SystemClock.uptimeMillis()
+        if (continuing) {
+            switchedAt = t
+            Log.w(TAG, "Play flow: next source behind the same curtain; deadline in ${(deadlineAt - t).coerceAtLeast(0) / 1000} s")
+            arm(deadlineAt)
+        } else {
+            shownAt = t
+            extensions = 0
+            switchedAt = 0L
+            arm(t + PlayFlow.RESOLVE_TIMEOUT_MS)
+        }
     }
 
     private fun onSession(s: PlayFlow.Session) {
@@ -712,7 +830,7 @@ class LoadingCurtain(private val host: PlayerHost) {
         resolving = false
         if (req?.trailer != true) {
             PlayFlow.markPlaying()
-            PlayFlow.listener = null
+            if (PlayFlow.listener === listen) PlayFlow.listener = null
         }
         main.removeCallbacksAndMessages(null)
         spinner?.stop()
@@ -731,8 +849,8 @@ class LoadingCurtain(private val host: PlayerHost) {
         if (message.isNotBlank()) Log.w("FireHome", "Play flow: curtain error: $message")
         resolving = false
         main.removeCallbacks(timeout)
-        main.removeCallbacks(timeoutAgain)
-        PlayFlow.listener = null
+        main.removeCallbacks(sample)
+        if (PlayFlow.listener === listen) PlayFlow.listener = null
         spinner?.stop()
         nowRow?.visibility = View.GONE
         noteView?.visibility = View.GONE
@@ -757,10 +875,11 @@ class LoadingCurtain(private val host: PlayerHost) {
             r.requestFocus()
             return
         }
+        // A fresh lookup: one still under way for this title (hung, maybe) is never joined again.
         val retry = button("Try Again") {
             when {
-                player != null -> player.tryAnotherSource() // saves the spot, curtain back up, play flow again
-                q != null -> { PlayFlow.resolve(ctx, q); show(q) }
+                player != null -> player.tryAnotherSource(fresh = true) // saves the spot, curtain back up, play flow again
+                q != null -> { PlayFlow.resolve(ctx, q, fresh = true); show(q) }
             }
         }
         row.addView(retry)
@@ -811,7 +930,7 @@ class LoadingCurtain(private val host: PlayerHost) {
     /** BACK on the curtain: cancels the resolve and leaves the player. True if handled. */
     fun onBack(): Boolean {
         if (root == null) return false
-        if (resolving) { resolving = false; if (req?.trailer != true) PlayFlow.cancel(ctx) }
+        if (resolving) { resolving = false; if (req?.trailer != true) PlayFlow.cancel(ctx, req) }
         main.removeCallbacksAndMessages(null)
         spinner?.stop()
         host.close()
@@ -823,7 +942,7 @@ class LoadingCurtain(private val host: PlayerHost) {
      * once: turning rotates the view's render node, so nothing is redrawn per frame. Turns only
      * between [start] and [stop], and never while detached or its window is hidden.
      */
-    /** [rainbow]: the arc runs through the Dream rainbow (from a clear tail) instead of [tail] into [head]. */
+    /** [rainbow]: the arc is the fading rainbow, one hue at a time (as every rainbow), instead of [tail] into [head]. */
     internal class Spinner(ctx: Context, private val head: Int, private val tail: Int, private val stroke: Float, private val rainbow: Boolean = false) : View(ctx) {
         private val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             style = Paint.Style.STROKE
@@ -840,8 +959,8 @@ class LoadingCurtain(private val host: PlayerHost) {
         private var wanted = false
         /**
          * [rainbow]: the ring is an AnimatedVectorDrawable (res/drawable/spinner_rainbow.xml, drawn for 20 dp with a
-         * 2.5 dp stroke), whose turn runs on the RenderThread: it keeps turning while the main thread is busy
-         * (Dream Player's start, ExoPlayer's setup), where an ObjectAnimator would freeze.
+         * 2.5 dp stroke), whose turn and hue both run on the RenderThread: it keeps turning and fading while the main
+         * thread is busy (Dream Player's start, ExoPlayer's setup), where an ObjectAnimator would freeze.
          */
         private val ring = if (rainbow) (ctx.getDrawable(R.drawable.spinner_rainbow)?.mutate() as? AnimatedVectorDrawable) else null
         private var ringOn = false
@@ -877,9 +996,10 @@ class LoadingCurtain(private val host: PlayerHost) {
 
         override fun onSizeChanged(w: Int, h: Int, ow: Int, oh: Int) {
             if (ring != null) return
+            // Without the ring drawable, a rainbow arc holds the fade's hue of the moment (it turns without redrawing).
+            if (rainbow) { paint.shader = null; paint.color = Rainbow.fadeColor(); return }
             // Transparent tail to the head over the 300° arc (a sweep starts at 3 o'clock).
-            paint.shader = if (rainbow) SweepGradient(w / 2f, h / 2f, intArrayOf(Color.TRANSPARENT) + Rainbow.COLORS, null)
-            else SweepGradient(w / 2f, h / 2f,
+            paint.shader = SweepGradient(w / 2f, h / 2f,
                 intArrayOf(Color.TRANSPARENT, Ui.alpha(tail, 0.55f), head, head), floatArrayOf(0f, 0.45f, 0.8f, 1f))
         }
 
@@ -888,11 +1008,17 @@ class LoadingCurtain(private val host: PlayerHost) {
             val inset = stroke / 2f + 1f
             oval.set(inset, inset, width - inset, height - inset)
             c.drawOval(oval, track)
-            c.drawArc(oval, 0f, 300f, false, paint)
+            c.drawArc(oval, 0f, if (rainbow) 100f else 300f, false, paint)
         }
     }
 
     private companion object {
+        const val TAG = "FireHome"
+        /** One extension of the Play's deadline, while the stream visibly moves. */
+        const val EXTEND_MS = 15_000L
+        const val MAX_EXTENSIONS = 3
+        /** How far back the buffer is compared when the deadline comes. */
+        const val SAMPLE_MS = 5_000L
         /** The soft green Dream OS uses for "Connected" / "Loading Complete". */
         val NOW_GREEN = Color.parseColor("#4ADE80")
         const val ERROR_TITLE = "This Title Isn't Available Right Now"

@@ -156,6 +156,7 @@ object XRayData {
             genreIds = o.optJSONArray("genre_ids")?.let { a -> (0 until a.length()).map { a.optInt(it) } }.orEmpty(),
             lang = o.optString("original_language"),
             adult = o.optBoolean("adult", false),
+            originCountry = Tmdb.countries(o),
         )
     }
 }

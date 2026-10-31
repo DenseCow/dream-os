@@ -389,7 +389,8 @@ class PostPlayController(private val host: PlayerHost) {
         val ink = PlayerLook.ink(ctx)
         val radius = UP_PILL_H / 2
         fun pill(label: String) = k.label(label, 13.5f, k.text, k.semibold).apply { gravity = Gravity.CENTER; setPadding(14.dp, 0, 14.dp, 0) }
-        // Play: Play's fill (white at rest, the rainbow fade while selected), its ink following.
+        // Play: Play's fill (the rainbow fade at all times), its ink following; selected, it lifts while Credits stays
+        // glass (no glow of its own: during playback that would be a second timer beside the fade's).
         val playIcon = k.icon(R.drawable.ic_play).apply { setBounds(0, 0, 11.dp, 11.dp) }
         val play = pill("Play").apply {
             setPadding(12.dp, 0, 16.dp, 0)
@@ -582,18 +583,15 @@ class PostPlayController(private val host: PlayerHost) {
 
     /**
      * Cinema's countdown: a thin line filling along the foot of a view over the 10 s, set as its foreground
-     * (so the view keeps its own size, and its rounded clip shapes the line's ends): the rainbow on a faint
-     * track over the Up Next still, or soft ink over a filled pill. One small view redrawn per frame, only
-     * while it counts.
+     * (so the view keeps its own size, and its rounded clip shapes the line's ends): the fading rainbow on a
+     * faint track over the Up Next still (its hue read in each of the countdown's own frames, [Rainbow.fadeColor]:
+     * no other clock), or soft ink over a filled pill. One small view redrawn per frame, only while it counts.
      */
     private class CountdownBar(private val h: Int, private val rainbow: Boolean = false) : android.graphics.drawable.Drawable() {
         private val track = Paint().apply { color = if (rainbow) Color.argb(70, 255, 255, 255) else Color.argb(30, 0, 0, 0) }
-        private val bar = Paint().apply { color = if (rainbow) Color.WHITE else Color.argb(120, 0, 0, 0) } // white: the shader at full strength
+        // Over a still: the fade's hue (set as it draws); over the Next Episode pill's own fill: soft ink.
+        private val bar = Paint().apply { color = if (rainbow) Rainbow.fadeColor() else Color.argb(120, 0, 0, 0) }
 
-        override fun onBoundsChange(b: android.graphics.Rect) {
-            // Over a still: the rainbow; over the Next Episode pill's own fill: soft ink.
-            if (rainbow) bar.shader = android.graphics.LinearGradient(b.left.toFloat(), 0f, b.right.toFloat(), 0f, Rainbow.COLORS, null, android.graphics.Shader.TileMode.CLAMP)
-        }
         var progress = 0f
             set(v) { field = v; invalidateSelf() }
 
@@ -601,6 +599,7 @@ class PostPlayController(private val host: PlayerHost) {
             val b = bounds
             val top = (b.bottom - h).toFloat()
             c.drawRect(b.left.toFloat(), top, b.right.toFloat(), b.bottom.toFloat(), track)
+            if (rainbow) bar.color = Rainbow.fadeColor()
             if (progress > 0f) c.drawRect(b.left.toFloat(), top, b.left + b.width() * progress.coerceIn(0f, 1f), b.bottom.toFloat(), bar)
         }
 

@@ -1,6 +1,7 @@
 import SwiftUI
 import DreamCore
 import DreamUI
+import DreamPlayer
 
 /// Dream Cinema's shell for the phone (CinemaShell.kt): Home, Browse, Search and My List under a bottom tab bar, one
 /// NavigationStack per tab (each keeps its place), the profile face opening profiles and Settings. Tapping the current
@@ -13,7 +14,10 @@ struct AppShell: View {
         DebugCatalog.applyAtLaunch()
         #endif
         // A title card's press-down fetches its page ahead (speed pass, Home/PageSpeed.swift).
-        CardLookAhead.title = { TitleAhead.warm($0) }
+        // Its trailer too, and a hero slide's after 1.5 s on screen (Details/TrailerAhead.swift).
+        CardLookAhead.title = { TitleAhead.warm($0); TrailerAhead.card($0) }
+        CardLookAhead.heroRest = { TrailerAhead.heroSlide($0) }
+        TrailerAhead.warmSoon()
         // "Now Available" notices for My List movies, and the phone's new-episode alerts (Notices/).
         NowAvailableNotices.install()
         EpisodeAlerts.shared.install()
@@ -21,13 +25,15 @@ struct AppShell: View {
 
     var body: some View {
         @Bindable var model = model
+        // Dream Player full screen covers the shell: its rainbow (Play's fill, rings, the tab underline) holds still.
+        let covered = PlayerPresentation.shared.mode == .full
         ZStack {
             DreamBackground()
             ForEach(ShellModel.Tab.allCases) { t in
                 if model.visited.contains(t) {
                     stack(t)
                         // Hidden tabs stay alive (they keep their place) but rest: no hero advancing, no rainbow clock.
-                        .environment(\.pageActive, model.tab == t)
+                        .environment(\.pageActive, model.tab == t && !covered)
                         .opacity(model.tab == t ? 1 : 0)
                         .allowsHitTesting(model.tab == t)
                         .accessibilityHidden(model.tab != t)
@@ -41,6 +47,7 @@ struct AppShell: View {
                 MiniPlayerDock()
                 DreamTabBar(selected: model.tab) { model.select($0) }
             }
+            .environment(\.pageActive, !covered)
             .onGeometryChange(for: CGFloat.self) { $0.frame(in: .global).minY.rounded() } action: { model.tabBarTop = $0 }
         }
         // Dream Notices: banners over the shell and the Notifications sheet (Notices/NoticeBanner.swift).

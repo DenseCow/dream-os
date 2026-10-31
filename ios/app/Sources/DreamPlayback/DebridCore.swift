@@ -124,6 +124,8 @@ enum DebridPurpose: Int, Comparable, Sendable {
     case play = 3
     var maxUploads: Int { switch self { case .browse, .page: 0; case .ahead: 2; case .list: 5; case .play: 10 } }
     static func < (a: Self, b: Self) -> Bool { a.rawValue < b.rawValue }
+    /// For the log.
+    var name: String { switch self { case .browse: "browse"; case .page: "look-ahead"; case .ahead: "next episode"; case .list: "source list"; case .play: "Play" } }
 }
 
 // MARK: Accounts

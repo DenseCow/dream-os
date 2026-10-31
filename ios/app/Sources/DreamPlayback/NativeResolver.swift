@@ -34,6 +34,12 @@ public final class NativeResolver: @unchecked Sendable {
     static let joinCheckMs: Int64 = 250
     /// Time kept for the debrid step before a Play's budget ends.
     static let debridReserveMs: Int64 = 2_500
+    /// A lookup still in flight this long after its own deadline is stuck (every wait inside it is bounded by the
+    /// deadline, the race by deadline + 1.5 s): it is dropped and never joined (2026-10-30, the stuck curtain).
+    static let staleGraceMs: Int64 = 10_000
+    /// A scrape still running this long after it started is stuck (the scrapers stop at 20 s, their watchdog at 35 s):
+    /// a Play starts a new one instead of reusing it.
+    static let gatherStuckMs: Int64 = 60_000
     static let maxListed = 80
 
     /// Why a Play's lookup came back empty: nothing playable at all (not out yet), none of it ready on the services,
@@ -52,7 +58,11 @@ public final class NativeResolver: @unchecked Sendable {
         let promise = Promise<StreamLink?>()
         let request: PlayRequest
         private var _deadline: Int64
+        private var _stage = "starting"
+        let startedAt = Mono.now()
         init(_ p: DebridPurpose, _ r: PlayRequest, deadline: Int64) { _purpose = p; request = r; _deadline = deadline }
+        /// Where the lookup is waiting now (for the log when a Play gives up on it).
+        var stage: String { get { lock.withLock { _stage } } set { lock.withLock { _stage = newValue } } }
         var purpose: DebridPurpose { get { lock.withLock { _purpose } } set { lock.withLock { _purpose = newValue } } }
         var ran: DebridPurpose? { get { lock.withLock { _ran } } set { lock.withLock { _ran = newValue } } }
         /// When this lookup gives up (`Mono.now()`), read live: a Play that joins a look-ahead's lookup brings its own
@@ -153,6 +163,37 @@ public final class NativeResolver: @unchecked Sendable {
         StreamCache.shared.forget(f.url)
         // What the failed link's service added for it goes now (AllDebrid's magnet, TorBox's torrent).
         service(f.service)?.discard([f.hash])
+    }
+
+    /// Try Again after the curtain gave up: the next `find` for [req] starts over. A lookup still in flight for it is
+    /// let go (it may be the stuck one; it finishes on its own and only remembers what it finds), and a scrape still
+    /// running past `gatherStuckMs` is cancelled. A finished scrape is kept (its sources are still good).
+    public func fresh(_ req: PlayRequest) {
+        let k = key(req)
+        let now = Mono.now()
+        let (l, g): (Lookup?, Gather?) = lock.withLock {
+            let l = inFlight.removeValue(forKey: k)
+            misses[k] = nil
+            var g: Gather?
+            if let e = gathers[k], !e.job.done, now - e.at >= Self.gatherStuckMs { g = e.job; gathers[k] = nil }
+            return (l, g)
+        }
+        if let l {
+            plog.warning("Dream Core: \(self.label(req), privacy: .public): starting over; let go of the \(l.purpose.name, privacy: .public) lookup started \(Self.secs(now - l.startedAt), privacy: .public) ago (waiting in \(l.stage, privacy: .public))")
+            l.promise.fulfill(nil)
+        }
+        if let g {
+            plog.warning("Dream Core: \(self.label(req), privacy: .public): cancelled a scrape still running after \(Self.secs(now - g.startedAt), privacy: .public)")
+            g.cancel()
+            Services.shared.sources.cancel(req)
+        }
+    }
+
+    /// Where a lookup for [req] is waiting now, for the player's log when the curtain gives up; nil when none runs.
+    public func waiting(_ req: PlayRequest) -> String? {
+        let now = Mono.now()
+        guard let l = lock.withLock({ inFlight[key(req)] }) else { return nil }
+        return "\(l.purpose.name) lookup, \(Self.secs(now - l.startedAt)) old, \(Self.secs(l.deadline - now)) to its deadline, in \(l.stage)"
     }
 
     /// The next ready link for [req] after its link failed (`forget` first): one unlocked alongside it by the race,
@@ -282,10 +323,23 @@ public final class NativeResolver: @unchecked Sendable {
         var res: StreamLink?
         for _ in 0..<2 {
             let mine = Lookup(purpose, req, deadline: deadline)
-            let (l, started) = lock.withLock { () -> (Lookup, Bool) in
-                if let l = inFlight[k] { return (l, false) }
+            let now = Mono.now()
+            let (l, started, stale) = lock.withLock { () -> (Lookup, Bool, Lookup?) in
+                var stale: Lookup?
+                if let l = inFlight[k] {
+                    // Past its own deadline by far: stuck somewhere. Never joined; this caller starts a fresh lookup.
+                    if now - l.deadline < Self.staleGraceMs { return (l, false, nil) }
+                    stale = l
+                }
                 inFlight[k] = mine
-                return (mine, true)
+                return (mine, true, stale)
+            }
+            if let stale {
+                plog.error("Dream Core: \(self.label(req), privacy: .public): dropped a stuck lookup (\(stale.purpose.name, privacy: .public), started \(Self.secs(now - stale.startedAt), privacy: .public) ago, waiting in \(stale.stage, privacy: .public)); starting a fresh one")
+                stale.promise.fulfill(nil) // anyone still waiting on it hears "nothing" now
+            }
+            if !started {
+                plog.info("Dream Core: \(self.label(req), privacy: .public): \(purpose.name, privacy: .public) joins the running \(l.purpose.name, privacy: .public) lookup (started \(Self.secs(now - l.startedAt), privacy: .public) ago, \(l.stage, privacy: .public))")
             }
             if started {
                 Task.detached(priority: .userInitiated) { [self] in
@@ -427,9 +481,12 @@ public final class NativeResolver: @unchecked Sendable {
         if !acc.any { return none(req, k, l, "no debrid account linked") }
         let ep = isEpisode(req)
         if ep && (req.season == nil || req.episode == nil) { return none(req, k, l, "no season/episode") }
+        l.stage = "the IMDb id"
         guard let imdb = await imdbFor(req) else { return none(req, k, l, "no IMDb id") }
+        l.stage = "the scraper check"
         if !(await Services.shared.sources.isActive()) { return none(req, k, l, "no scraper sources added", .nothing) }
         if l.purpose == .browse {
+            l.stage = "the quick index"
             // Browsing: the quick index only (shared with the availability pills); nothing goes to any service.
             var r = req
             r.imdbId = imdb
@@ -474,7 +531,8 @@ public final class NativeResolver: @unchecked Sendable {
         r.imdbId = imdb
         let (job, reused) = lock.withLock { () -> (Gather, Bool) in
             if let g = gathers[k], now - g.at < Self.indexTTL, !g.job.cancelled,
-               !(g.job.done && g.job.count == 0 && (!g.job.answered || now - g.at >= 2 * 60_000)) {
+               !(g.job.done && g.job.count == 0 && (!g.job.answered || now - g.at >= 2 * 60_000)),
+               g.job.done || now - g.at < Self.gatherStuckMs {
                 return (g.job, true)
             }
             let job = Gather(r, urgent: urgent)
@@ -595,6 +653,7 @@ public final class NativeResolver: @unchecked Sendable {
         let e = ep ? req.episode : nil
         let job = gather(req, imdb: imdb, urgent: purpose == .play)
         let f = DreamFilters.current()
+        l.stage = "the runtime and dub lookups"
         let rt = await runtimeFor(req, f)
         let want = wantLang()
         let dub = await dubRank(req)
@@ -612,6 +671,7 @@ public final class NativeResolver: @unchecked Sendable {
                 kept = choose(merged(job, req, s, e), f, ep, skip.union(tried), rt, want, resume: resume, dub: dub)
                 let t = Mono.now()
                 if job.done || t >= deadline - Self.debridReserveMs { break }
+                l.stage = "the scrape (\(job.count) sources so far, \(Self.secs(t - job.startedAt)) in)"
                 var wake = deadline - Self.debridReserveMs
                 // A look-ahead checks every 250 ms whether a Play joined it, sources or not: the Play's tighter deadline
                 // and its relaxed filters then apply at once, never after the slowest scraper (fire-home 51158e8).
@@ -667,6 +727,7 @@ public final class NativeResolver: @unchecked Sendable {
                 if p <= .page { return none(req, k, l, "ranked \(kept.count) of \(job.count); the debrid step waits for Play") }
                 return none(req, k, l, "AllDebrid is at its magnet limit and no other service is linked")
             }
+            l.stage = "the debrid step at \(svcs.map { $0.key.uppercased() }.joined(separator: "/")) (round \(round + 1))"
             if let (found, others) = await race(k, svcs, topList.map(\.c), purpose: p, deadline: deadline) {
                 remember(k, found)
                 if let p = kept.first(where: { $0.c.hash == found.hash }), !p.cam { noteAvailable(req, k, p) }

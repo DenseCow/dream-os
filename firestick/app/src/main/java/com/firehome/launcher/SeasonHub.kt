@@ -157,7 +157,7 @@ object Seasons {
             posterPath = path("poster_path"), backdropPath = path("backdrop_path"), year = date.take(4),
             rating = o.optDouble("vote_average", 0.0), date = date.takeIf { it.length >= 10 }.orEmpty(), votes = o.optInt("vote_count", 0),
             genreIds = o.optJSONArray("genres")?.let { a -> (0 until a.length()).mapNotNull { a.optJSONObject(it)?.optInt("id") } }.orEmpty(),
-            lang = o.optString("original_language"), adult = o.optBoolean("adult", false),
+            lang = o.optString("original_language"), adult = o.optBoolean("adult", false), originCountry = Tmdb.countries(o),
         )
         titles.put(key, t)
         return t

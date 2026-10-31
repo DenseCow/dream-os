@@ -126,8 +126,8 @@ object CinemaStyle {
     // an Apple-like light edge, not neon. Cost: the halo is one small alpha mask per corner size, blurred
     // once on the CPU and drawn nine-sliced, tinted by the paint ([CinemaGlow]). One shared clock ([tick],
     // ~20 times a second: the fade is slow) re-tints only the glows that are showing and the few accents
-    // that follow it (tab underline, page dots, a focused progress bar); nothing runs when nothing glows,
-    // and it all stops while the screen is hidden ([pause]).
+    // that follow it (tab underline, page dots, a focused progress bar, and every rainbow in the fade: [followFade]);
+    // nothing runs when nothing glows, and it all stops while the screen is hidden ([pause]).
 
     /** The rainbow, as [Rainbow.COLORS]: electric blue, violet, magenta, coral, orange, yellow, lime, aqua. */
     val GLOW_HUES = Rainbow.COLORS
@@ -149,6 +149,12 @@ object CinemaStyle {
      */
     private const val IDLE_AFTER_MS = 3_000L
     private const val IDLE_TICK_MS = 250L
+    /**
+     * The resting step while anything in the fade is on screen (8 a second): every rainbow is the one fading color at
+     * all times (owner, 2026-10-30: Play's fill, the emblem rings, the setup rail, the badges), and a solid color
+     * stepping 4 times a second reads as ticking. The one idle exception in STANDARDS §6.
+     */
+    const val FADE_IDLE_TICK_MS = 125L
 
     /** The highlight color right now (the fading rainbow, in step with Play). */
     val glowNow: Int get() = Rainbow.fadeColor()
@@ -190,7 +196,27 @@ object CinemaStyle {
     /** Stops [v] following the color (a progress bar going back to pearl when its card loses focus). */
     fun unfollowGlow(v: View) { followers.remove(v) }
 
-    /** False while the screen is hidden ([pause]): then nothing steps on the clock (Play's fade keeps its own timer). */
+    // Everything in the fade ([Rainbow.fade] fills, [Rainbow.fadeText] words, the rings, rail and badges that draw in
+    // [Rainbow.fadeColor]), stepped while attached, shown and at least partly on screen. Weak keys, and the callback
+    // gets the view as an argument: it must not capture it (as [followers]), or the entry never clears.
+    private val fades = java.util.WeakHashMap<View, (View, Int) -> Unit>()
+    private val onScreen = android.graphics.Rect()
+
+    /**
+     * [apply] gets the fading color on every step of the clock while [v] is on screen (one callback per view: a later
+     * call replaces it). Held still in the background, under the screensaver and while Dream Player shows.
+     */
+    fun followFade(v: View, apply: (View, Int) -> Unit) {
+        fades[v] = apply
+        tick()
+    }
+
+    fun unfollowFade(v: View) { fades.remove(v) }
+
+    /** [v]'s fade step at once (it was just attached), whether or not the clock is running. */
+    fun fadeNow(v: View) { fades[v]?.invoke(v, glowNow) }
+
+    /** False while the screen is hidden ([pause]): then nothing steps on the clock (a focused Play keeps its own timer). */
     val clockRunning: Boolean get() = !paused || keepers > 0
 
     /**
@@ -230,10 +256,16 @@ object CinemaStyle {
         if (followers.isNotEmpty()) for ((v, apply) in followers.entries.toList()) {
             if (v.isAttachedToWindow && v.isShown) { apply(v, c); any = true; if (v is CinemaHero && v.driftMoving) smooth = true }
         }
+        // The fade (Play's fill and every other rainbow): only where it can be seen (a title page scrolled past its
+        // buttons, a covered or hidden Home, the screensaver over Home and Dream Player in front all leave it alone).
+        var fading = false
+        if (fades.isNotEmpty() && !DreamPlayerActivity.visible && !DreamSaver.dreaming) for ((v, apply) in fades.entries.toList()) {
+            if (v.isAttachedToWindow && v.isShown && v.getGlobalVisibleRect(onScreen)) { apply(v, c); any = true; fading = true }
+        }
         if (any) {
             ticking = true
             val resting = !smooth && android.os.SystemClock.uptimeMillis() - activeAt >= IDLE_AFTER_MS
-            main.postDelayed(tickRun, if (resting) IDLE_TICK_MS else TICK_MS)
+            main.postDelayed(tickRun, if (!resting) TICK_MS else if (fading) FADE_IDLE_TICK_MS else IDLE_TICK_MS)
         }
     }
 

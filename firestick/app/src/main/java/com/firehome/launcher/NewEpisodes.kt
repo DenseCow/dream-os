@@ -15,7 +15,8 @@ import java.util.concurrent.atomic.AtomicBoolean
 /**
  * "New Episodes": recently aired and upcoming episodes of the shows the user follows (TV shows on
  * My List plus shows from the watch history). Show data comes from TMDB and is cached in a JSON
- * file for [MAX_AGE_MS]; which episodes count as "New" (not yet focused/opened) is per profile.
+ * file for [MAX_AGE_MS]; which episodes count as "New" (not yet focused/opened) is per profile. An episode the
+ * viewer is already past ([caughtUp]: they finished it or a later one) is left out until a newer one airs.
  * Everything that touches the network ([load], [imdb]) blocks: call it from Net.background.
  */
 object NewEpisodes {
@@ -157,9 +158,12 @@ object NewEpisodes {
         }
         val followed = shows.filterKeys { it in tracked }.values
         val now = System.currentTimeMillis()
-        val recent = followed.mapNotNull { recentItem(it, now) }
+        // Caught up (the drop's last episode, or a later one, finished): not new to this viewer until a newer one airs.
+        val history = try { WatchHistory.recent(ctx) } catch (e: Exception) { emptyList() }
+        fun unseen(i: Item) = !caughtUp(ctx, i.show.id, i.ep.season, i.lastNumber, history)
+        val recent = followed.mapNotNull { recentItem(it, now) }.filter(::unseen)
             .sortedWith(compareByDescending<Item> { it.ep.airDate }.thenByDescending { it.ep.at }.thenBy { it.show.name })
-        val upcoming = followed.mapNotNull { upcomingItem(it, now) }
+        val upcoming = followed.mapNotNull { upcomingItem(it, now) }.filter(::unseen)
             .filter { up -> recent.none { it.key == up.key } }.sortedWith(compareBy<Item> { it.ep.airDate }.thenBy { it.ep.at })
         val pending = stringSet(ctx, "announce")
         val nextAt = upcoming.mapNotNull { it.ep.at.takeIf { t -> t > now } }.minOrNull() ?: 0L
@@ -178,6 +182,25 @@ object NewEpisodes {
     fun announced(ctx: Context, items: List<Item>) = synchronized(lock) {
         val pending = stringSet(ctx, "announce")
         if (pending.removeAll(items.map { it.key }.toSet())) putSet(ctx, "announce", pending)
+    }
+
+    /**
+     * The viewer is past S[season]E[episode] of [show], so it isn't a new episode to them: they finished it or a later
+     * one ([Watched], Trakt's history included), or their watch history is on a later episode (in progress or Up
+     * Next), or it holds this very episode finished or removed from Continue Watching. The one rule every "new
+     * episode" surface goes by (New Episodes for You, the banner and its notice, NEW EPISODE badges, the general New
+     * Episodes rows); the iPhone and Windows apps keep the same one. Local and instant; pass [history] for many shows.
+     */
+    fun caughtUp(ctx: Context, show: Int, season: Int, episode: Int,
+                 history: List<WatchHistory.Entry> = WatchHistory.recent(ctx)): Boolean =
+        past(Watched.furthest(ctx, show), history.firstOrNull { it.isShow && it.tmdbId == show }, season, episode)
+
+    /** [caughtUp] on its inputs: [finished] the latest finished episode (season to number), [entry] the show's history entry. */
+    fun past(finished: Pair<Int, Int>?, entry: WatchHistory.Entry?, season: Int, episode: Int): Boolean {
+        if (finished != null && (finished.first > season || finished.first == season && finished.second >= episode)) return true
+        val e = entry ?: return false
+        if (WatchHistory.later(e, season, episode)) return true
+        return e.season == season && e.episode == episode && !e.upNext && (e.hidden || e.progress >= WatchHistory.FINISHED)
     }
 
     /** Installed apps that stream [show] (TMDB US flatrate providers), one per app. */

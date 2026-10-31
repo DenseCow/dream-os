@@ -9,7 +9,6 @@ import android.graphics.Color
 import android.graphics.ColorFilter
 import android.graphics.Matrix
 import android.graphics.Paint
-import android.graphics.SweepGradient
 import android.graphics.Path
 import android.graphics.PixelFormat
 import android.graphics.Rect
@@ -156,7 +155,10 @@ class PlayerScrubber(ctx: Context, private val kit: PremiumKit) : View(ctx) {
     }
 }
 
-/** Calm buffering ring: one arc in the Dream rainbow, rotating only while it is visible. */
+/**
+ * Calm buffering ring: one arc in the fading rainbow, rotating only while it is visible. The turn moves the render
+ * node (no redraw); the arc's hue steps on that same animator, a redraw at most every [HUE_STEP_MS] (no clock of its own).
+ */
 class PlayerSpinner(ctx: Context, kit: PremiumKit) : View(ctx) {
     private val d = ctx.resources.displayMetrics.density
     private val oval = RectF()
@@ -170,9 +172,10 @@ class PlayerSpinner(ctx: Context, kit: PremiumKit) : View(ctx) {
         style = Paint.Style.STROKE
         strokeCap = Paint.Cap.ROUND
         strokeWidth = 3f * d
-        color = Ui.mix(kit.select, kit.blush, 0.4f)
+        color = Rainbow.fadeColor()
     }
     private var spin: ObjectAnimator? = null
+    private var hueAt = 0L
 
     override fun hasOverlappingRendering() = false
 
@@ -182,6 +185,10 @@ class PlayerSpinner(ctx: Context, kit: PremiumKit) : View(ctx) {
             duration = 1100
             interpolator = LinearInterpolator()
             repeatCount = ValueAnimator.INFINITE
+            addUpdateListener {
+                val now = android.os.SystemClock.uptimeMillis()
+                if (now - hueAt >= HUE_STEP_MS) { hueAt = now; invalidate() }
+            }
             start()
         }
     }
@@ -190,6 +197,8 @@ class PlayerSpinner(ctx: Context, kit: PremiumKit) : View(ctx) {
         spin?.cancel()
         spin = null
     }
+
+    private companion object { const val HUE_STEP_MS = 100L }
 
     override fun onDetachedFromWindow() {
         end()
@@ -204,16 +213,8 @@ class PlayerSpinner(ctx: Context, kit: PremiumKit) : View(ctx) {
         val ar = r * 0.48f
         oval.set(cx - ar, cy - ar, cx + ar, cy + ar)
         c.drawCircle(cx, cy, ar, ringPaint)
+        arcPaint.color = Rainbow.fadeColor()
         c.drawArc(oval, -90f, 100f, false, arcPaint)
-    }
-
-    override fun onSizeChanged(w: Int, h: Int, ow: Int, oh: Int) {
-        // The arc runs through the Dream rainbow; the whole view rotates, so the colors travel with it.
-        val n = Rainbow.COLORS.size
-        val pos = FloatArray(n) { it / (n - 1f) * (100f / 360f) } // the whole spectrum inside the 100-degree arc
-        arcPaint.shader = SweepGradient(w / 2f, h / 2f, Rainbow.COLORS, pos).apply {
-            setLocalMatrix(Matrix().apply { setRotate(-90f, w / 2f, h / 2f) })
-        }
     }
 }
 

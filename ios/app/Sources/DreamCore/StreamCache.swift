@@ -233,6 +233,8 @@ public final class StreamCache: @unchecked Sendable {
     private func cancelled(_ job: Job) -> Bool { lock.withLock { cancelRunning || running?.id != job.id } }
 
     private func fetch(_ job: Job) async {
+        // A trailer being readied for the page goes first (2 s at most; TrailerWindow).
+        await TrailerWindow.yield()
         let t0 = Date()
         let start: Entry? = lock.withLock {
             // Stopped meanwhile (the player opened another title): making room would delete what it reads.

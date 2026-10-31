@@ -2,7 +2,7 @@ import SwiftUI
 import DreamCore
 import DreamUI
 
-/// Your own TMDB / OMDb key (Settings › Advanced, setup's Your Shows step). The key is checked with one request and
+/// Your own TMDB / OMDb key (Settings › Accounts & Scrapers, setup's Your Shows step). The key is checked with one request and
 /// kept in the Keychain (`SecureStore` "tmdb.key" / "omdb.key"); a key that fails is never saved. Remove goes back to
 /// Dream OS's built-in key.
 struct KeyEntryView: View {

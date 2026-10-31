@@ -323,6 +323,18 @@ object WatchHistory {
         }
     }
 
+    /**
+     * A show the viewer caught up on (finished its latest episode with nothing after it yet, so it left Continue
+     * Watching): the episode out after it now (aired, or out early with a source), as an Up Next entry. The title page's
+     * Play button jumps there ("Play S2 E1"). Null when the show is still in the row, the viewer removed it from the
+     * row (that one starts fresh at S1 E1), or nothing newer is out. Blocking (TMDB, cached).
+     */
+    fun caughtUpNext(ctx: Context, key: String): Entry? {
+        val e = synchronized(lock) { load(ctx) }.firstOrNull { it.key == key } ?: return null
+        if (!e.isShow || !e.hidden || e.upNext || e.progress < FINISHED || e.season <= 0 || e.episode <= 0) return null
+        return nextEpisode(ctx, e)
+    }
+
     /** The episode after [e] as an "Up next" entry, if it exists and has aired (the player's rule, [PlayFlow.episodeAfter]). */
     private fun nextEpisode(ctx: Context, e: Entry): Entry? {
         val (season, next) = PlayFlow.episodeAfter(ctx, e.tmdbId, e.season, e.episode) ?: return null
@@ -355,7 +367,7 @@ object WatchHistory {
 
     /** Full TMDB details (with external_ids) tagged with "_type" = "tv" or "movie". */
     internal fun details(ctx: Context, type: String, id: Int): JSONObject? =
-        tmdb(ctx, "/$type/$id", "&append_to_response=external_ids")?.put("_type", type)
+        tmdb(ctx, "/$type/$id", "&append_to_response=external_ids")?.put("_type", type)?.also { Tmdb.noteOrigin(type, id, it) }
 
     private fun match(ctx: Context, s: Sighting): JSONObject? {
         val wantTv = s.isEpisode

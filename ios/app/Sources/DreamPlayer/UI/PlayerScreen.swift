@@ -513,8 +513,10 @@ struct HDRBadge: View {
         .padding(.horizontal, compact ? 10 : 12).padding(.vertical, compact ? 4 : 5)
         .background(Capsule().fill(Color(red: 14 / 255, green: 14 / 255, blue: 16 / 255).opacity(170 / 255)))
         .overlay(
-            Capsule().strokeBorder(AngularGradient(colors: Rainbow.colors + [Rainbow.colors[0]], center: .center), lineWidth: 1)
-                .shadow(color: Rainbow.fadeColor().opacity(0.45), radius: 5)
+            RainbowFade { h in
+                Capsule().strokeBorder(Color(hex: h), lineWidth: 1)
+                    .shadow(color: Color(hex: h).opacity(0.45), radius: 5)
+            }
         )
         .accessibilityLabel("\(text), Shown in HDR")
     }
@@ -545,7 +547,8 @@ struct CenterFlash: View {
     }
 }
 
-/// The calm buffering ring: smoked disc, faint track, a rainbow arc turning once every 1.1 s.
+/// The calm buffering ring: smoked disc, faint track, an arc in the fading rainbow turning once every 1.1 s (the hue is
+/// read in the turn's own frames).
 struct BufferRing: View {
     var body: some View {
         TimelineView(.animation) { ctx in
@@ -554,7 +557,7 @@ struct BufferRing: View {
                 Circle().fill(Color(red: 10 / 255, green: 10 / 255, blue: 12 / 255).opacity(120 / 255))
                 Circle().stroke(.white.opacity(0.14), lineWidth: 3).padding(17)
                 Circle().trim(from: 0, to: 100 / 360)
-                    .stroke(AngularGradient(colors: Rainbow.colors, center: .center), style: StrokeStyle(lineWidth: 3, lineCap: .round))
+                    .stroke(Color(hex: Rainbow.fadeHex(ctx.date)), style: StrokeStyle(lineWidth: 3, lineCap: .round))
                     .padding(17).rotationEffect(.degrees(a - 90))
             }
             .frame(width: 64, height: 64)

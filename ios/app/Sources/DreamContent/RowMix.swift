@@ -150,7 +150,7 @@ enum RowMix {
 
     private static var thisYear: Int { Calendar.current.component(.year, from: Date()) }
 
-    /// Japanese animation, and Chinese or Korean animated series not for kids or families.
+    /// Japanese animation, animation made in Japan, and Chinese or Korean animated series, none for kids or families.
     static func isAnime(_ t: Title) -> Bool { AnimeDubs.isAnime(t) }
 
     /// Keep Anime in Anime Sections (AnimePrefs). Off, no row, hero or TMDB query leaves anime out (NewReleases.withAnime).

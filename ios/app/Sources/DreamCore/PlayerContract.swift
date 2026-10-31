@@ -32,6 +32,11 @@ public protocol PlaybackExtras: Sendable {
     /// Whether `nextLink` would have one (no network, nothing taken): the player's start watchdog only gives up on
     /// a slow link when another is ready.
     func hasNextLink(for request: PlayRequest) -> Bool
+    /// Try Again after the curtain gave up (2026-10-30): the next `resolve` starts over and never joins a lookup or
+    /// scrape that may be the stuck one.
+    func fresh(_ request: PlayRequest)
+    /// Where Dream Core is waiting for `request` right now (for the log when the curtain gives up); nil when nothing runs.
+    func waiting(for request: PlayRequest) -> String?
 }
 
 public extension PlaybackExtras {
@@ -40,6 +45,8 @@ public extension PlaybackExtras {
     func started(_ request: PlayRequest, link: StreamLink, seconds: Double) {}
     func nextLink(for request: PlayRequest) -> StreamLink? { nil }
     func hasNextLink(for request: PlayRequest) -> Bool { false }
+    func fresh(_ request: PlayRequest) {}
+    func waiting(for request: PlayRequest) -> String? { nil }
 }
 
 /// Where trailers come from: a key (TMDB's video key) -> playable streams. Implemented in DreamPlayer;

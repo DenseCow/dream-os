@@ -104,15 +104,17 @@ struct Curtain: View {
     }
 }
 
-/// The curtain's small spinner: a faint track and a rainbow arc turning once every 0.9 s.
+/// The curtain's small spinner: a faint track and an arc in the fading rainbow (one hue, from a clear tail) turning once
+/// every 0.9 s; the hue is read in the turn's own frames.
 struct CurtainRing: View {
     var body: some View {
         TimelineView(.animation) { ctx in
             let a = ctx.date.timeIntervalSinceReferenceDate.truncatingRemainder(dividingBy: 0.9) / 0.9 * 360
+            let hue = Rainbow.fadeColor(ctx.date)
             ZStack {
                 Circle().stroke(.white.opacity(46 / 255), lineWidth: 2.5)
                 Circle().trim(from: 0, to: 300 / 360)
-                    .stroke(AngularGradient(colors: [.clear] + Rainbow.colors, center: .center), style: StrokeStyle(lineWidth: 2.5, lineCap: .round))
+                    .stroke(AngularGradient(colors: [hue.opacity(0), hue], center: .center), style: StrokeStyle(lineWidth: 2.5, lineCap: .round))
                     .rotationEffect(.degrees(a))
             }
         }

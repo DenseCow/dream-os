@@ -90,12 +90,14 @@ class CinemaShell(private val act: Activity, private val host: HomeShell.Host) :
     private var airPodsName = ""
     /** The bell's unread count (DreamNotices), kept current by [noticesChanged]. */
     private val noticeBadge = DreamNoticesUi.badge(act)
-    /** The gear's dot: a new Dream OS version waits (DreamUpdate; its notice also refreshes this). */
+    /** The gear's dot, in the fading rainbow: a new Dream OS version waits (DreamUpdate; its notice also refreshes this). */
     private val updateDot = View(act).apply {
-        background = GradientDrawable(GradientDrawable.Orientation.TL_BR, intArrayOf(Rainbow.COLORS[0], Rainbow.COLORS[1], Rainbow.COLORS[2])).apply {
+        val dot = GradientDrawable().apply {
             shape = GradientDrawable.OVAL
             setStroke((1.5f * act.resources.displayMetrics.density).toInt().coerceAtLeast(1), 0xFF0C0C0E.toInt())
         }
+        background = dot
+        Rainbow.fadeFill(this, dot)
         visibility = View.GONE
     }
     private val noticesChanged: () -> Unit = {

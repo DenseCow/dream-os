@@ -134,6 +134,23 @@ public final class PlayerSession: ObservableObject {
     static let resolveTimeout: Double = 45
     static let trailerTimeout: Double = 25
 
+    // The curtain's deadline (2026-10-30, "Now Playing stuck forever"): every item gets `resolveTimeout` from the
+    // moment the curtain goes up until its first frame, finding the stream and opening it together. While the stream
+    // visibly moves (a source handed to the player in the last `curtainExtendSeconds`, or its buffer growing) it gets
+    // `curtainExtendSeconds` more, at most `curtainMaxExtensions` times; then the error block shows. It runs on the main
+    // queue (DispatchQueue), not on a Swift concurrency timer, so nothing stuck in the cooperative pool can hold it.
+    static let curtainExtendSeconds: Double = 15
+    static let curtainMaxExtensions = 3
+    private var curtainItem = 0
+    private var curtainTimer: DispatchWorkItem?
+    private var curtainUpAt = Date()
+    private var curtainExtensions = 0
+    private var curtainBuffered: Double = 0
+    /// The last time a stream was handed to the engine (a start, a source switch, a trailer).
+    private var lastLoadAt: Date?
+    /// What the curtain waits for now, for the log.
+    private var waitingIn = "finding the stream"
+
     public init(engine: PlayerEngine = Engines.make()) {
         self.engine = engine
         engine.onEvent = { [weak self] e in self?.handle(e) }
@@ -163,6 +180,7 @@ public final class PlayerSession: ObservableObject {
         beginItem()
         let g = gen
         let tapped = Date()
+        curtainWaits(loose ? "finding the stream (all sources)" : "finding the stream")
         resolveTask = Task { [weak self] in
             guard let self else { return }
             // Instant Play: the spot and the link are asked for together (a link found ahead comes back at once).
@@ -171,11 +189,13 @@ public final class PlayerSession: ObservableObject {
                 if request.fromStart { return 0 }
                 return await Services.shared.history.startPosition(for: request)
             }()
+            // No timeout of its own: the curtain's deadline (`armCurtain`) bounds it and shows the error when it's due.
+            // (It was a task-group race, which can't return before its slowest child: a resolve that never came back
+            // kept the curtain up for good.)
             do {
-                let link = try await self.withTimeout(Self.resolveTimeout) {
-                    if let x = Services.shared.playback as? PlaybackExtras { return try await x.resolve(request, loose: loose) }
-                    return try await Services.shared.playback.resolve(request)
-                }
+                let link: StreamLink
+                if let x = Services.shared.playback as? PlaybackExtras { link = try await x.resolve(request, loose: loose) }
+                else { link = try await Services.shared.playback.resolve(request) }
                 let from = await spot
                 guard g == self.gen, !Task.isCancelled else { return }
                 self.pendingStart = from
@@ -184,7 +204,7 @@ public final class PlayerSession: ObservableObject {
             } catch is CancellationError {
             } catch {
                 let from = await spot
-                guard g == self.gen else { return }
+                guard g == self.gen, !Task.isCancelled else { return }
                 self.pendingStart = from
                 self.fail(error)
             }
@@ -263,6 +283,65 @@ public final class PlayerSession: ObservableObject {
         loadStartedAt = Date()
         fallbacks = 0
         cancelTimers()
+        armCurtain()
+    }
+
+    // MARK: The curtain's deadline
+
+    /// A new item: its curtain gets a fresh deadline (any older item's timer is void from here).
+    private func armCurtain() {
+        curtainTimer?.cancel()
+        curtainItem &+= 1
+        curtainUpAt = Date()
+        curtainExtensions = 0
+        curtainBuffered = 0
+        lastLoadAt = nil
+        waitingIn = isTrailer ? "finding the trailer" : "finding the stream"
+        scheduleCurtain(after: Self.resolveTimeout)
+    }
+
+    private func scheduleCurtain(after seconds: Double) {
+        let item = curtainItem
+        let w = DispatchWorkItem { [weak self] in MainActor.assumeIsolated { self?.curtainDue(item) } }
+        curtainTimer = w
+        DispatchQueue.main.asyncAfter(deadline: .now() + seconds, execute: w)
+    }
+
+    /// What the curtain waits for from here (logged with the time since it went up).
+    private func curtainWaits(_ what: String) {
+        waitingIn = what
+        Log.player.info("Player: curtain waits for \(what, privacy: .public) (\(String(format: "%.1f", Date().timeIntervalSince(self.curtainUpAt)), privacy: .public) s up)")
+    }
+
+    private func curtainDue(_ item: Int) {
+        guard item == curtainItem, phase == .loading, !firstFrame else { return }
+        let up = Date().timeIntervalSince(curtainUpAt)
+        // Still moving: a source handed over a moment ago, or its buffer growing. Never more than a few times.
+        let recentLoad = lastLoadAt.map { Date().timeIntervalSince($0) < Self.curtainExtendSeconds } ?? false
+        let growing = state.hasSource && state.buffered > curtainBuffered + 0.5
+        curtainBuffered = state.buffered
+        if (recentLoad || growing), curtainExtensions < Self.curtainMaxExtensions {
+            curtainExtensions += 1
+            Log.player.notice("Player: curtain up \(Int(up), privacy: .public) s, still \(self.waitingIn, privacy: .public) (\(recentLoad ? "a source just handed over" : "the buffer is growing", privacy: .public)); \(Int(Self.curtainExtendSeconds), privacy: .public) s more (\(self.curtainExtensions, privacy: .public)/\(Self.curtainMaxExtensions, privacy: .public))")
+            scheduleCurtain(after: Self.curtainExtendSeconds)
+            return
+        }
+        let extras = Services.shared.playback as? PlaybackExtras
+        let core = request.flatMap { isTrailer ? nil : extras?.waiting(for: $0) }
+        Log.player.error("Player: curtain gave up after \(Int(up), privacy: .public) s, waiting for \(self.waitingIn, privacy: .public)\(core.map { "; Dream Core: " + $0 } ?? "", privacy: .public)")
+        let wasResolving = link == nil
+        resolveTask?.cancel()
+        startWatch?.cancel()
+        if state.hasSource { engine.stop() }
+        if isTrailer {
+            phase = .failed(title: "Trailer Unavailable", message: "This trailer can't be played right now. Try again in a moment.")
+            return
+        }
+        // A link that never started isn't handed out again (Try Again takes the next one).
+        if !wasResolving, let r = request { extras?.forget(r) }
+        phase = wasResolving
+            ? .failed(title: "Couldn't Find a Ready Stream", message: "Try again in a moment, or choose another source.")
+            : .failed(title: "This Title Isn't Available Right Now", message: "Try again in a moment, or choose another source.")
     }
 
     private func start(_ link: StreamLink, at start: Double) {
@@ -280,6 +359,8 @@ public final class PlayerSession: ObservableObject {
         linkFailed = false
         headStart = !isTrailer && StreamCache.shared.ready(url)
         engine.load(EngineSource(url: url, headers: headers), start: start, autoplay: true)
+        lastLoadAt = Date()
+        if !firstFrame { curtainWaits("the player to open the stream (\(link.service)\(fallbacks > 0 ? ", source \(fallbacks + 1)" : ""))") }
         Log.player.info("Player: start '\(self.request?.title.name ?? "?", privacy: .public)' at \(Int(start), privacy: .public)s via \(link.service, privacy: .public)\(self.headStart ? ", head start from disk" : "", privacy: .public)")
         subsSettled = false
         if !isTrailer, let r = request { Task { await self.loadSubtitles(for: r, link: link, prefs: subs) } }
@@ -298,6 +379,8 @@ public final class PlayerSession: ObservableObject {
         guard fallbacks < Self.maxFallbacks, let next = extras.nextLink(for: r) else { return false }
         fallbacks += 1
         Log.player.notice("Player: switching to the next source (\(next.service, privacy: .public) \(next.quality, privacy: .public)) at \(Int(at), privacy: .public)s: \(why, privacy: .public)")
+        // Failed while playing (the item's deadline is long past): the curtain comes back with a deadline of its own.
+        if firstFrame { armCurtain() }
         firstFrame = false
         retriedFromStart = false
         phase = .loading
@@ -385,6 +468,8 @@ public final class PlayerSession: ObservableObject {
                 let at = self.trailerAdvances == 0 ? self.trailerStart : 0
                 self.engine.setSpeed(1)
                 self.engine.load(EngineSource(url: s.video, audioURL: s.audio), start: at, autoplay: true)
+                self.lastLoadAt = Date()
+                self.curtainWaits("the player to open the trailer")
                 self.armTrailerTimeout(g)
             } catch {
                 guard g == self.gen else { return }
@@ -421,13 +506,17 @@ public final class PlayerSession: ObservableObject {
     public func tryAgain() {
         guard let r = request else { close(); return }
         if isTrailer, let t = request?.title { playTrailer(of: t, keys: trailerAllKeys); return }
-        (Services.shared.playback as? PlaybackExtras)?.forget(r)
+        let extras = Services.shared.playback as? PlaybackExtras
+        extras?.forget(r)
+        // A fresh lookup: never the one this curtain may have been stuck behind.
+        extras?.fresh(r)
         play(r, at: resumeSpot())
     }
 
     /// "Search All Sources": one search with the viewer's source filters set aside.
     public func searchAllSources() {
         guard let r = request, !isTrailer else { tryAgain(); return }
+        (Services.shared.playback as? PlaybackExtras)?.fresh(r)
         play(r, loose: true, at: resumeSpot())
     }
 
@@ -557,6 +646,9 @@ public final class PlayerSession: ObservableObject {
             onProgress(t)
         case .tracks:
             applyTrackPrefs()
+            if !firstFrame, phase == .loading, state.hasSource, waitingIn.hasPrefix("the player to open") {
+                curtainWaits("the first picture (the stream is open)")
+            }
         case .firstFrame:
             guard !firstFrame else { break }
             // A late picture from a source that already failed never lifts the error screen.
@@ -945,6 +1037,7 @@ public final class PlayerSession: ObservableObject {
 
     private func endItem() {
         saveProgress(force: true)
+        curtainTimer?.cancel(); curtainTimer = nil
         resolveTask?.cancel()
         metaTask?.cancel()
         startWatch?.cancel()
@@ -972,16 +1065,18 @@ public final class PlayerSession: ObservableObject {
 
     struct TimeoutError: Error {}
 
+    /// [op]'s answer, or `TimeoutError` after [seconds], whichever comes first. Unstructured on purpose: a task-group
+    /// race can't return before its slowest child, so an [op] that ignores cancellation kept it waiting for good.
+    /// The timer is the main queue's, not a Swift concurrency sleep.
     private func withTimeout<T: Sendable>(_ seconds: Double, _ op: @escaping @Sendable () async throws -> T) async throws -> T {
-        try await withThrowingTaskGroup(of: T.self) { group in
-            group.addTask { try await op() }
-            group.addTask {
-                try await Task.sleep(for: .seconds(seconds))
-                throw TimeoutError()
-            }
-            defer { group.cancelAll() }
-            guard let first = try await group.next() else { throw TimeoutError() }
-            return first
+        let once = OnceResult<T>()
+        let work = Task.detached { do { once.finish(.success(try await op())) } catch { once.finish(.failure(error)) } }
+        DispatchQueue.main.asyncAfter(deadline: .now() + seconds) { once.finish(.failure(TimeoutError())); work.cancel() }
+        return try await withTaskCancellationHandler {
+            try await once.value()
+        } onCancel: {
+            once.finish(.failure(CancellationError()))
+            work.cancel()
         }
     }
 
@@ -1110,5 +1205,33 @@ private final class BackgroundSave {
         guard id != .invalid else { return }
         UIApplication.shared.endBackgroundTask(id)
         id = .invalid
+    }
+}
+
+/// One result handed to one waiter, whoever finishes first (the rest are dropped): `PlayerSession.withTimeout`.
+final class OnceResult<T: Sendable>: @unchecked Sendable {
+    private let lock = NSLock()
+    private var result: Result<T, Error>?
+    private var waiter: CheckedContinuation<T, Error>?
+
+    func finish(_ r: Result<T, Error>) {
+        let w: CheckedContinuation<T, Error>? = lock.withLock {
+            if result != nil { return nil }
+            result = r
+            let w = waiter; waiter = nil
+            return w
+        }
+        w?.resume(with: r)
+    }
+
+    func value() async throws -> T {
+        try await withCheckedThrowingContinuation { (c: CheckedContinuation<T, Error>) in
+            let now: Result<T, Error>? = lock.withLock {
+                if let r = result { return r }
+                waiter = c
+                return nil
+            }
+            if let now { c.resume(with: now) }
+        }
     }
 }

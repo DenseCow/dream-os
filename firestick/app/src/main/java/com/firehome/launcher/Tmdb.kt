@@ -25,6 +25,11 @@ class Title(
     val lang: String = "",
     /** TMDB's adult flag (list results); such titles never make a row ([RowMix.keep]). */
     val adult: Boolean = false,
+    /**
+     * Where it was made ("JP", "US"), from list results; TMDB's movie lists leave it out, so a movie's is empty
+     * until its details were asked for ([Tmdb.origin]).
+     */
+    val originCountry: List<String> = emptyList(),
 ) {
     fun poster(size: String = "w185") = posterPath?.let { "${Tmdb.IMG}$size$it" }
     fun backdrop(size: String = "w300") = backdropPath?.let { "${Tmdb.IMG}$size$it" }
@@ -332,6 +337,7 @@ object Tmdb {
         // US release days / age rating ride along for the Information section (TitleInfo): no second request.
         val ratingsPart = if (t.type == "movie") "release_dates" else "content_ratings"
         val json = Net.getJson(url(ctx, "/${t.type}/${t.id}", "&append_to_response=videos,watch/providers,credits,recommendations,$ratingsPart"))
+        noteOrigin(t.type, t.id, json)
         val genres = json.optJSONArray("genres")?.let { a -> (0 until a.length()).map { a.getJSONObject(it).getString("name") } }.orEmpty()
         val runtime = when (t.type) {
             "movie" -> TitleInfo.runtimeWords(json.optInt("runtime")) ?: "" // "2 hr 10 min", as everywhere on the title page
@@ -386,6 +392,7 @@ object Tmdb {
         val movie = t.type == "movie"
         val json = Net.getJson(url(ctx, "/${t.type}/${t.id}",
             "&append_to_response=" + if (movie) "release_dates,external_ids" else "content_ratings,external_ids"))
+        noteOrigin(t.type, t.id, json)
         val results = json.optJSONObject(if (movie) "release_dates" else "content_ratings")?.optJSONArray("results")
         val byCountry = LinkedHashMap<String, String>()
         if (results != null) for (i in 0 until results.length()) {
@@ -431,8 +438,25 @@ object Tmdb {
             genreIds = o.optJSONArray("genre_ids")?.let { a -> (0 until a.length()).map { a.optInt(it) } }.orEmpty(),
             lang = o.optString("original_language"),
             adult = o.optBoolean("adult", false),
+            originCountry = countries(o),
         )
     }
+
+    /** A TMDB object's "origin_country" ("JP"); empty when it has none (movie list results). */
+    internal fun countries(o: JSONObject): List<String> =
+        o.optJSONArray("origin_country")?.let { a -> (0 until a.length()).map { a.optString(it) }.filter { it.length == 2 } }.orEmpty()
+
+    // Origin countries learned from details calls already made (title page, hero meta, history): a movie list result
+    // has none, and the anime rule ([RowMix.isAnime]) reads it. Memory only, bounded; never a call of its own.
+    private val origins = LruCache<String, List<String>>(512)
+
+    /** Remembers [json]'s origin countries (a "/movie/{id}" or "/tv/{id}" answer) for [origin]. */
+    internal fun noteOrigin(type: String, id: Int, json: JSONObject) {
+        countries(json).takeIf { it.isNotEmpty() }?.let { origins.put("$type:$id", it) }
+    }
+
+    /** [t]'s origin countries: its own, else what an earlier details call said; empty when neither knows. */
+    fun origin(t: Title): List<String> = t.originCountry.ifEmpty { origins.get(t.key).orEmpty() }
 
     // ---- My List (saved titles), stored as JSON per profile ----
 
@@ -462,6 +486,7 @@ object Tmdb {
                 put("vote_count", x.votes)
                 if (x.genreIds.isNotEmpty()) put("genre_ids", org.json.JSONArray(x.genreIds))
                 if (x.lang.isNotEmpty()) put("original_language", x.lang)
+                if (x.originCountry.isNotEmpty()) put("origin_country", org.json.JSONArray(x.originCountry))
             })
             ctx.getSharedPreferences("tmdb", Context.MODE_PRIVATE).edit().putString("mylist" + Profiles.suffix(ctx), a.toString()).apply()
             list

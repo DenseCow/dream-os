@@ -11,7 +11,7 @@ public struct DreamMark: View {
             Image(uiImage: img).resizable().interpolation(.high).aspectRatio(contentMode: .fit).frame(height: height)
                 .accessibilityLabel("Dream OS")
         } else {
-            Text("DREAM OS").font(.footnote.weight(.semibold)).tracking(2).foregroundStyle(Rainbow.linear)
+            RainbowFade { h in Text("DREAM OS").font(.footnote.weight(.semibold)).tracking(2).foregroundStyle(Color(hex: Rainbow.textOn(h, 0x000000))) }
         }
     }
 

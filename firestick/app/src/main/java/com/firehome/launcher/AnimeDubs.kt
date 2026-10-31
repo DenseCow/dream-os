@@ -97,7 +97,7 @@ object AnimeDubs {
         val d = WatchHistory.details(ctx.applicationContext, type, req.tmdbId) ?: return false
         val g = d.optJSONArray("genres")
         val ids = if (g == null) emptyList() else (0 until g.length()).mapNotNull { g.optJSONObject(it)?.optInt("id") }
-        val t = Title(req.tmdbId, type, "", "", null, null, "", 0.0, genreIds = ids, lang = d.optString("original_language"))
+        val t = Title(req.tmdbId, type, "", "", null, null, "", 0.0, genreIds = ids, lang = d.optString("original_language"), originCountry = Tmdb.countries(d))
         PlayerPrefs.normLang(t.lang)?.let { original["$type:${req.tmdbId}"] = it }
         return RowMix.isAnime(t).also { anime["$type:${req.tmdbId}"] = it }
     }
