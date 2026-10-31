@@ -104,7 +104,7 @@ The setup isn't code-signed, so the first time you open it Windows may say **Win
 | Platform | Status | Guide |
 | :-- | :-- | :-- |
 | Fire Stick | Available | [Install on Fire Stick](INSTALL-FIRESTICK.md) |
-| iPhone | Available (sideloaded) | [Install on iPhone](INSTALL-IOS.md) |
+| iOS | Available (sideloaded) | [Install on iPhone](INSTALL-IOS.md) |
 | Windows 10 / 11, 64-bit | Available, new in 4.3.6 ([DreamOS-Windows-Setup.exe](https://github.com/DenseCow/dream-os/releases/latest/download/DreamOS-Windows-Setup.exe)) | [Install on Windows](INSTALL-WINDOWS.md) |
 | Mac, Linux | Coming soon | |
 
