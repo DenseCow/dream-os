@@ -6,4 +6,4 @@ plugins {
 }
 
 // Dream OS's version: one version for every platform (fire-home dreamVersion, iOS Info.plist). tools/set-version.sh.
-extra["dreamVersion"] = "4.3.6"
+extra["dreamVersion"] = "4.3.7"

@@ -33,6 +33,8 @@ import java.util.Date
 import java.util.Locale
 import java.util.WeakHashMap
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 import kotlin.math.ceil
 
 /**
@@ -843,12 +845,28 @@ object Availability {
         val now = System.currentTimeMillis()
         if (earlyAsked[t.key]?.let { now - it < HOT_TTL } == true) return false
         if (failedAt[t.key]?.let { now - it < FAILED_TTL } == true) return false
-        synchronized(targets) { targets[t.key] = t }
-        try { check(app, t) } catch (e: Exception) { Log.w(TAG, "Avail: ${t.request.title}: $e") }
+        // Already being asked (the title page asks at open, its season list asks too): wait for that answer instead.
+        val mine = CountDownLatch(1)
+        earlyAsking.putIfAbsent(t.key, mine)?.let { asking ->
+            asking.await(EARLY_WAIT_MS, TimeUnit.MILLISECONDS)
+            return outEarly(app, showId, season, number)
+        }
+        try {
+            synchronized(targets) { targets[t.key] = t }
+            try { check(app, t) } catch (e: Exception) { Log.w(TAG, "Avail: ${t.request.title}: $e") }
+        } finally {
+            earlyAsking.remove(t.key, mine)
+            mine.countDown()
+        }
         val out = outEarly(app, showId, season, number)
         if (out) Log.w(TAG, "Avail: $show S${season}E$number is out early (due ${if (at > 0) AirTimes.stamp(at) else date.ifEmpty { "date unknown" }})")
         return out
     }
+
+    /** [earlyRelease] lookups running now (key -> done): a second caller waits for the first instead of asking twice. */
+    private val earlyAsking = ConcurrentHashMap<String, CountDownLatch>()
+    /** How long that second caller waits: the quick check's own budget ([NativeResolver.survey], 8 s) and a little more. */
+    private const val EARLY_WAIT_MS = 9_000L
 
     private fun bindShow(pill: Pill, target: Target, upcoming: Boolean) {
         val ctx = pill.context
@@ -1428,9 +1446,14 @@ object Availability {
             val next = NewEpisodes.Ep.fromTmdb(d.optJSONObject("next_episode_to_air"))?.let { e ->
                 air?.next?.takeIf { e.same(it.season, it.number) }?.let { e.withAt(it.at) } ?: e
             }
-            val recent = last?.takeIf { recentEpisode(it.at, it.airDate) } // aired in the last EPISODE_DAYS days
+            // The next episode (or the next season's first) is already up before its day ([earlyRelease] found it): its
+            // pill, as a new episode's, never "New Season: Season 2 · Sunday" for a season that plays now.
+            val early = (next?.takeIf { !it.aired() } ?: newSeasonStart(d, last?.season ?: 0))
+                ?.takeIf { outEarly(app, t.id, it.season, it.number) }
+            if (exact && early != null) Log.w(TAG, "Upcoming: ${t.name}: S${early.season}E${early.number} is out early, shown as out")
+            val recent = early ?: last?.takeIf { recentEpisode(it.at, it.airDate) } // aired in the last EPISODE_DAYS days
             // "Next Episode: S2 · E7 · Friday at 9:00 PM"; a premiere, or an announced season with a date: "New Season: Season 3 · March 4".
-            val nextWords = next?.takeIf { !it.aired() }?.let { e ->
+            val nextWords = if (early != null) null else next?.takeIf { !it.aired() }?.let { e ->
                 val w = if (e.at > 0) AirTimes.label(e.at) else Upcoming.dayWords(e.airDate)
                 if (e.number == 1) "New Season: Season ${e.season} · $w" else "Next Episode: S${e.season} · E${e.number} · $w"
             } ?: newSeason(d, last?.season ?: 0)
@@ -1458,6 +1481,19 @@ object Availability {
         }
 
         override fun availChanged(key: String, e: Entry) { if (key == this.key) render(e) }
+
+        /** Worked out again from the cache: the title page heard that an episode of this show is up early. */
+        fun refresh() { if (t.type == "tv" && (isAttachedToWindow || parent != null)) showLine() }
+
+        /** The first episode of the first announced season after [lastOut] with a premiere day ahead, or null. */
+        private fun newSeasonStart(d: JSONObject, lastOut: Int): NewEpisodes.Ep? {
+            val a = d.optJSONArray("seasons") ?: return null
+            val today = day(0)
+            return (0 until a.length()).mapNotNull { a.optJSONObject(it) }
+                .filter { it.optInt("season_number") > maxOf(lastOut, 0) && it.optString("air_date").let { x -> x.length == 10 && x > today } }
+                .minByOrNull { it.optInt("season_number") }
+                ?.let { NewEpisodes.Ep(it.optInt("season_number"), 1, "", it.optString("air_date"), null, "") }
+        }
 
         /** The first announced season after [lastOut] with a premiere day ahead: "New Season: Season 3 · March 4". */
         private fun newSeason(d: JSONObject, lastOut: Int): String? {

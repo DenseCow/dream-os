@@ -209,6 +209,15 @@ class CinemaDetails(private val ctx: Context, private val t: Title, private val 
     private var recBlurb: Blurb? = null
     /** Announced seasons that haven't started, by number (their chips and lists read "Coming ..."). */
     private val comingSeasons = HashMap<Int, Season>()
+    /** What the episode lane last showed ("season:out:to come"), and whether a season's list is still on its way. */
+    private var filledSig = ""
+    private var seasonLoading = false
+    /** The status line under the actions (Availability.TitleStatus): asked again when a season turns out to be up early. */
+    private var statusLine: Availability.TitleStatus? = null
+    /** Listening for a season's first episode to turn up early ([watchEarly]); held here, the registry holds them weakly. */
+    private val earlyWatchers = ArrayList<Availability.Watcher>()
+    /** Seasons already redone as out early ([seasonOutEarly]). */
+    private val earlyDone = HashSet<Int>()
 
     init {
         root.background = bg
@@ -394,6 +403,8 @@ class CinemaDetails(private val ctx: Context, private val t: Title, private val 
 
     override fun release() {
         released = true
+        for (w in earlyWatchers) Availability.unwatch(w)
+        earlyWatchers.clear()
         trailer.release()
         main.removeCallbacksAndMessages(null)
         backPh.setImageDrawable(null)
@@ -427,7 +438,7 @@ class CinemaDetails(private val ctx: Context, private val t: Title, private val 
         // Available Now / CAM Only / Not Available Yet, and when it comes (Availability.kt), then the language pills
         // (LangPills.kt); the band has no height while there's nothing to say.
         val band = LangPills.Band(ctx)
-        band.addView(Availability.TitleStatus(ctx, t))
+        band.addView(Availability.TitleStatus(ctx, t).also { statusLine = it })
         for (p in langPills) band.addView(p)
         stage.addView(band, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
         stage.addView(progressLine, LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT).apply { topMargin = 16.dp })
@@ -443,7 +454,56 @@ class CinemaDetails(private val ctx: Context, private val t: Title, private val 
         if (synopsis.text.isNullOrEmpty()) synopsis.text = d.overview.ifEmpty { "No description available." }
         if (t.backdropPath == null) loadBackdrop(d.backdropPath)
         AnimeDubs.note(t) // before the episode rows, which read it
+        watchEarly(d)
         buildTabs(d)
+    }
+
+    /**
+     * Out early (docs/bugs/out-early-2026-10-30.md): a season premiering in the next [EARLY_DAYS] days may already be
+     * up (Paramount+ posts Sunday's episode on Friday). Its first episode is asked about now, as the page opens, not
+     * when the viewer reaches the season; whichever answer comes first (this one, the season list's, a sweep's) redoes
+     * the page in place ([seasonOutEarly]). An answer already cached was used by the first build.
+     */
+    private fun watchEarly(d: Details) {
+        if (!isShow || earlyWatchers.isNotEmpty()) return
+        val soon = ymd.format(Date(System.currentTimeMillis() + EARLY_DAYS * 86_400_000L))
+        val app = ctx.applicationContext
+        for (s in d.seasons) {
+            if (s.number <= 0 || s.episodes <= 0 || s.airDate.length != 10 || aired(s.airDate) || s.airDate > soon) continue
+            if (Availability.outEarly(ctx, t.id, s.number, 1)) continue
+            val n = s.number
+            val w = object : Availability.Watcher {
+                override fun availChanged(key: String, e: Availability.Entry) {
+                    if (e.status == Availability.Status.AVAILABLE || e.status == Availability.Status.CAM) seasonOutEarly(n)
+                }
+            }
+            earlyWatchers += w
+            Availability.watch(w, "tv:${t.id}:$n:1")
+            Log.w(TAG, "Details: ${t.name} season $n is due ${s.airDate}, asking whether episode 1 is up early")
+            Net.background({ Availability.earlyRelease(app, t.id, t.name, n, 1, 0L, s.airDate) }) { out -> if (out == true) seasonOutEarly(n) }
+        }
+    }
+
+    /**
+     * Season [n]'s first episode turned out to be up early after the page was built: its chip loses "Coming Nov 1",
+     * its open list is redone (episode 1 playable, the rest still Coming), the status line drops "New Season", and a
+     * viewer caught up on the season before gets Play S[n] E1 (WatchHistory.caughtUpNext; anyone else keeps their place).
+     */
+    private fun seasonOutEarly(n: Int) {
+        if (released || closing || n in earlyDone) return
+        val lane = epLane?.takeIf { n == season }
+        val list = lane != null
+        if (lane != null) loadSeason(lane, n, refresh = true)
+        markOutEarly(n)
+        Log.w(TAG, "Details: ${t.name} season $n now out early, rebuilt (chip, ${if (list) "episode list, " else ""}status line, Play)")
+    }
+
+    /** Season [n] is out early: its chip loses "Coming Nov 1", the status line and Play are worked out again. Once. */
+    private fun markOutEarly(n: Int) {
+        if (released || closing || !earlyDone.add(n)) return
+        comingSeasons.remove(n)?.let { s -> chips.firstOrNull { it.tag == n }?.text = chipName(s) }
+        statusLine?.refresh()
+        findNewEpisode()
     }
 
     /** What Play plays: the movie, or the show's up-next episode (S1 E1 before any). */
@@ -1073,12 +1133,21 @@ class CinemaDetails(private val ctx: Context, private val t: Title, private val 
         if (n == season) return
         season = n
         repaintChips()
-        val gen = ++seasonGen
         if (!first) {
             lane.animate().alpha(0f).setDuration(EP_FADE_OUT).setInterpolator(Ui.SETTLE).start()
             epFadeEnd = SystemClock.uptimeMillis() + EP_FADE_OUT
         } else fillEpisodes(lane, n, null) // skeletons hold the space until the season arrives
-        // Out and still to come (Upcoming.kt: TVmaze's exact times, asked only when the season has episodes ahead).
+        loadSeason(lane, n)
+    }
+
+    /**
+     * Season [n]'s episodes, out and still to come (Upcoming.kt: TVmaze's exact times, asked only when the season has
+     * episodes ahead; an episode 1 already being asked about early is waited for, up to the quick check's budget).
+     * [refresh]: the list on show redone in place (no fade), left alone when nothing in it changed.
+     */
+    private fun loadSeason(lane: Lane, n: Int, refresh: Boolean = false) {
+        val gen = ++seasonGen
+        if (!refresh) seasonLoading = true
         Net.background({ WatchHistory.seasonEpisodes(ctx, t.id, n)?.let { Upcoming.split(ctx, t.id, t.name, n, it) } }) { split ->
             if (released) return@background
             // Information's Episode Length: the real median of this (the default) season, written in place.
@@ -1086,11 +1155,13 @@ class CinemaDetails(private val ctx: Context, private val t: Title, private val 
                 epMinutes = m
                 infoGrid?.set(TitleInfo.EPISODE_LENGTH, TitleInfo.runtimeWords(m))
             }
-            // A season listed as still to come that's already up early (Upcoming.split): its chip loses "Coming Nov 1".
-            if (split != null && split.aired.isNotEmpty()) comingSeasons.remove(n)?.let { s -> chips.firstOrNull { it.tag == n }?.text = chipName(s) }
+            // A season listed as still to come that's already up early (Upcoming.split): its chip, status line and Play.
+            if (split != null && split.aired.isNotEmpty() && n in comingSeasons) markOutEarly(n)
             if (gen != seasonGen) return@background
             val eps = split?.aired.orEmpty()
             val coming = split?.upcoming.orEmpty()
+            // Redone after an early answer, but the lane already shows exactly this: nothing to rebuild (no flicker).
+            if (refresh && !seasonLoading && filledSig == "$n:${eps.size}:${coming.size}") return@background
             val wait = epFadeEnd - SystemClock.uptimeMillis()
             if (wait > 0) main.postDelayed({ if (!released && gen == seasonGen) fillEpisodes(lane, n, eps, coming) }, wait)
             else fillEpisodes(lane, n, eps, coming)
@@ -1109,6 +1180,8 @@ class CinemaDetails(private val ctx: Context, private val t: Title, private val 
         inner.removeAllViews()
         remembered.remove(lane)
         nextCard = null
+        filledSig = if (eps == null) "" else "$n:${eps.size}:${coming.size}"
+        if (eps != null) seasonLoading = false
         var start = 0
         val ahead = comingSeasons[n]
         if (eps == null) {
@@ -1860,6 +1933,8 @@ class CinemaDetails(private val ctx: Context, private val t: Title, private val 
         private const val MAX_COMING = 12
         /** Tag of a card still to come (OK there opens nothing). */
         private const val COMING = "coming"
+        /** A season premiering within this many days has its first episode asked about early as the page opens ([watchEarly]). */
+        private const val EARLY_DAYS = 10
         private const val SHEET_MS = 440L
         private const val ENTER_MS = 460L
         private const val TAB_SLIDE_MS = 260L

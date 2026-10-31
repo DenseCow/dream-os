@@ -1570,13 +1570,13 @@ class MainActivity : Activity() {
         }
     }
 
-    /** The aired episodes of one season; the first row (E1) has focus. */
+    /** The aired episodes of one season (and any out early); the first row (E1) has focus. */
     private fun chooseEpisodeIn(t: Title, season: Int) {
         val owner = details
         Net.background({
             val today = todayYmd()
             WatchHistory.seasonEpisodes(this, t.id, season).orEmpty()
-                .filter { aired(it.optString("air_date"), today) }
+                .filter { aired(it.optString("air_date"), today) || Availability.outEarly(this, t.id, season, it.optInt("episode_number")) }
                 .map { it.optInt("episode_number") to it.optString("name") }
         }) { eps ->
             if (details !== owner || menuOverlay != null) return@background
@@ -1590,12 +1590,13 @@ class MainActivity : Activity() {
         }
     }
 
-    /** Aired seasons as (number, episode count), specials left out. Background thread. */
+    /** Aired seasons as (number, episode count), specials left out; a season whose episode 1 is out early counts. Background thread. */
     private fun airedSeasons(showId: Int): List<Pair<Int, Int>> {
         val a = WatchHistory.details(this, "tv", showId)?.optJSONArray("seasons") ?: return emptyList()
         val today = todayYmd()
         return (0 until a.length()).map { a.getJSONObject(it) }
-            .filter { it.optInt("season_number") > 0 && it.optInt("episode_count") > 0 && aired(it.optString("air_date"), today) }
+            .filter { it.optInt("season_number") > 0 && it.optInt("episode_count") > 0 &&
+                (aired(it.optString("air_date"), today) || Availability.outEarly(this, showId, it.optInt("season_number"), 1)) }
             .map { it.optInt("season_number") to it.optInt("episode_count") }
             .sortedBy { it.first }
     }
