@@ -102,7 +102,7 @@ fun MiniPlayer(s: PlayerSession, stage: StageControl) {
         AnimatedVisibility(hovered || es.paused, enter = fadeIn(tween(160)), exit = fadeOut(tween(300))) {
             Box(Modifier.fillMaxSize().background(Brush.verticalGradient(listOf(Color(0xB3000000), Color(0x33000000), Color(0xB3000000))))) {
                 Text(
-                    s.target.let { if (it.isEpisode) "${it.title}$SEP" + "S${it.season} E${it.episode}" else it.title },
+                    s.target.let { if (it.isEpisode) "${it.title}$SEP" + playingLine(it, it.episodeTitle) else it.title },
                     style = Look.Small, color = Look.Text, maxLines = 1, overflow = TextOverflow.Ellipsis,
                     modifier = Modifier.align(Alignment.TopStart).padding(start = 14.dp, top = 14.dp).widthIn(max = 220.dp),
                 )

@@ -28,7 +28,7 @@ class Shelf(val title: String, val mode: Mode, val movie: String?, val tv: Strin
 }
 
 /**
- * The rows of a Browse by Genre page, Netflix style: what's trending, new and acclaimed in the genre, its
+ * The rows of a Browse by Genre page: what's trending, new and acclaimed in the genre, its
  * series, then a curated set of sub-genres ([CURATED]: TMDB genres and keywords, so Horror has Slashers,
  * Zombies, Found Footage...), Hidden Gems, the genre on each streaming service and a couple of decades
  * (the only rows where old titles belong). Movies and shows mix wherever TMDB has the genre for both;
@@ -199,9 +199,9 @@ object GenreShelves {
                 val hot = (week1 + week2).filter { g in it.genreIds && (spec.lang.isEmpty() || it.lang == spec.lang) && RowMix.released(it) }
                 (hot + popular).distinctBy { it.key }
             }
-            // Two pages: Trending, just above, takes many of the newest.
+            // Two pages (the second the day's, RowMix.rotatingPage): Trending, just above, takes many of the newest.
             Shelf.Mode.NEW -> "$BASE$q&$d.gte=${RowMix.yearsAgo(1)}&$d.lte=${RowMix.yearsAgo(0)}&vote_count.gte=${if (movie) minOf(20, low(spec, 40) / 2) else minOf(10, low(spec, 40) / 4)}".let { n ->
-                RowPaging.all({ Tmdb.list(ctx, "/discover/$type", n, type) }, { Tmdb.list(ctx, "/discover/$type", "$n&page=2", type) }).flatten()
+                RowPaging.all({ Tmdb.list(ctx, "/discover/$type", n, type) }, { Tmdb.list(ctx, "/discover/$type", "$n&page=${RowMix.rotatingPage("${s.title} $type")}", type) }).flatten()
             }
             Shelf.Mode.RELEASES -> NewReleases.ofType(ctx, type, q)
             Shelf.Mode.ACCLAIMED -> RowMix.acclaimed(ctx, type, q, "${s.title} $type")
@@ -210,10 +210,10 @@ object GenreShelves {
                 else Tmdb.list(ctx, "/discover/$type", "$BASE$q&vote_average.gte=7&vote_count.gte=${if (movie) 150 else 60}&vote_count.lte=${if (movie) 1500 else 600}", type)
             Shelf.Mode.VARIETY -> RowMix.variety(ctx, type, BASE + q, "${s.title} $type")
             Shelf.Mode.TOP_VOTED -> "$BASE$q&sort_by=vote_count.desc".let { n ->
-                RowPaging.all({ Tmdb.list(ctx, "/discover/$type", n, type) }, { Tmdb.list(ctx, "/discover/$type", "$n&page=2", type) }).flatten()
+                RowPaging.all({ Tmdb.list(ctx, "/discover/$type", n, type) }, { Tmdb.list(ctx, "/discover/$type", "$n&page=${RowMix.rotatingPage("${s.title} $type")}", type) }).flatten()
             }
             Shelf.Mode.TOP -> "$BASE$q&sort_by=vote_average.desc&vote_count.gte=${if (movie) 1000 else 250}".let { n ->
-                RowPaging.all({ Tmdb.list(ctx, "/discover/$type", n, type) }, { Tmdb.list(ctx, "/discover/$type", "$n&page=2", type) }).flatten()
+                RowPaging.all({ Tmdb.list(ctx, "/discover/$type", n, type) }, { Tmdb.list(ctx, "/discover/$type", "$n&page=${RowMix.rotatingPage("${s.title} $type")}", type) }).flatten()
             }
         }
     }

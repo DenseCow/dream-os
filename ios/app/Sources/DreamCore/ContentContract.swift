@@ -252,7 +252,7 @@ public extension TitleInfo {
         return "Season \(nextSeason), Episode \(nextEpisode)  ·  \(when)"
     }
 
-    /// "Streaming on Netflix, HBO Max" and "Rent or Buy on Amazon, Apple TV" (two lines at most).
+    /// "Streaming on <service>, <service>" and "Rent or Buy on <store>, <store>" (two lines at most).
     func watchWords() -> String {
         let first = [streaming.isEmpty ? nil : "Streaming on " + streaming.prefix(4).joined(separator: ", "),
                      { let f = free.filter { !streaming.contains($0) }.prefix(2); return f.isEmpty ? nil : "Free on " + f.joined(separator: ", ") }()]

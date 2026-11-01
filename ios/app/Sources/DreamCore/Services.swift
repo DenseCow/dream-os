@@ -93,9 +93,16 @@ public protocol CatalogService: Sendable {
     // Watched worker addition (default in Watched.swift).
     /// A show's latest aired episode and its next air day (the Watched pill's "caught up" rule); nil when unknown.
     func showAirState(showId: Int) async -> ShowAirState?
+
+    // Specials addition (default below: none).
+    /// A show's specials in air order. TMDB has no record of many of them, so the catalog merges TMDB's season 0,
+    /// where there is one, with TVmaze's specials list (`SpecialsCatalog`). Each carries its source id
+    /// (`Episode.specialId`), which is what everything remembers it by; the air-order number is only the wire form.
+    func specials(showId: Int) async -> [Episode]
 }
 
 public extension CatalogService {
+    func specials(showId: Int) async -> [Episode] { [] }
     func episodeAvailability(_ episode: Episode, of show: Title) async -> Availability? { nil }
     func earlyRelease(_ episode: Episode, of show: Title) async -> Bool { false }
     func chips(for page: CatalogPage) async -> [Genre] { [] }

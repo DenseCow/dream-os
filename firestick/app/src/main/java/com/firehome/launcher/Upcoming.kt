@@ -13,7 +13,10 @@ import java.util.Locale
  * exact local time and often the episode's real title before TMDB has it. Words here are what the page
  * shows: "Coming Friday at 9:00 PM", "Coming Nov 14", "Coming 2027", "Date to Be Announced".
  *
- * [split] blocks (TVmaze, only for a season that still has episodes to come): call it off the main thread.
+ * A null season is the show's specials ([Specials] builds that list, since TMDB often has no record of
+ * one); they split into out and still to come like any other list.
+ *
+ * [split] blocks (TVmaze, only for a list that still has episodes to come): call it off the main thread.
  */
 object Upcoming {
     private const val TAG = "FireHome"
@@ -30,7 +33,7 @@ object Upcoming {
      * days with a real release already in the index ([Availability.earlyRelease]). TVmaze is
      * asked only when some episode is dated today or later, or undated. Blocking.
      */
-    fun split(ctx: Context, showId: Int, show: String, season: Int, eps: List<JSONObject>): Split {
+    fun split(ctx: Context, showId: Int, show: String, season: Int?, eps: List<JSONObject>): Split {
         val now = System.currentTimeMillis()
         val today = ymd(now)
         val open = eps.filter { date(it).let { d -> d.length != 10 || d >= today } }
@@ -41,12 +44,19 @@ object Upcoming {
         for (ep in eps) {
             if (open.none { it === ep }) { aired += ep; continue }
             val num = ep.optInt("episode_number")
-            val m = maze?.firstOrNull { it.season == season && it.number == num }
+            val m = maze?.firstOrNull { season != null && it.season == season && it.number == num }
             val d = date(ep)
-            val at = m?.at ?: 0L
-            val out = if (at > 0) at <= now else d.length == 10 && d <= today
+            // A special has no place in TVmaze's numbered list; it carries its own instant ([Specials.AT]).
+            val at = m?.at ?: ep.optLong(Specials.AT)
+            // A special's day is enough: its airstamp names an hour, it does not decide ([Availability.recentEpisode]).
+            val special = Specials.idOf(ep).isNotEmpty()
+            val out = if (at > 0 && !special) at <= now else d.length == 10 && d <= today
             // Due in a day or two but already up (a streaming service's early drop): the index has a real release.
-            if (out || coming.isEmpty() && Availability.earlyRelease(ctx, showId, show, season, num, at, d)) { aired += ep; continue }
+            val early = {
+                if (season != null) Availability.earlyRelease(ctx, showId, show, season, num, at, d)
+                else Availability.earlyReleaseSpecial(ctx, showId, show, ep)
+            }
+            if (out || coming.isEmpty() && early()) { aired += ep; continue }
             val c = JSONObject(ep.toString()) // TMDB's objects are cached: never written to
             c.put(AT, at)
             if (d.isEmpty() && m != null && m.date.isNotEmpty()) c.put("air_date", m.date)
@@ -56,8 +66,8 @@ object Upcoming {
         coming.firstOrNull()?.let { c ->
             val at = c.optLong(AT)
             val whenAt = if (at > 0) "${AirTimes.stamp(at)} local (tvmaze)" else date(c).ifEmpty { "date unknown" } + " (date only${if (maze == null) "" else ", tvmaze"})"
-            Log.w(TAG, "Upcoming: $show S${season}E${c.optInt("episode_number")}${title(c)?.let { " \"$it\"" } ?: ""} at $whenAt" +
-                if (coming.size > 1) ", ${coming.size} to come this season" else "")
+            Log.w(TAG, "Upcoming: $show ${PlayFlow.episodeCode(season == null, season, c.optInt("episode_number"), "")}${title(c)?.let { " \"$it\"" } ?: ""} at $whenAt" +
+                if (coming.size > 1) ", ${coming.size} to come" else "")
         }
         return Split(aired, coming)
     }

@@ -283,7 +283,7 @@ private fun Controls(s: PlayerSession, stage: StageControl, frameAt: (Long) -> a
             Spacer(Modifier.height(10.dp))
             val line = when {
                 s.trailer -> null
-                t.isEpisode -> "S${t.season} E${t.episode}" + ((d?.episodeName ?: t.episodeTitle)?.let { "$SEP$it" } ?: "")
+                t.isEpisode -> playingLine(t, d?.episodeName ?: t.episodeTitle)
                 else -> listOfNotNull("Movie", (d?.year ?: t.year)?.toString()).joinToString(SEP)
             }
             if (line != null) Text(line, style = Look.Line, color = Look.Text2, maxLines = 1, overflow = TextOverflow.Ellipsis)

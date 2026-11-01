@@ -1,5 +1,6 @@
 package com.dreamos.desktop.core.content
 
+import com.dreamos.desktop.core.model.EpisodeCode
 import com.dreamos.desktop.core.model.HistoryEntry
 import com.dreamos.desktop.core.model.NewEpisodeInfo
 import com.dreamos.desktop.core.model.Notice
@@ -39,10 +40,14 @@ object NewEpisodeSpot {
         val done = prefs().getStringList("done").toSet()
         val now = System.currentTimeMillis()
         fun offered(i: NewEpisodes.Item): Boolean {
-            if (i.upcoming || i.key in done) return false
+            if (i.upcoming || i.keys.any { it in done }) return false
             val age = DreamTime.daysFromToday(i.ep.airDate) ?: return false
-            val first = prefs().getLong("first.${i.key}", now)
-            return age in -BANNER_DAYS..0 && first > now - RETIRE_MS && caughtUp(history, i.show.id, i.ep.season, i.ep.number)
+            // A special's key can change source id, so an earlier "first shown" under the older one still counts.
+            val first = i.keys.firstNotNullOfOrNull { k -> prefs().getLong("first.$k", 0L).takeIf { it > 0 } } ?: now
+            // A special sits outside the show's order (STANDARDS §5): where the viewer is in the seasons says nothing
+            // about it, and whether they have seen it is [NewEpisodes]' one rule, which already filtered the snapshot.
+            return age in -BANNER_DAYS..0 && first > now - RETIRE_MS &&
+                (i.ep.special || caughtUp(history, i.show.id, i.ep.season, i.ep.number))
         }
         val list = s.recent.filter(::offered)
         badged = list.mapTo(HashSet()) { it.show.id }
@@ -57,10 +62,11 @@ object NewEpisodeSpot {
 
     /**
      * The viewer is caught up with [showId] for S[season] E[number]: not in the history (followed from My List) yes;
-     * else it's the Up Next episode, or the one right after the last one finished.
+     * else it's the Up Next episode, or the one right after the last one finished. The banner's own extra test, on top
+     * of [NewEpisodes.caughtUp]; series episodes only, since a special has no place in the order to be caught up with.
      */
     fun caughtUp(history: List<HistoryEntry>, showId: Int, season: Int, number: Int): Boolean {
-        val e = history.firstOrNull { it.isShow && it.title.id == showId } ?: return true
+        val e = WatchHistory.seriesEntry(history, showId) ?: return true
         if (e.upNext) return e.season == season && e.episode == number
         if (e.season > season || (e.season == season && e.episode >= number)) return false
         return e.finished && ((e.season == season && e.episode == number - 1) || (e.season == season - 1 && number == 1))
@@ -81,8 +87,9 @@ object NewEpisodeSpot {
         badged = badged - e.show.id
     }
 
-    /** "S3 · E7" ("S1 · E1–8" for a batch drop). */
-    fun code(e: NewEpisodeInfo) = "S${e.season} · E${e.number}" + if (e.lastNumber > e.number) "–${e.lastNumber}" else ""
+    /** "S3 · E7" ("S1 · E1–8" for a batch drop); a special is named, never numbered. */
+    fun code(e: NewEpisodeInfo) = EpisodeCode.label(e.kind, e.season, e.number, e.name, " · ") +
+        if (!e.isSpecial && e.lastNumber > e.number) "–${e.lastNumber}" else ""
 
     private fun notice(items: List<NewEpisodes.Item>) {
         val infos = items.map { it.info() }

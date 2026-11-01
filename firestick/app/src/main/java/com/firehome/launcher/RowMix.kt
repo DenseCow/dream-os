@@ -10,17 +10,24 @@ class RowClaims(private val ctx: android.content.Context? = null, private val an
 
     /**
      * Whether [row] may show anime: every row of an anime page ([anime]), a row named for it ("Anime
-     * Series", "Anime on Netflix"), and the personal rows (what you watch is yours). Anywhere else anime
+     * Series", "Anime on <service>"), and the personal rows (what you watch is yours). Anywhere else anime
      * is left out ([RowMix.isAnime]): it lives in the anime sections alone.
      */
     private fun animeOk(row: String) = anime || RowMix.animeRow(row)
 
     /** [list] minus titles another row already shows; the first [n] left are claimed for [row]. */
     fun take(row: String, list: List<Title>, n: Int = 20): List<Title> {
-        var pool = ctx?.let { RowMix.tidy(it, list, anime = animeOk(row)) } ?: list
-        // Discovery rows are ranked for the profile (Taste: list order, taste, steadied quality, freshness; franchises
-        // spread). Charts, dated rows and the viewer's own rows keep their order.
-        if (ctx != null && Taste.ranks(row)) pool = Taste.rank(Taste.current(ctx), pool)
+        val ranked = ctx != null && Taste.ranks(row)
+        // Discovery rows are ranked for the profile (Taste: TMDB's real order, taste, steadied quality, freshness, the
+        // day's rotation; franchises spread), art counting only as a small penalty inside the rank. Charts, dated rows
+        // and the viewer's own rows keep their order, art-first.
+        var pool = ctx?.let { RowMix.tidy(it, list, artFirst = !ranked, anime = animeOk(row)) } ?: list
+        if (ranked) {
+            val p = Taste.current(ctx!!)
+            val before = pool
+            pool = Taste.rank(p, pool, artFirst = true)
+            Taste.explain(row, p, before, pool)
+        }
         // Another row loading its next page reads this row's lists (for their claims) without claiming more.
         val claim = !RowPaging.foreign(row)
         return synchronized(owner) {
@@ -136,21 +143,28 @@ object RowPaging {
         return (if (m != null) query.removeRange(m.range) else query) + "&page=${minOf(500, p)}"
     }
 
+    /** What paging a row brought: the page reached, the new titles (none: the row is done), or that the fetch [failed]. */
+    class Page(val page: Int, val titles: List<Title>, val failed: Boolean = false)
+
     /**
      * Pages a row: [load] run again as page 2, 3, … (on a background thread) gives titles, of which those
-     * not in [shown] are new. Returns the new ones (empty: the row is done). Tries up to [EMPTY_TRIES]
-     * pages in a row before giving up, since a page can bring only titles other rows took.
+     * not in [shown] are new. Returns the new ones (none: the row is done). Tries up to [EMPTY_TRIES]
+     * pages in a row before giving up, since a page can bring only titles other rows took. A fetch that
+     * throws (a TMDB blip) is [Page.failed], never the end of the row: the caller asks again later.
      */
-    fun next(row: String, from: Int, shown: Set<String>, load: () -> List<Title>?): Pair<Int, List<Title>> {
+    fun next(row: String, from: Int, shown: Set<String>, load: () -> List<Title>?): Page {
         var page = from
         repeat(EMPTY_TRIES) {
-            val got = try { at(row, page) { load() } } catch (e: Exception) { null } ?: return page to emptyList()
-            if (got.isEmpty()) return page to emptyList()
+            val got = try { at(row, page) { load() } } catch (e: Exception) {
+                android.util.Log.w("FireHome", "Rows: '$row' page $page failed: $e")
+                return Page(page, emptyList(), failed = true)
+            } ?: return Page(page, emptyList())
+            if (got.isEmpty()) return Page(page, emptyList())
             val fresh = got.filter { it.key !in shown }.distinctBy { it.key }
-            if (fresh.isNotEmpty()) return page to fresh
+            if (fresh.isNotEmpty()) return Page(page, fresh)
             page++
         }
-        return page to emptyList()
+        return Page(page, emptyList())
     }
 }
 
@@ -162,11 +176,11 @@ object RowPaging {
  */
 object RowMix {
     /** Genre, service and recommendation rows stay within this many years (a decade row sets its own). */
-    const val RECENT_YEARS = 30
+    const val RECENT_YEARS = AlgoRules.RECENT_YEARS
     /** Critically Acclaimed: released within this many years. */
-    const val ACCLAIMED_YEARS = 25
+    const val ACCLAIMED_YEARS = AlgoRules.ACCLAIMED_YEARS
     /** Hidden Gems: released within this many years (and at least one year ago). */
-    const val GEM_YEARS = 18
+    const val GEM_YEARS = AlgoRules.GEM_YEARS
 
     /**
      * Top 10 Today: TMDB's daily trending, two pages (40 titles), filtered (poster, adult, anime, Kids via Tmdb.list),
@@ -181,18 +195,25 @@ object RowMix {
     }
 
     /**
-     * Out today in the viewer's zone (or no date known). TMDB's charts list films months ahead of release (Dune: Part
-     * Three at #8 in October); a title nobody can watch yet isn't "watched today": it belongs in Coming Soon.
+     * Out today in the viewer's zone (or no date known). TMDB's charts list films months ahead of release (a sequel
+     * still months out charted at #8 in October); a title nobody can watch yet isn't "watched today": it belongs in Coming Soon.
      */
     fun released(t: Title) = t.date.length != 10 || t.date <= DreamTime.todayYmd()
 
     /** Plainly bad: under 5.0 from 100 or more people. Never in a discovery row (charts keep what they list). */
-    fun poorlyRated(t: Title) = t.votes >= 100 && t.rating > 0 && t.rating < 5.0
+    fun poorlyRated(t: Title) = t.votes >= AlgoRules.POOR_VOTES && t.rating > 0 && t.rating < AlgoRules.POOR_RATING
 
-    private fun today(): Int = DreamTime.calendar().let { it.get(java.util.Calendar.YEAR) * 400 + it.get(java.util.Calendar.DAY_OF_YEAR) }
+    /** Today as one number in the viewer's zone: what the daily pages and the rank's rotation turn on. */
+    fun dayNumber(): Int = DreamTime.calendar().let { it.get(java.util.Calendar.YEAR) * 400 + it.get(java.util.Calendar.DAY_OF_YEAR) }
 
     /** A page from 1 to [pages] that stays the same all day for [row] and moves on tomorrow. */
-    fun dailyPage(row: String, pages: Int): Int = 1 + Math.floorMod(today() * 31 + row.hashCode(), pages)
+    fun dailyPage(row: String, pages: Int, day: Int = dayNumber()): Int = 1 + Math.floorMod(day * 31 + row.hashCode(), pages)
+
+    /**
+     * The page a row fetches after its first: 2 to 1 + [AlgoRules.DEEPER_PAGES], the same all day for [row] and another
+     * tomorrow, so a row with no daily page of its own still changes day to day at no extra call.
+     */
+    fun rotatingPage(row: String, day: Int = dayNumber()): Int = 1 + dailyPage(row, AlgoRules.DEEPER_PAGES, day)
 
     fun dateKey(type: String) = if (type == "movie") "primary_release_date" else "first_air_date"
 
@@ -208,24 +229,33 @@ object RowMix {
     fun prefLangs(ctx: android.content.Context): Set<String> =
         setOf("en") + listOfNotNull(PlayerPrefs.normLang(PlayerPrefs.audioLang(ctx)), PlayerPrefs.normLang(java.util.Locale.getDefault().language))
 
-    /** Titles this profile has finished: movies watched to the end, shows caught up on to their last episode. */
+    /**
+     * Titles this profile has finished: movies watched to the end, shows caught up on to their last episode.
+     * These are [Title.key]s, and a special is not a title: finishing one says nothing about the show, so it is
+     * left out here and must never be mapped onto the show's key, which would take the whole show out of every
+     * discovery row ([tidy]) because a 30-minute special was watched.
+     */
     fun finished(ctx: android.content.Context): Set<String> = WatchHistory.recent(ctx)
-        .filter { it.progress >= WatchHistory.FINISHED && (it.hidden || !it.isShow) }.mapTo(HashSet()) { it.key }
+        .filter { it.progress >= WatchHistory.FINISHED && !it.isSpecial && (it.hidden || !it.ofShow) }
+        .mapTo(HashSet()) { it.key }
 
     /**
      * Anime: Japanese animation, and Chinese or Korean animated series that aren't for kids or families
      * (donghua and aeni look like anime; their CGI films and preschool cartoons don't). Also animation made in
-     * Japan in another language that isn't for kids or families: Cyberpunk: Edgerunners is English on TMDB, made by
-     * a Japanese studio (origin JP), and showed as the Windows app's Home hero on 2026-10-30. The origin comes from
+     * Japan in another language that isn't for kids or families: a series can be listed in English on TMDB and still
+     * be made by a Japanese studio (origin JP); one reached the Windows app's Home hero on 2026-10-30. The origin comes from
      * the list result (shows) or an earlier details call (movies, [Tmdb.origin]). It shows only in the anime
      * sections ([RowClaims], [tidy]), never in Animation, Adult Animation, Action and the rest.
      */
-    fun isAnime(t: Title): Boolean {
-        if (16 !in t.genreIds) return false
-        if (t.lang == "ja") return true
-        val forKids = 10762 in t.genreIds || 10751 in t.genreIds
-        if (!forKids && "JP" in Tmdb.origin(t)) return true
-        return t.type == "tv" && (t.lang == "zh" || t.lang == "cn" || t.lang == "ko") && !forKids
+    fun isAnime(t: Title): Boolean = animeBy(t.genreIds, t.lang, t.type, Tmdb.origin(t))
+
+    /** The anime rule on bare facts (a seed from the history, a list result): the same rule on Windows and the iPhone. */
+    fun animeBy(genreIds: List<Int>, lang: String, type: String, origin: List<String>): Boolean {
+        if (16 !in genreIds) return false
+        if (lang == "ja") return true
+        val forKids = 10762 in genreIds || 10751 in genreIds
+        if (!forKids && "JP" in origin) return true
+        return type == "tv" && (lang == "zh" || lang == "cn" || lang == "ko") && !forKids
     }
 
     /**
@@ -245,14 +275,15 @@ object RowMix {
     private val PERSONAL = listOf("Because You Watched", "Top Picks", "Continue Watching", "My List", "Recommended", "More Like")
 
     /** Below this many votes a title in a language the profile doesn't watch in counts as obscure. */
-    private fun widelySeen(t: Title) = t.votes >= if (t.type == "movie") 500 else 150
+    private fun widelySeen(t: Title) = t.votes >= if (t.type == "movie") AlgoRules.OBSCURE_VOTES_MOVIE else AlgoRules.OBSCURE_VOTES_TV
 
     /**
-     * [list] without adult titles, titles with no poster, titles this profile has finished, and obscure
-     * titles in a language it doesn't watch in. A row mostly in one language (anime, a K-drama page,
+     * [list] without duplicates, adult titles, titles with no poster, titles this profile has finished, and
+     * obscure titles in a language it doesn't watch in. A row mostly in one language (anime, a K-drama page,
      * recommendations for a foreign film) takes that language as its own. With [artFirst], titles with a
-     * backdrop come first (landscape cards); otherwise (and among each) in [list]'s order. Anime is left
-     * out unless [anime] (an anime row, or a personal one): it lives in the anime sections alone.
+     * backdrop come first (landscape cards that keep their order); a ranked row passes false and lets the rank
+     * weigh art instead ([RowClaims.take]). Anime is left out unless [anime] (an anime row, or a personal one):
+     * it lives in the anime sections alone.
      */
     fun tidy(ctx: android.content.Context, list: List<Title>, artFirst: Boolean = true, anime: Boolean = false): List<Title> {
         if (list.isEmpty()) return list
@@ -260,18 +291,19 @@ object RowMix {
         val langs = prefLangs(ctx)
         val known = list.filter { it.lang.isNotEmpty() }
         val own = known.groupingBy { it.lang }.eachCount().maxByOrNull { it.value }
-            ?.takeIf { known.size >= 4 && it.value * 2 >= known.size }?.key
+            ?.takeIf { known.size >= AlgoRules.OWN_LANGUAGE_MIN && it.value * 2 >= known.size }?.key
         val keepAnime = anime || !animeApart(ctx)
+        val seen = HashSet<String>()
         val ok = list.filter { t ->
             !t.adult && t.posterPath != null && t.key !in done && (keepAnime || !isAnime(t)) && !poorlyRated(t) &&
-                (t.lang.isEmpty() || t.lang in langs || t.lang == own || widelySeen(t))
+                (t.lang.isEmpty() || t.lang in langs || t.lang == own || widelySeen(t)) && seen.add(t.key)
         }
         return if (!artFirst) ok else ok.filter { it.backdropPath != null } + ok.filter { it.backdropPath == null }
     }
 
     // ---- recipes ----
 
-    /** "&date.gte=…": the last [RECENT_YEARS] years, for a row with no years of its own ("Popular on Netflix"). */
+    /** "&date.gte=…": the last [RECENT_YEARS] years, for a row with no years of its own ("Popular on <service>"). */
     fun recent(type: String) = "&${dateKey(type)}.gte=${yearsAgo(RECENT_YEARS)}"
 
     /** "&date.gte=…" for [type] unless [query] already limits that date. */
@@ -290,12 +322,12 @@ object RowMix {
      */
     fun variety(ctx: android.content.Context, type: String, query: String, row: String): List<Title> {
         val path = "/discover/$type"
-        val q = query + recentFloor(type, query) + voteFloor(type, query, 150, 60)
+        val q = query + recentFloor(type, query) + voteFloor(type, query, AlgoRules.VARIETY_VOTES_MOVIE, AlgoRules.VARIETY_VOTES_TV)
         val dated = q.contains("${dateKey(type)}.lte=")
         val favQuery = q.replace(Regex("&sort_by=[^&]*"), "&sort_by=vote_count.desc") +
             (if (dated) "" else "&${dateKey(type)}.lte=${yearsAgo(1)}") +
-            (if (q.contains("vote_average.gte=")) "" else "&vote_average.gte=6.3")
-        val page = dailyPage(row, 4)
+            (if (q.contains("vote_average.gte=")) "" else "&vote_average.gte=${AlgoRules.VARIETY_FAVORITE_RATING}")
+        val page = dailyPage(row, AlgoRules.VARIETY_PAGES)
         // The three lists at once (one after another, they were most of a row's wait).
         val (popular, fav1, fav2) = RowPaging.all(
             { Tmdb.list(ctx, path, q, type) },
@@ -332,8 +364,8 @@ object RowMix {
     fun hiddenGems(ctx: android.content.Context, type: String, extra: String, row: String): List<Title> {
         val votes = if (type == "movie") "&vote_count.gte=150&vote_count.lte=1500" else "&vote_count.gte=80&vote_count.lte=800"
         val d = dateKey(type)
-        return Tmdb.list(ctx, "/discover/$type", "&include_adult=false&sort_by=popularity.desc&vote_average.gte=7.0$votes" +
-            "&$d.gte=${yearsAgo(GEM_YEARS)}&$d.lte=${yearsAgo(1)}${skipping(type, extra)}&page=${dailyPage(row, if (extra.isEmpty()) 3 else 1)}", type)
+        return Tmdb.list(ctx, "/discover/$type", "&include_adult=false&sort_by=popularity.desc&vote_average.gte=${AlgoRules.GEM_RATING}$votes" +
+            "&$d.gte=${yearsAgo(GEM_YEARS)}&$d.lte=${yearsAgo(1)}${skipping(type, extra)}&page=${dailyPage(row, if (extra.isEmpty()) AlgoRules.GEM_PAGES else 1)}", type)
     }
 
     /**

@@ -3,10 +3,13 @@ import Foundation
 // The "Watched" pill's memory (fire-home Watched.kt): what the viewer has finished, kept per profile, read instantly
 // (no network) by every card. The watch history keeps one entry per title and forgets a finished one once it's
 // started again, so this ledger is separate and never shrinks: a finished title the viewer starts again keeps its
-// Watched pill (as on Netflix).
+// Watched pill.
 //  - A movie: finished once (the history's 0.92 rule, or Trakt's history).
 //  - An episode: only one the viewer actually finished (each kept as "S:E"; nothing is inferred from a later one,
 //    so starting a show at S3E5 marks nothing else).
+//  - A special: its own per-show set, by source id (`Episode.specialId`), because a special is its own kind.
+//    `furthest` and `showWatched` cannot see that set at all, so a special can never read as progress through the
+//    show, and finishing a season never marks one.
 //  - A show: every aired episode is in that set (TMDB's seasons up to its latest aired episode) and nothing newer has
 //    aired. The air state is TMDB's (CatalogService.showAirState), asked again every 6 h and once the announced day
 //    passes; a show with a new episode loses Watched.
@@ -38,6 +41,8 @@ public extension Notification.Name {
 public enum WatchedSeed: Sendable {
     case movie(Int)
     case episode(show: Int, season: Int, episode: Int)
+    /// A special the viewer finished, named by its source id (`Episode.specialId`).
+    case special(show: Int, id: String)
 }
 
 public final class WatchedLedger: @unchecked Sendable {
@@ -49,6 +54,9 @@ public final class WatchedLedger: @unchecked Sendable {
     struct Show: Codable, Sendable {
         /// Finished episodes, "S:E".
         var episodes: Set<String> = []
+        /// Finished specials, by source id: kept apart from the numbered ones so a special can never be read as
+        /// progress through the show. Optional so a book written before specials existed still decodes.
+        var specials: Set<String>? = nil
         /// TMDB's air state, nil until asked.
         var air: ShowAirState?
         /// When the air state was asked (ms since 1970), 0 = never.
@@ -94,6 +102,14 @@ public final class WatchedLedger: @unchecked Sendable {
             guard show.episodes.insert("\(season):\(episode)").inserted else { return false }
             b.shows["\(id)"] = show
             return true
+        case .special(let id, let specialId):
+            guard id > 0, !specialId.isEmpty else { return false }
+            var show = b.shows["\(id)"] ?? Show()
+            var set = show.specials ?? []
+            guard set.insert(specialId).inserted else { return false }
+            show.specials = set
+            b.shows["\(id)"] = show
+            return true
         }
     }
 
@@ -120,6 +136,11 @@ public final class WatchedLedger: @unchecked Sendable {
         edit { Self.apply(.episode(show: show, season: season, episode: episode), &$0) }
     }
 
+    /// The viewer finished this one special (its source id, `Episode.specialId`).
+    public func markSpecial(show: Int, id: String) {
+        edit { Self.apply(.special(show: show, id: id), &$0) }
+    }
+
     /// Several at once (Trakt's history).
     public func mark(_ items: [WatchedSeed]) {
         guard !items.isEmpty else { return }
@@ -142,6 +163,7 @@ public final class WatchedLedger: @unchecked Sendable {
     public func movieWatched(_ id: Int) -> Bool { read { $0.movies.contains(id) } }
 
     /// The latest episode of `show` the viewer finished (season, episode), nil when none (NewEpisodes.caughtUp).
+    /// Specials are kept in their own set, so a finished special can never read as progress through the show.
     public func furthest(show: Int) -> (season: Int, episode: Int)? {
         read { b in
             let eps = b.shows["\(show)"]?.episodes ?? []
@@ -154,9 +176,27 @@ public final class WatchedLedger: @unchecked Sendable {
     }
 
     /// The viewer finished this episode.
+    /// How many episodes of a show the viewer has finished. Specials keep their own set, so one never counts as
+    /// progress through the series.
+    public func episodeCount(show: Int) -> Int { read { $0.shows["\(show)"]?.episodes.count ?? 0 } }
+
     public func episodeWatched(show: Int, season: Int, episode: Int) -> Bool {
         read { $0.shows["\(show)"]?.episodes.contains("\(season):\(episode)") ?? false }
     }
+
+    /// The viewer finished this special. The only thing that makes a special watched: being caught up on the show
+    /// says nothing about it. Every id the special answers to is accepted (`Episode.specialIds`), so a mark written
+    /// before a source backfilled it still counts.
+    public func specialWatched(show: Int, anyOf ids: [String]) -> Bool {
+        let want = ids.filter { !$0.isEmpty }
+        guard !want.isEmpty else { return false }
+        return read { b in
+            guard let set = b.shows["\(show)"]?.specials else { return false }
+            return want.contains { set.contains($0) }
+        }
+    }
+
+    public func specialWatched(show: Int, id: String) -> Bool { specialWatched(show: show, anyOf: [id]) }
 
     /// Every aired episode finished, and nothing newer has aired since TMDB was asked.
     public func showWatched(_ id: Int) -> Bool {

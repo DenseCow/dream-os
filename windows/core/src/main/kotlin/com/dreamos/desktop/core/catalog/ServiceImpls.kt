@@ -67,6 +67,8 @@ class HistoryImpl : History {
         Watched.title(title)
     }
     override suspend fun isEpisodeWatched(showId: Int, season: Int, episode: Int) = withContext(Dispatchers.IO) { Watched.episode(showId, season, episode) }
+    override suspend fun isSpecialWatched(showId: Int, specialId: String) = withContext(Dispatchers.IO) { Watched.special(showId, specialId) }
+    override suspend fun specialEntry(showId: Int, specialId: String) = withContext(Dispatchers.IO) { WatchHistory.specialEntry(showId, specialId) }
 }
 
 class MyListImpl : MyList {

@@ -94,6 +94,15 @@ fun TitlePage(ref: TitleRef, source: TitleSource, onBack: () -> Unit, initial: T
         // A failed refresh keeps the page already showing.
         state = fresh.fold({ Load.Ready(it) }, { if (state is Load.Ready) state else Load.Failed })
     }
+    // The specials catalog answered after this page was built (TMDB has to answer 404 for season 0 before TVmaze is
+    // asked, which can outrun the page's short wait): build once more so the Specials tab is there now, rather than
+    // only on a second visit. Once per page, so a catalog that answers again cannot loop it.
+    var tookSpecials by remember(ref) { mutableStateOf(false) }
+    if (ref.isShow) LaunchedEffect(ref) {
+        source.specialsFound.collect { id ->
+            if (id == ref.tmdbId && !tookSpecials) { tookSpecials = true; attempt++ }
+        }
+    }
     com.dreamos.desktop.preload.PopProbe("title-body", state is Load.Ready, ref)
     PageFrame(onBack) {
         when (val s = state) {
@@ -123,6 +132,8 @@ private fun TitleBody(start: TitleDetails, source: TitleSource, onBack: () -> Un
     val scroll = rememberScrollState()
     // The title's trailer behind the hero (docs/port/trailers.md): shows after a 1 s rest.
     val trailer = com.dreamos.desktop.trailer.rememberTrailerBackdropState()
+    // Trailer, while that hero trailer is playing: the same picture becomes full screen (no reload).
+    val fullTrailer = com.dreamos.desktop.trailer.rememberFullTrailer()
     val play = remember { FocusRequester() }
     val episodesAt = remember { BringIntoViewRequester() }
     val infoAt = remember { BringIntoViewRequester() }
@@ -175,7 +186,14 @@ private fun TitleBody(start: TitleDetails, source: TitleSource, onBack: () -> Un
                         }
                         if (resuming) DreamButton("Start Over", { trailer.stopNow(); nav.play(playRequest(d, fromStart = true)) }, glyph = Glyph.Restart, big = true, onImage = true)
                         if (d.ref.isShow && d.seasons.isNotEmpty()) DreamButton("Episodes", { scope.launch { episodesAt.bringIntoView() } }, big = true, onImage = true)
-                        d.trailerKey?.let { k -> DreamButton("Trailer", { trailer.stopNow(); nav.playTrailer(d.ref, k) }, glyph = Glyph.Film, big = true, onImage = true) }
+                        d.trailerKey?.let { k ->
+                            DreamButton("Trailer", {
+                                // Already playing behind the hero: that very picture goes full screen, sound up,
+                                // nothing loaded again (owner, 2026-10-31). Otherwise, Dream Player as before.
+                                val ref = com.dreamos.desktop.core.trailer.TrailerRef(d.ref.tmdbId, d.ref.isShow, d.ref.name, hintKey = d.trailerKey)
+                                if (!fullTrailer.take(trailer, ref)) { trailer.stopNow(); nav.playTrailer(d.ref, k) }
+                            }, glyph = Glyph.Film, big = true, onImage = true)
+                        }
                         MyListButton(d.onMyList) { on -> scope.launch { d = d.copy(onMyList = source.setMyList(d.ref, on)) } }
                         DreamButton("Choose a Source", { trailer.stopNow(); sourcesFor = playEpisode(d) }, glyph = Glyph.Sources, big = true, onImage = true)
                     }
@@ -197,14 +215,17 @@ private fun TitleBody(start: TitleDetails, source: TitleSource, onBack: () -> Un
                 TrailerSoundButton(trailer, Modifier.align(Alignment.BottomEnd).trailerUi(trailer).padding(end = gutter, bottom = 34.dp))
             }
             val restLimit = with(androidx.compose.ui.platform.LocalDensity.current) { heroH.toPx() * 0.4f }
+            // Read here, in the page's own composition, so the hero hears about full screen opening and closing in
+            // the same frame (inside the SideEffect it would be read untracked, and the page would be late).
+            val trailerFullScreen = fullTrailer.showing
             androidx.compose.runtime.SideEffect {
                 trailer.update(com.dreamos.desktop.core.trailer.TrailerRef(d.ref.tmdbId, d.ref.isShow, d.ref.name, hintKey = d.trailerKey),
-                    resting = scroll.value < restLimit, visible = sourcesFor == null && playMenu == null)
+                    resting = scroll.value < restLimit, visible = sourcesFor == null && playMenu == null && !trailerFullScreen)
             }
             // ---- Sections ----
             if (d.ref.isShow && d.seasons.isNotEmpty()) {
                 Box(Modifier.bringIntoViewRequester(episodesAt)) {
-                    EpisodesSection(d, source, gutter, onPlay = { e -> trailer.stopNow(); nav.play(PlayRequest(d.ref, e.season, e.number)) }, onSources = { e -> trailer.stopNow(); sourcesFor = e.season to e.number }, onSeasonOut = seasonOut,
+                    EpisodesSection(d, source, gutter, onPlay = { e -> trailer.stopNow(); nav.play(PlayRequest(d.ref, e.season, e.number, specialId = e.specialId)) }, onSources = { e -> trailer.stopNow(); sourcesFor = e.season to e.number }, onSeasonOut = seasonOut,
                         onSeasonLoaded = { _, eps -> if (firstSeason == null) firstSeason = eps })
                 }
             }
@@ -236,6 +257,8 @@ private fun TitleBody(start: TitleDetails, source: TitleSource, onBack: () -> Un
         if (shade > 0f) Box(Modifier.fillMaxWidth().height(96.dp).background(Brush.verticalGradient(listOf(Color.Black.copy(alpha = 0.85f * shade), Color.Transparent))))
         FloatingBack(onBack, Modifier.align(Alignment.TopStart).trailerUi(trailer).padding(start = 28.dp, top = 22.dp))
         sourcesFor?.let { (s, e) -> SourcesPanel(d, s, e, source, onClose = { sourcesFor = null }) }
+        // The promoted trailer, over the whole page (nothing while none was promoted).
+        com.dreamos.desktop.trailer.FullTrailer(fullTrailer, d.name)
     }
     LaunchedEffect(Unit) { runCatching { play.requestFocus() } }
 }

@@ -157,7 +157,7 @@ class PlayerOverlay(private val host: PlayerHost) : PlayerEngine.Listener, Playe
         setPadding(18.dp, 10.dp, 18.dp, 10.dp)
         visibility = View.GONE
     }
-    // The Pause Screen (Netflix's "You're watching"): ~8 s into a pause with the remote at rest, the picture dims
+    // The Pause Screen: ~8 s into a pause with the remote at rest, the picture dims
     // and this card fades in at the lower left. Static views, GONE while playing; only short fades ever run.
     private val cardKicker = kit.kicker("You're Watching").apply {
         setTextColor(Ui.alpha(kit.text, 0.62f))
@@ -476,7 +476,7 @@ class PlayerOverlay(private val host: PlayerHost) : PlayerEngine.Listener, Playe
             skip.translationY = skipLift()
             skip.animate().alpha(1f).translationX(0f).setStartDelay(0).setDuration(Ui.OVERLAY_IN).setInterpolator(Ui.EASE).start()
         }
-        // Netflix-style: ready to press without bringing up the controls (unless the user is busy).
+        // Ready to press without bringing up the controls (unless the user is busy).
         if (!menus.isOpen && scrubTarget < 0 && !cardUp && !xray.isOpen) skip.post { if (skip.visibility == View.VISIBLE && skipAction != null) skip.requestFocus() }
     }
 
@@ -827,7 +827,7 @@ class PlayerOverlay(private val host: PlayerHost) : PlayerEngine.Listener, Playe
                 Ui.lift(v, has, Ui.LIFT_PILL, 8)
                 if (has) skipSheen.sweep() else skipSheen.cancel()
             }
-            // Cinema, Netflix / Apple TV restraint: one compact pill of dark Dream glass with a hairline edge,
+            // Cinema's restraint: one compact pill of dark Dream glass with a hairline edge,
             // the label in white with a small skip glyph; focused, the rainbow glow and a gentle lift. Static
             // drawables only, so nothing redraws while it waits over the picture.
             textSize = 16f
@@ -1288,7 +1288,7 @@ class PlayerOverlay(private val host: PlayerHost) : PlayerEngine.Listener, Playe
         else if (now - lastStep < HOLD_STEP_MS) { scheduleScrubCommit(); return }
         else lastStep = now
         val held = now - holdStart
-        // Held, the step grows the way Netflix's does: 10 s, then 30 s, 1 min and 2 min per repeat. The
+        // Held, the step grows: 10 s, then 30 s, 1 min and 2 min per repeat. The
         // player isn't touched meanwhile (only the target moves); it seeks once, after the release.
         val step = when {
             repeat == 0 || held < 1000 -> STEP_TAP
@@ -1392,7 +1392,7 @@ class PlayerOverlay(private val host: PlayerHost) : PlayerEngine.Listener, Playe
         main.postDelayed({ updatePlayIcon() }, 60)
     }
 
-    /** Netflix's center flash: the new state's glyph pops in on a dark disc and fades out (~0.5 s, scale and alpha only). */
+    /** The centre flash: the new state's glyph pops in on a dark disc and fades out (~0.5 s, scale and alpha only). */
     private fun flashGlyph(play: Boolean) {
         if (!built) return
         flash.setImageDrawable(if (play) flashPlay else flashPause)
@@ -1632,7 +1632,7 @@ class PlayerOverlay(private val host: PlayerHost) : PlayerEngine.Listener, Playe
     }
 
     /**
-     * Cinema's title block, Apple TV-style: the title's logo (else its name), then one quiet line,
+     * Cinema's title block: the title's logo (else its name), then one quiet line,
      * "S2 E4 · Episode Name" or "Movie · 2024". The caps kicker isn't needed then.
      */
     private fun cinemaTitle(r: PlaybackRequest) {
@@ -1640,7 +1640,7 @@ class PlayerOverlay(private val host: PlayerHost) : PlayerEngine.Listener, Playe
         subView.text = when {
             r.trailer -> ""
             r.type == "episode" -> {
-                val se = if (r.season != null && r.episode != null) "S${r.season} E${r.episode}" else null
+                val se = PlayFlow.episodeCode(r.isSpecial, r.season, r.episode)
                 val name = r.episodeTitle?.takeIf { it.isNotBlank() && it != "null" }
                 // A play that didn't carry the episode's name (some paths don't): fetch it, then fill the line in.
                 if (name == null && se != null && r.tmdbId > 0) {
@@ -1752,7 +1752,7 @@ class PlayerOverlay(private val host: PlayerHost) : PlayerEngine.Listener, Playe
     private fun pauseLine(r: PlaybackRequest, i: PlayerInfo?): String =
         if (r.type == "episode") {
             val name = r.episodeTitle?.takeIf { it.isNotBlank() && it != "null" } ?: i?.title?.takeIf { it.isNotBlank() && it != r.title }
-            listOfNotNull(if (r.season != null && r.episode != null) "S${r.season} · E${r.episode}" else null, name).joinToString("  ")
+            listOfNotNull(PlayFlow.episodeCode(r.isSpecial, r.season, r.episode, " · "), name).joinToString("  ")
         } else i?.meta?.takeIf { it.isNotBlank() } ?: r.year?.toString().orEmpty()
 
     /** "38 min left", "1 hr 12 min left"; null when the length isn't known. */
@@ -1809,7 +1809,7 @@ class PlayerOverlay(private val host: PlayerHost) : PlayerEngine.Listener, Playe
         Ui.rise(parts, fromDp = 16, startDelay = 160L, step = 60L, duration = 460L)
         setDim(DIM_CARD, CARD_DIM_MS)
         android.util.Log.w("FireHome", "Player: pause screen shown ('${r.title}'" +
-            (if (r.type == "episode") " S${r.season}E${r.episode}" else "") + ", ${left ?: "length unknown"}, synopsis ${if (info?.overview.isNullOrBlank()) "pending/none" else "ready"})")
+            (if (r.type == "episode") " " + PlayFlow.episodeCode(r.isSpecial, r.season, r.episode) else "") + ", ${left ?: "length unknown"}, synopsis ${if (info?.overview.isNullOrBlank()) "pending/none" else "ready"})")
     }
 
     private fun hidePausedCard() {

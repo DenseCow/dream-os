@@ -101,6 +101,15 @@ interface Titles {
      */
     suspend fun episodesChecked(showId: Int, season: Int): List<Episode> = episodes(showId, season)
 
+    /**
+     * A show's specials in air order, the ones still to come marked `upcoming`: their own kind, never a season, and
+     * never part of [episodes] (STANDARDS §5). [checked]: the index's quick look first, as [episodesChecked].
+     */
+    suspend fun specials(showId: Int, checked: Boolean = false): List<Episode> = emptyList()
+
+    /** How many specials a show has, for its Specials tab; [peek]: only what is already known, no network. */
+    suspend fun specialsCount(showId: Int, peek: Boolean = false): Int = 0
+
     /** Rotten Tomatoes and the audience score (OMDb with the viewer's key, RT fallback, TMDB after 150 votes). */
     suspend fun scores(details: TitleDetails): Scores = Scores()
 
@@ -205,6 +214,12 @@ interface History {
     /** Watched pill: a finished movie; a show when every aired episode is finished; an episode the viewer finished. */
     suspend fun isWatched(title: Title): Boolean = false
     suspend fun isEpisodeWatched(showId: Int, season: Int, episode: Int): Boolean = false
+
+    /** The viewer finished this special of the show ([specialId] its source id); never inferred from the series. */
+    suspend fun isSpecialWatched(showId: Int, specialId: String): Boolean = false
+
+    /** One special's own entry (its progress on its own card), which the show's entry never answers for. */
+    suspend fun specialEntry(showId: Int, specialId: String): HistoryEntry? = null
 
     object Empty : History {
         override val version = MutableStateFlow(0L)

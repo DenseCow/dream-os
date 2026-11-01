@@ -61,8 +61,11 @@ class CoreCatalog(private val availability: () -> AvailabilityApi?) : Catalog {
         plainArt = i.plainArtPath,
         upNext = i.badge == "UP NEXT",
         kicker = i.kicker,
-        season = i.episode?.season,
-        episode = i.episode?.number,
+        // A special's season and number are its parent season and air-order place, never an episode pill's target.
+        season = i.episode?.takeIf { !it.isSpecial }?.season,
+        episode = i.episode?.takeIf { !it.isSpecial }?.number,
+        specialId = i.episode?.specialId?.ifEmpty { null },
+        episodeName = i.episode?.name?.ifEmpty { null },
         airDate = i.episode?.airDate?.ifEmpty { null },
         upcoming = i.episode?.upcoming == true,
     )
@@ -197,9 +200,10 @@ class CoreCatalog(private val availability: () -> AvailabilityApi?) : Catalog {
     }
 
     /** The card leaves its rows now; core hides the history entry (it comes back only if watched again). */
-    override fun removeContinue(t: Title) {
-        removed.tryEmit(Removal(t.key, PersonalRow.CONTINUE))
-        scope.launch { Services.history.remove(t.key) }
+    override fun removeContinue(t: Title, specialId: String) {
+        val key = if (specialId.isEmpty()) t.key else com.dreamos.desktop.core.model.HistoryEntry.specialKey(t.key, specialId)
+        removed.tryEmit(Removal(key, PersonalRow.CONTINUE))
+        scope.launch { Services.history.remove(key) }
     }
 
     private val removed = kotlinx.coroutines.flow.MutableSharedFlow<Removal>(extraBufferCapacity = 16)

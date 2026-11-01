@@ -132,6 +132,8 @@ class PlayerSession(
     var seasons by mutableStateOf<List<SeasonItem>>(emptyList()); private set
     var episodes by mutableStateOf<List<EpisodeItem>>(emptyList()); private set
     var episodesSeason by mutableStateOf<Int?>(null); private set
+    /** The Specials tab is the one open, rather than a season's. */
+    var episodesSpecial by mutableStateOf(false); private set
     /** The shown season's list has come back (empty or not). */
     var episodesLoaded by mutableStateOf(false); private set
     /** Saved progress of the listed episodes (read with the list, off the UI thread). */
@@ -566,7 +568,7 @@ class PlayerSession(
         val d = details
         val sub = when {
             trailer -> "Trailer"
-            t.isEpisode -> "S${t.season} E${t.episode}" + ((d?.episodeName ?: t.episodeTitle)?.let { "$SEP$it" } ?: "")
+            t.isEpisode -> com.dreamos.player.ui.playingLine(t, d?.episodeName ?: t.episodeTitle)
             else -> listOfNotNull("Movie", (d?.year ?: t.year)?.toString()).joinToString(SEP)
         }
         val art = (if (t.isEpisode) d?.episodeStillUrl else null) ?: d?.backdropUrl ?: t.backdrop
@@ -662,7 +664,9 @@ class PlayerSession(
         if (trailer) return
         sheet = s
         when (s) {
-            Sheet.EPISODES -> loadEpisodes(episodesSeason ?: target.season ?: 1)
+            // Playing a special opens on the Specials tab, where its own card is.
+            Sheet.EPISODES -> episodesSeason?.let { loadEpisodes(it, episodesSpecial) }
+                ?: loadEpisodes(if (target.isSpecial) 0 else target.season ?: 1, target.isSpecial)
             Sheet.SOURCE -> loadSources(loose = false)
             Sheet.XRAY -> loadCast()
             else -> {}
@@ -1021,17 +1025,18 @@ class PlayerSession(
 
     // ================= Sheets' loading =================
 
-    fun loadEpisodes(season: Int) {
+    fun loadEpisodes(season: Int, special: Boolean = false) {
         val show = target.tmdbId
         episodesSeason = season
+        episodesSpecial = special
         scope.launch {
             if (seasons.isEmpty()) seasons = withContext(Dispatchers.IO) { runCatching { services.seasons(show) }.getOrNull().orEmpty() }
             episodes = emptyList()
             episodesLoaded = false
             val t = target
             val (list, marks) = withContext(Dispatchers.IO) {
-                val l = runCatching { services.episodes(show, season) }.getOrNull().orEmpty()
-                l to l.mapNotNull { e -> val et = t.atEpisode(e.season, e.number); services.watchedFraction(et)?.let { et.key to it } }.toMap()
+                val l = runCatching { services.episodes(show, season, special) }.getOrNull().orEmpty()
+                l to l.mapNotNull { e -> val et = targetFor(t, e); services.watchedFraction(et)?.let { et.key to it } }.toMap()
             }
             watched = marks
             episodes = list
@@ -1039,8 +1044,14 @@ class PlayerSession(
         }
     }
 
+    /** [e] as something to play: a special keeps its own kind and identity, never the show's numbering. */
+    private fun targetFor(t: PlayTarget, e: EpisodeItem): PlayTarget =
+        if (e.isSpecial) t.copy(kind = com.dreamos.desktop.core.playback.MediaKind.SPECIAL, season = null, episode = null,
+            episodeTitle = e.name.ifBlank { null }, airDate = e.airDate.ifBlank { null }, specialId = e.specialId)
+        else t.atEpisode(e.season, e.number, e.name, e.airDate)
+
     fun playEpisode(e: EpisodeItem) {
-        val t = target.atEpisode(e.season, e.number, e.name, e.airDate)
+        val t = targetFor(target, e)
         if (t.key == target.key) { sheet = null; return }
         playOther(t)
     }

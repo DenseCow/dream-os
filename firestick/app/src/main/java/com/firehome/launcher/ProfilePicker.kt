@@ -31,7 +31,7 @@ import android.widget.TextView
  * stacked inside [view]; the host forwards BACK to [handleBack] and closes the picker when it
  * returns false (and [canClose] allows it). Choosing or editing a PIN-locked profile asks for its
  * PIN, except [trustedId] (the profile already unlocked when opened from Settings).
- * Dream Cinema's Netflix / Disney+ look ([cinemaTile]); its cards and buttons borrow only the theme's
+ * Dream Cinema's look ([cinemaTile]); its cards and buttons borrow only the theme's
  * selection and focus-outline colors for focused controls.
  */
 class ProfilePicker(

@@ -102,7 +102,10 @@ object NewEpisodeSpot {
      * the last season). Watching it already, or behind: no (Continue Watching has it).
      */
     private fun caughtUp(history: List<WatchHistory.Entry>, i: NewEpisodes.Item): Boolean {
-        val e = history.firstOrNull { it.isShow && it.tmdbId == i.show.id } ?: return true
+        // A special sits outside the show's order (STANDARDS §5): where the viewer is in the seasons says
+        // nothing about it, and whether they have seen it already is [NewEpisodes.caughtUp]'s answer.
+        if (i.ep.special) return true
+        val e = WatchHistory.seriesEntry(history, i.show.id) ?: return true
         val s = i.ep.season
         val n = i.ep.number
         if (e.upNext) return e.season == s && e.episode == n
@@ -168,14 +171,17 @@ object NewEpisodeSpot {
     /** The exact request Play sends for [i] (the first episode of a batch drop). */
     fun request(i: NewEpisodes.Item) = PlaybackRequest(
         title = i.show.name, type = "episode", tmdbId = i.show.id, imdb = i.show.imdb, year = i.show.year,
-        season = i.ep.season, episode = i.ep.number, episodeTitle = i.ep.name.ifBlank { null },
+        season = if (i.ep.specialId != null) null else i.ep.season,
+        episode = if (i.ep.specialId != null) null else i.ep.number, specialId = i.ep.specialId,
+        episodeTitle = i.ep.name.ifBlank { null },
         backdrop = PlayFlow.img(i.show.backdrop, "w1280"), poster = PlayFlow.img(i.show.poster, "w342"),
     )
 
-    /** "S3 · E7" ("S1 · E1–8" for a batch). */
-    fun code(i: NewEpisodes.Item) = "S${i.ep.season} · E${i.ep.number}" + if (i.lastNumber > i.ep.number) "–${i.lastNumber}" else ""
+    /** "S3 · E7" ("S1 · E1–8" for a batch); a special is just "Specials", its own name says which. */
+    fun code(i: NewEpisodes.Item) = if (i.ep.special) "Specials"
+        else "S${i.ep.season} · E${i.ep.number}" + if (i.lastNumber > i.ep.number) "–${i.lastNumber}" else ""
 
-    private fun label(i: NewEpisodes.Item) = "${i.show.name} S${i.ep.season}E${i.ep.number}"
+    private fun label(i: NewEpisodes.Item) = "${i.show.name} ${i.code()}"
 
     // ---- the stream, found ahead while Home is idle (one at a time, main thread) ----
 
@@ -280,6 +286,25 @@ object NewEpisodeSpot {
             if (!b.homeInFront() || DreamPlayerActivity.isActive()) return
             val app = b.context.applicationContext
             Net.background({ NewEpisodes.load(app) }) { s -> if (s != null) owner?.get()?.fresh(s) }
+        }
+    }
+
+    /**
+     * [Specials]: a special the banner has already shown or the viewer dismissed keeps that mark when TMDB
+     * gives it a better id, so it is never offered a second time.
+     */
+    internal fun adoptSpecialId(ctx: Context, showId: Int, from: String, to: String) = synchronized(lock) {
+        val app = ctx.applicationContext
+        val old = "$showId:sp:$from"
+        val new = "$showId:sp:$to"
+        val done = stringSet(app, "done")
+        if (done.remove(old)) { done += new; putSet(app, "done", done) }
+        val first = firstShown(app)
+        val at = first.optLong(old, 0)
+        if (at > 0) {
+            first.remove(old)
+            first.put(new, at)
+            prefs(app).edit().putString("first" + Profiles.suffix(app), first.toString()).apply()
         }
     }
 
@@ -483,7 +508,7 @@ class NewEpisodeBanner(
         if (PreResolve.ready(NewEpisodeSpot.request(item))) markAvailable(item)
         Availability.watch(this, target.key)
         // A status pill only while the episode is new (aired in the last Availability.EPISODE_DAYS days).
-        if (Availability.recentEpisode(item.ep.at, item.ep.airDate)) {
+        if (Availability.recentEpisode(item.ep.at, item.ep.airDate, special = item.ep.special)) {
             pill.bind(target.key, Availability.peek(ctx, target.key))
             Availability.want(ctx, target, front = true)
         } else pill.bind("old:${target.key}", null)
@@ -499,10 +524,13 @@ class NewEpisodeBanner(
      * "Out Now"); with an answer, the pill says it all.
      */
     private fun setStatus(item: NewEpisodes.Item) {
-        val known = Availability.recentEpisode(item.ep.at, item.ep.airDate) && Availability.peek(ctx, Availability.episode(item).key) != null
+        val known = Availability.recentEpisode(item.ep.at, item.ep.airDate, special = item.ep.special) &&
+            Availability.peek(ctx, Availability.episode(item).key) != null
         status.text = when {
             known -> ""
-            item.ep.at > 0 && NewEpisodes.daysFromToday(item.ep.airDate) == 0 -> "Out " + AirTimes.label(item.ep.at)
+            // A special out today is out now, so it never says "Out Tonight at 9:00 PM" while it is playable.
+            item.ep.at > 0 && !item.ep.special && NewEpisodes.daysFromToday(item.ep.airDate) == 0 ->
+                "Out " + AirTimes.label(item.ep.at)
             NewEpisodes.daysFromToday(item.ep.airDate) == 0 -> "Out Today"
             else -> "Out Now"
         }

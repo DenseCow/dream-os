@@ -252,8 +252,12 @@ enum GenreShelves {
         let movie = type == .movie
         let d = RowMix.dateKey(type)
         let path = "/discover/\(type.rawValue)"
+        // The first page and, behind it, the day's deeper one (Taste.rotatingPage): the pool changes day to day at
+        // no extra call. Trending, just above, is a chart and keeps page 2.
         func two(_ n: String) async throws -> [Title] {
-            try await RowPaging.all([{ @Sendable in try await Tmdb.list(path, n, type: type) }, { @Sendable in try await Tmdb.list(path, "\(n)&page=2", type: type) }]).flatMap { $0 }
+            let deeper = Taste.rotatingPage("\(s.title) \(type.rawValue)")
+            return try await RowPaging.all([{ @Sendable in try await Tmdb.list(path, n, type: type) },
+                                            { @Sendable in try await Tmdb.list(path, "\(n)&page=\(deeper)", type: type) }]).flatMap { $0 }
         }
         switch s.mode {
         case .trending:

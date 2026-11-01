@@ -270,7 +270,9 @@ object PreResolve {
         // Bluetooth audio on 2.4 GHz Wi-Fi: this burst can make it stutter; fast start fetches it on play instead.
         if (BtAudio.crowded(app)) return BtAudio.held("Instant play prefetch")
         val start = PlayFlow.resumePosition(app, l.request)
-        val duration = if (start > 0) WatchHistory.entries(app).firstOrNull { it.tmdbId == l.request.tmdbId && (it.type == "episode") == (l.request.type == "episode") }?.durationMs ?: 0L else 0L
+        // The row this very request plays from ([WatchHistory.entryFor]): matching the show and "an episode is
+        // an episode" would size a special's window by a numbered episode's runtime.
+        val duration = if (start > 0) WatchHistory.entryFor(app, l.request)?.durationMs ?: 0L else 0L
         StreamCache.prefetch(app, url, emptyMap(), start, duration)
     }
 
@@ -331,8 +333,7 @@ object PreResolve {
         var looked = 0
         for ((n, e) in items.withIndex()) {
             if (DreamPlayerActivity.isActive() || playStarting() || sinceKeyMs() < REFRESH_REST_MS || homeIdle?.invoke() != true) break
-            val req = PlayFlow.request(e.isShow, e.tmdbId, e.title, e.year, e.imdb, e.season, e.episode,
-                backdropPath = e.backdropPath, posterPath = e.posterPath, episodeTitle = e.episodeTitle)
+            val req = PlayFlow.from(e)
             if (NativeResolver.peek(req) != null || ready(req)) continue
             val j: Job
             synchronized(lock) {

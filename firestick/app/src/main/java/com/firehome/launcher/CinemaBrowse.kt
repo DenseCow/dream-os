@@ -270,7 +270,7 @@ class CinemaBrowse(shell: CinemaShell) : CinemaRowsPage(shell) {
 }
 
 /**
- * One genre, movies and shows together (Browse by Genre), Netflix style: its hero, then [GenreShelves]'
+ * One genre, movies and shows together (Browse by Genre): its hero, then [GenreShelves]'
  * rows: Trending as big cards, New Releases, the genre's series, Critically Acclaimed, a Spotlight, the
  * curated sub-genres (Horror: Supernatural, Slashers, Zombies, Found Footage...), the genre on each
  * streaming app on this TV, Hidden Gems and the decades. Every row is lazy (it loads as focus nears it),

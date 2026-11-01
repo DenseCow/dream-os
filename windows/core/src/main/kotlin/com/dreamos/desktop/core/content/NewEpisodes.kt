@@ -1,5 +1,8 @@
 package com.dreamos.desktop.core.content
 
+import com.dreamos.desktop.core.model.Episode
+import com.dreamos.desktop.core.model.EpisodeCode
+import com.dreamos.desktop.core.model.EpisodeKind
 import com.dreamos.desktop.core.model.HistoryEntry
 import com.dreamos.desktop.core.model.MediaKind
 import com.dreamos.desktop.core.model.NewEpisodeInfo
@@ -20,6 +23,8 @@ import java.util.concurrent.atomic.AtomicBoolean
  * shows on My List, Trakt's followed shows, shows from the watch history; at most [MAX_SHOWS]). Show data comes from
  * TMDB (exact instants from TVmaze through [airInfo]) and is cached [MAX_AGE_MS] in `new_episodes`; which episodes are
  * "New" (not yet seen) and which still need their banner is per profile. Worst case: 80 shows x ~2 KB.
+ * A special counts as an episode here (its own kind, from [Specials], since TMDB often has no record of one); it is
+ * new on its own merits, so being caught up on the show doesn't hide it.
  * Everything that touches the network blocks: IO threads.
  */
 object NewEpisodes {
@@ -30,13 +35,30 @@ object NewEpisodes {
     const val UPCOMING_DAYS = 30
     const val MAX_SHOWS = 40
 
-    /** One episode: [airDate] the local air day, [at] its exact instant (epoch ms, TVmaze), 0 when only the date is known. */
+    /**
+     * One episode: [airDate] the local air day, [at] its exact instant (epoch ms, TVmaze), 0 when only the date is
+     * known. A special ([kind]) carries the season it aired beside and its place in air order, neither of which is a
+     * place in the series.
+     */
     @Serializable
     data class Ep(val season: Int, val number: Int, val name: String = "", val airDate: String = "", val still: String? = null,
-                  val overview: String = "", val at: Long = 0) {
+                  val overview: String = "", val at: Long = 0, val kind: EpisodeKind = EpisodeKind.SERIES,
+                  val specialId: String = "") {
+        val special get() = kind == EpisodeKind.SPECIAL
         fun withAt(t: Long) = copy(airDate = DreamTime.ymd(t), at = t)
-        fun aired(now: Long = System.currentTimeMillis()) = if (at > 0) at <= now else (DreamTime.daysFromToday(airDate, now) ?: 1) <= 0
-        fun same(season: Int, number: Int) = this.season == season && this.number == number
+
+        fun episode(showId: Int) = Episode(showId, season, number, name, overview, still, airDate, airsAt = at.takeIf { it > 0 },
+            kind = kind, specialId = specialId)
+
+        /**
+         * Out by [now]: past its instant when known, else on or after its air day. A special's day is enough,
+         * announced instant or not: it drops with the day and the index decides (STANDARDS §5, a source decides, not
+         * the date), so a 9 PM airstamp doesn't hide one that has been up all afternoon.
+         */
+        fun aired(now: Long = System.currentTimeMillis()) =
+            if (at > 0 && !special) at <= now else (DreamTime.daysFromToday(airDate, now) ?: 1) <= 0
+
+        fun same(season: Int, number: Int) = !special && this.season == season && this.number == number
 
         companion object {
             fun fromTmdb(o: JsonObject?): Ep? {
@@ -54,16 +76,33 @@ object NewEpisodes {
         val providers: List<Int> = emptyList(), val networks: List<String> = emptyList(),
         /** Episodes released together on the most recent air date (a whole season for binge drops). */
         val latest: List<Ep> = emptyList(),
-        val next: Ep? = null, val fetchedAt: Long = 0,
+        val next: Ep? = null,
+        /**
+         * The show's newest special, kept beside [next] rather than in it: a special is not the show's next episode,
+         * and putting it there would drop the real next episode out of Coming Up for days.
+         */
+        val special: Ep? = null,
+        val fetchedAt: Long = 0,
     ) {
         fun title() = Title(id, MediaKind.TV, name, overview, poster, backdrop, year?.toString() ?: "", rating)
     }
 
-    /** One card: a released episode (or batch), or an upcoming one. */
+    /** One card: a released episode (or batch), an upcoming one, or a special. */
     class Item(val show: Show, val ep: Ep, val lastNumber: Int, val upcoming: Boolean) {
-        val key get() = "${show.id}:s${ep.season}e${ep.number}"
+        val key get() = if (ep.special) ep.episode(show.id).id else "${show.id}:s${ep.season}e${ep.number}"
 
-        /** "S2  ·  E5  ·  Aired yesterday", "S1  ·  E1–8  ·  Aired today" (the Fire Stick's words), "S3  ·  E1  ·  Tonight at 9:00 PM". */
+        /**
+         * Every key this item may have been stored under, [key] first. A special's source id changes when TMDB adds
+         * one TVmaze listed first, so a badge or a shown-banner mark written under the older id is still found and the
+         * special isn't announced twice ([Specials.idsFor]).
+         */
+        val keys: List<String> get() =
+            if (!ep.special) listOf(key) else Specials.idsFor(show.id, ep.specialId).map { "${show.id}/sp:$it" }
+
+        /**
+         * "S2  ·  E5  ·  Aired yesterday", "S1  ·  E1–8  ·  Aired today" (the Fire Stick's words),
+         * "S3  ·  E1  ·  Tonight at 9:00 PM", "Specials  ·  E1  ·  Aired today".
+         */
         fun badge(now: Long = System.currentTimeMillis()): String {
             val eps = if (lastNumber > ep.number) "E${ep.number}–$lastNumber" else "E${ep.number}"
             val days = DreamTime.daysFromToday(ep.airDate, now) ?: 0
@@ -78,11 +117,12 @@ object NewEpisodes {
                 days == -1 -> "Aired yesterday"
                 else -> "Aired " + (DreamTime.formatDay(ep.airDate, "EEE") ?: ep.airDate)
             }
+            if (ep.special) return "${EpisodeCode.specialWords(ep.name)}  ·  $time"
             return "S${ep.season}  ·  $eps  ·  $time"
         }
 
         fun info() = NewEpisodeInfo(show.title(), ep.season, ep.number, lastNumber, ep.name, ep.airDate, ep.at.takeIf { it > 0 },
-            ep.still, ep.overview, upcoming)
+            ep.still, ep.overview, upcoming, ep.kind, ep.specialId)
     }
 
     class Snapshot(val recent: List<Item>, val upcoming: List<Item>, val announce: List<Item>, val followed: List<Int>, val nextAt: Long = 0) {
@@ -90,8 +130,11 @@ object NewEpisodes {
         fun model() = NewEpisodesSnapshot(recent.map { it.info() }, upcoming.map { it.info() }, followed)
     }
 
-    /** TVmaze's exact air instants for a show (the previous and next episode), set to AirTimes by the app wiring. */
-    class AirEp(val season: Int, val number: Int, val at: Long)
+    /**
+     * TVmaze's exact air instants for a show (the previous and next episode), set to AirTimes by the app wiring.
+     * [special]: TVmaze reported a special there, which has no number of its own ([AirTimes.Air]).
+     */
+    class AirEp(val season: Int, val number: Int, val at: Long, val special: Boolean = false)
     class AirInfo(val prev: AirEp?, val next: AirEp?)
     @Volatile var airInfo: ((showId: Int, imdb: String?, tvdb: Int?) -> AirInfo?)? = null
 
@@ -122,10 +165,12 @@ object NewEpisodes {
         val now = System.currentTimeMillis()
         // Caught up (the drop's last episode, or a later one, finished): not new to this viewer until a newer one airs.
         val history = try { WatchHistory.recent() } catch (e: Exception) { emptyList() }
-        fun unseen(i: Item) = !caughtUp(i.show.id, i.ep.season, i.lastNumber, history)
-        val recent = followed.mapNotNull { recentItem(it, now) }.filter(::unseen)
+        // A special is asked about on its own: being caught up on the show says nothing about one ([pastSpecial]).
+        fun unseen(i: Item) = if (i.ep.special) !caughtUpSpecial(i.show.id, i.ep.specialId, history)
+        else !caughtUp(i.show.id, i.ep.season, i.lastNumber, history)
+        val recent = followed.flatMap { recentItems(it, now) }.filter(::unseen)
             .sortedWith(compareByDescending<Item> { it.ep.airDate }.thenByDescending { it.ep.at }.thenBy { it.show.name })
-        val upcoming = followed.mapNotNull { upcomingItem(it, now) }.filter(::unseen)
+        val upcoming = followed.flatMap { upcomingItems(it, now) }.filter(::unseen)
             .filter { up -> recent.none { it.key == up.key } }.sortedWith(compareBy<Item> { it.ep.airDate }.thenBy { it.ep.at })
         val pending = set("announce")
         val nextAt = upcoming.mapNotNull { it.ep.at.takeIf { t -> t > now } }.minOrNull() ?: 0L
@@ -141,9 +186,13 @@ object NewEpisodes {
      * Episodes for You, the banner, NEW EPISODE badges, the general New Episodes rows). Local and instant.
      */
     fun caughtUp(show: Int, season: Int, episode: Int, history: List<HistoryEntry> = WatchHistory.recent()): Boolean =
-        past(Watched.furthest(show), history.firstOrNull { it.isShow && it.title.id == show }, season, episode)
+        past(Watched.furthest(show), WatchHistory.seriesEntry(history, show), season, episode)
 
-    /** [caughtUp] on its inputs: [finished] the latest finished episode (season to number), [entry] the show's history entry. */
+    /**
+     * [caughtUp] on its inputs: [finished] the latest finished episode (season to number), [entry] the show's history
+     * entry. Series episodes only, which is the whole of the linear order: a special never reaches here, so no test
+     * in it has to know about one ([caughtUpSpecial]).
+     */
     fun past(finished: Pair<Int, Int>?, entry: HistoryEntry?, season: Int, episode: Int): Boolean {
         if (finished != null && (finished.first > season || finished.first == season && finished.second >= episode)) return true
         val e = entry ?: return false
@@ -151,10 +200,24 @@ object NewEpisodes {
         return e.season == season && e.episode == episode && !e.upNext && (e.hidden || e.progress >= WatchHistory.FINISHED)
     }
 
+    /**
+     * The same rule for a special, which sits outside the linear order: finishing the season it aired beside, or every
+     * episode of the show, leaves it new, and only that special's own finish counts (STANDARDS §5).
+     */
+    fun caughtUpSpecial(show: Int, specialId: String, history: List<HistoryEntry> = WatchHistory.recent()): Boolean =
+        pastSpecial(Watched.special(show, specialId), WatchHistory.specialEntry(history, show, specialId))
+
+    /** [caughtUpSpecial] on its inputs: [finished] and [entry] are that special's OWN records, never the show's. */
+    fun pastSpecial(finished: Boolean, entry: HistoryEntry?): Boolean {
+        if (finished) return true
+        val e = entry ?: return false
+        return !e.upNext && (e.hidden || e.progress >= WatchHistory.FINISHED)
+    }
+
     /** Forgets the in-memory show cache (tests). */
     internal fun clearCache() { memory = null }
 
-    fun isNew(item: Item) = !item.upcoming && item.key in set("fresh")
+    fun isNew(item: Item) = !item.upcoming && set("fresh").let { f -> item.keys.any { it in f } }
     fun isNew(key: String) = key in set("fresh")
 
     /** Clears the "NEW" badge once the viewer has seen or opened the episode. */
@@ -238,10 +301,28 @@ object NewEpisodes {
             if (n0 != null && n0.same(n.season, n.number)) next = n0.withAt(n.at)
             else if (latest.firstOrNull()?.same(n.season, n.number) == true) latest = latest.map { it.withAt(n.at) }
         }
+        // A special TVmaze reports as this show's next or previous episode: TMDB usually has no record of it at all, so
+        // it would be invisible otherwise. It is kept beside `next`, never in it ([Show.special]).
+        val special = listOfNotNull(air?.next, air?.prev).filter { it.special }.mapNotNull { specialEp(id, it) }
+            .filter { (DreamTime.daysFromToday(it.airDate) ?: -99) >= -RECENT_DAYS }.maxByOrNull { it.at }
+        if (special != null) Log.i("NewEpisodes", "${o.str("name")} has a special out ${special.airDate} (TVmaze)")
         val providers = o.o("watch/providers").o("results").o("US").a("flatrate").objects().map { it.int("provider_id") }
         val networks = o.a("networks").objects().map { it.str("name") }
         return Show(id, o.str("name"), o.str("first_air_date").take(4).toIntOrNull(), o.str("overview"), o.dbl("vote_average"),
-            o.strOrNull("poster_path"), o.strOrNull("backdrop_path"), imdbId, providers, networks, latest, next, System.currentTimeMillis())
+            o.strOrNull("poster_path"), o.strOrNull("backdrop_path"), imdbId, providers, networks, latest, next, special,
+            System.currentTimeMillis())
+    }
+
+    /**
+     * The special TVmaze named as [a], from the catalog ([Specials]): matched on its instant, else on its day. Null
+     * when the catalog doesn't have it. Blocking (TVmaze and TMDB, both cached).
+     */
+    private fun specialEp(showId: Int, a: AirEp): Ep? {
+        val all = try { Specials.of(showId) } catch (e: Exception) { return null }
+        val day = DreamTime.ymd(a.at)
+        val s = all.firstOrNull { it.airsAt != null && it.airsAt == a.at } ?: all.firstOrNull { it.airDate == day } ?: return null
+        return Ep(s.parentSeason, s.number, s.name, s.airDate.ifEmpty { day }, s.stillPath, s.overview, a.at,
+            EpisodeKind.SPECIAL, s.id)
     }
 
     /**
@@ -254,9 +335,9 @@ object NewEpisodes {
         val known = set("known")
         val fresh = set("fresh")
         val pending = set("announce")
-        val current = shows.values.mapNotNull { recentItem(it) }
+        val current = shows.values.flatMap { recentItems(it) }
         for (item in current) {
-            if (item.key in known) continue
+            if (item.keys.any { it in known }) continue
             fresh += item.key
             if (!firstRun && item.show.id in old) pending += item.key
         }
@@ -276,12 +357,35 @@ object NewEpisodes {
         return Item(s, first, s.latest.last().number, upcoming = false)
     }
 
+    /** The show's recent release and, beside it, a special out in the same window: each stands on its own. */
+    private fun recentItems(s: Show, now: Long = System.currentTimeMillis()): List<Item> =
+        listOfNotNull(recentItem(s, now), recentSpecial(s, now))
+
+    /**
+     * A special out in the last [RECENT_DAYS] days. Its day is enough, whatever hour its airstamp names ([Ep.aired]):
+     * it drops with the day and the index decides (STANDARDS §5).
+     */
+    private fun recentSpecial(s: Show, now: Long): Item? {
+        val sp = s.special ?: return null
+        if (!sp.aired(now) || (DreamTime.daysFromToday(sp.airDate, now) ?: -99) !in -RECENT_DAYS..0) return null
+        return Item(s, sp, sp.number, upcoming = false)
+    }
+
     /** What comes next within [UPCOMING_DAYS]: a latest batch still ahead today, else the next episode. */
     private fun upcomingItem(s: Show, now: Long): Item? {
         s.latest.firstOrNull()?.takeIf { it.at > now }?.let { return Item(s, it, s.latest.last().number, upcoming = true) }
         val n = s.next ?: return null
         if (n.at in 1..now || (DreamTime.daysFromToday(n.airDate, now) ?: -1) !in 0..UPCOMING_DAYS) return null
         return Item(s, n, n.number, upcoming = true)
+    }
+
+    /** What comes next, and a special announced for the same window. */
+    private fun upcomingItems(s: Show, now: Long): List<Item> = listOfNotNull(upcomingItem(s, now), upcomingSpecial(s, now))
+
+    private fun upcomingSpecial(s: Show, now: Long): Item? {
+        val sp = s.special ?: return null
+        if (sp.aired(now) || (DreamTime.daysFromToday(sp.airDate, now) ?: -1) !in 0..UPCOMING_DAYS) return null
+        return Item(s, sp, sp.number, upcoming = true)
     }
 
     // ---- storage ----

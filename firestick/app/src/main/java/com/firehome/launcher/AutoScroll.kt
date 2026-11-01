@@ -22,7 +22,7 @@ import android.widget.TextView
 import kotlin.math.ceil
 
 /**
- * Netflix / Hulu style auto-scrolling for text that doesn't fit.
+ * Text that doesn't fit scrolls itself while it has focus.
  *
  *  - [AutoScrollText]: a synopsis box that keeps its height (its max lines). When the text overflows and
  *    the viewer rests for [REST_MS], it glides slowly up to the last line, holds, fades back to the top;

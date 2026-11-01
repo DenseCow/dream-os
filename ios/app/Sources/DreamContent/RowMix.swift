@@ -12,7 +12,8 @@ struct ProfileContext: Sendable {
 
     static func current() async -> ProfileContext {
         let recent = await Services.shared.history.recent()
-        let done = Set(recent.filter { $0.progress >= 0.92 && ($0.hidden || $0.title.kind == .movie) }.map(\.title.key))
+        // A finished special never stands for the show: it is a half-hour extra, not the series watched through.
+        let done = Set(recent.filter { !$0.kind.isSpecial && $0.progress >= 0.92 && ($0.hidden || $0.title.kind == .movie) }.map(\.title.key))
         var langs: Set<String> = ["en"]
         if let l = Locale.current.language.languageCode?.identifier { langs.insert(l) }
         let p = await Services.shared.profiles.current()

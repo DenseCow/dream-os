@@ -1,5 +1,6 @@
 package com.dreamos.desktop.core.trakt
 
+import com.dreamos.desktop.core.model.HistoryEntry
 import com.dreamos.desktop.core.net.Net
 import com.dreamos.desktop.core.platform.Secrets
 import com.dreamos.desktop.core.store.DreamStore
@@ -28,18 +29,43 @@ internal data class TraktTokens(val a: String, val r: String, /** Expires at, ep
 
 /** One title for the scrobble and history calls: a movie, or one episode of a show (TMDB ids). */
 @Serializable
-internal data class TraktItem(val movie: Boolean, val tmdb: Int, val season: Int = 0, val number: Int = 0) {
-    /** {"movie": {"ids": {"tmdb": 1}}} / {"show": {"ids": {"tmdb": 1}}, "episode": {"season": 1, "number": 2}} */
+internal data class TraktItem(
+    val movie: Boolean, val tmdb: Int, val season: Int = 0, val number: Int = 0,
+    /**
+     * A special: its source id ([Specials]). Trakt numbers season 0 its own way, so a special goes by TMDB's episode
+     * id or not at all; one TVmaze alone lists ("tvmaze:<id>") has no id Trakt would know and is never sent.
+     * Ops queued before specials existed have none, so they read as before.
+     */
+    val specialId: String? = null,
+) {
+    /** The TMDB episode id Trakt is given for a special; 0 for anything else, and for one TMDB has no record of. */
+    val episodeTmdb: Int get() = specialId?.takeIf { it.startsWith("tmdb:") }?.substringAfter(':')?.toIntOrNull() ?: 0
+
+    /**
+     * {"movie": {"ids": {"tmdb": 1}}} / {"show": {"ids": {"tmdb": 1}}, "episode": {"season": 1, "number": 2}}, and for
+     * a special {"episode": {"ids": {"tmdb": 9001}}}: its place in air order is a view here, and sending that as a
+     * season-0 number would scrobble a different special.
+     */
     fun json(): JsonObject = buildJsonObject {
-        if (movie) putJsonObject("movie") { putJsonObject("ids") { put("tmdb", tmdb) } }
-        else {
-            putJsonObject("show") { putJsonObject("ids") { put("tmdb", tmdb) } }
-            putJsonObject("episode") { put("season", season); put("number", number) }
+        when {
+            movie -> putJsonObject("movie") { putJsonObject("ids") { put("tmdb", tmdb) } }
+            episodeTmdb > 0 -> putJsonObject("episode") { putJsonObject("ids") { put("tmdb", episodeTmdb) } }
+            else -> {
+                putJsonObject("show") { putJsonObject("ids") { put("tmdb", tmdb) } }
+                putJsonObject("episode") { put("season", season); put("number", number) }
+            }
         }
     }
 
-    /** The history key of the movie or show ("movie:603", "tv:1396"). */
-    val key: String get() = (if (movie) "movie:" else "tv:") + tmdb
+    /**
+     * The watch-history key this is about ("movie:603", "tv:1396", "tv:1396/sp:tmdb:9001"). A special has its own, so
+     * its paused point can never be taken for the show's and pull Continue Watching off the episode they are on.
+     */
+    val key: String get() = when {
+        movie -> "movie:$tmdb"
+        specialId != null -> HistoryEntry.specialKey("tv:$tmdb", specialId)
+        else -> "tv:$tmdb"
+    }
 }
 
 /** A change still to send: "history", "progress", "wl_add", "wl_remove", "pb_remove". */

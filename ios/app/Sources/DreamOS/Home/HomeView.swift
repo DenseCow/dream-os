@@ -3,7 +3,7 @@ import Observation
 import DreamCore
 import DreamUI
 
-/// Home (CinemaPages.kt CinemaHome, Netflix-style on the phone): the Dream OS mark and the profile face over the hero,
+/// Home (CinemaPages.kt CinemaHome): the Dream OS mark and the profile face over the hero,
 /// then the rows, with Continue Watching near the top and My List among them. The bar turns to black glass as the page
 /// scrolls. `feed` is always Home since the TV Shows / Movies chips left the bar (Browse opens those pages).
 struct HomeView: View {

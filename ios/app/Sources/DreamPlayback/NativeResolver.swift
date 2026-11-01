@@ -286,7 +286,8 @@ public final class NativeResolver: @unchecked Sendable {
     /// history says [req] starts.
     func warmStream(_ req: PlayRequest, _ link: StreamLink) {
         let start = req.fromStart ? 0 : (WatchHistory.shared.historyStartMs(req) ?? 0)
-        let dur = WatchHistory.shared.recent().first { $0.key == req.title.key }?.durationMs ?? 0
+        // This thing's own row: taken from the show's, a special would size its window by the wrong runtime.
+        let dur = WatchHistory.shared.entryFor(req)?.durationMs ?? 0
         StreamCache.shared.warm(link, startMs: start, durationMs: dur, label: label(req))
     }
 
@@ -465,12 +466,22 @@ public final class NativeResolver: @unchecked Sendable {
 
     func isEpisode(_ r: PlayRequest) -> Bool { r.title.kind == .tv }
 
+    /// Enough to look [r] up: a numbered episode needs its season and number, a special only its source id (it has
+    /// no season, and its wire number is worked out from the id).
+    func episodeKnown(_ r: PlayRequest) -> Bool {
+        r.isSpecial ? true : r.season != nil && r.episode != nil
+    }
+
     func key(_ r: PlayRequest) -> String {
-        isEpisode(r) ? "tv:\(r.title.id):\(r.season ?? -1):\(r.episode ?? -1)" : "movie:\(r.title.id)"
+        if let id = r.specialId { return "tv:\(r.title.id)/sp:\(id)" }
+        return isEpisode(r) ? "tv:\(r.title.id):\(r.season ?? -1):\(r.episode ?? -1)" : "movie:\(r.title.id)"
     }
 
     func label(_ r: PlayRequest) -> String {
-        isEpisode(r) ? "\(r.title.name) S\(r.season ?? 0)E\(r.episode ?? 0)" : r.title.name + (r.title.year.isEmpty ? "" : " (\(r.title.year))")
+        if let n = EpisodeWords.name(r.kind, season: r.season, episode: r.episode, title: r.episodeName) {
+            return "\(r.title.name) \(n)"
+        }
+        return r.title.name + (r.title.year.isEmpty ? "" : " (\(r.title.year))")
     }
 
     // MARK: The lookup
@@ -480,7 +491,7 @@ public final class NativeResolver: @unchecked Sendable {
         let acc = DebridAccounts.get()
         if !acc.any { return none(req, k, l, "no debrid account linked") }
         let ep = isEpisode(req)
-        if ep && (req.season == nil || req.episode == nil) { return none(req, k, l, "no season/episode") }
+        if ep && !episodeKnown(req) { return none(req, k, l, "no season/episode") }
         l.stage = "the IMDb id"
         guard let imdb = await imdbFor(req) else { return none(req, k, l, "no IMDb id") }
         l.stage = "the scraper check"
@@ -546,24 +557,77 @@ public final class NativeResolver: @unchecked Sendable {
 
     /// [job]'s torrents as the ranking reads them. Junk (`ReleaseWords.junk`: recaps, reviews, betting-site rips) never
     /// gets this far, so it can't be played, listed or counted as Available.
-    private func parsed(_ job: Gather, _ season: Int?, _ episode: Int?) -> [Parsed] {
-        parsed(job.items, season, episode)
+    private func parsed(_ job: Gather, _ season: Int?, _ episode: Int?, _ alts: [EpisodeForm] = []) -> [Parsed] {
+        parsed(job.items, season, episode, alts)
     }
 
-    private func parsed(_ items: [StreamCandidate], _ season: Int?, _ episode: Int?) -> [Parsed] {
-        items.compactMap { ReleaseWords.isJunk($0.torrentName) ? nil : scraped($0, season, episode) }
+    private func parsed(_ items: [StreamCandidate], _ season: Int?, _ episode: Int?, _ alts: [EpisodeForm] = []) -> [Parsed] {
+        items.compactMap { ReleaseWords.isJunk($0.torrentName) ? nil : scraped($0, season, episode, alts) }
+    }
+
+    /// The wire forms of a special, worked out from its source id when a lookup needs them: [number] its place in air
+    /// order, which is what the index answers for (`S00E{n}`); [forms] the other ways a release name may number it;
+    /// [alt] the same special asked for the other way round, as a scrape of its own.
+    ///
+    /// Scene and P2P names put a special in the season beside it (`S{parent}E00`, with the special's own title in the
+    /// file name), and an index that searches by name only finds those when it is asked for that form. So both are
+    /// asked for and either is accepted. Nil for anything but a special.
+    private struct SpecialForms { let number: Int; let forms: [EpisodeForm]; let alt: PlayRequest? }
+
+    private func specialForms(_ req: PlayRequest) async -> SpecialForms? {
+        guard req.isSpecial else { return nil }
+        let ids = req.specialIds
+        guard let own = await Services.shared.catalog.specials(showId: req.title.id)
+            .first(where: { ep in ep.specialIds.contains { ids.contains($0) } }) else {
+            return SpecialForms(number: 0, forms: [], alt: nil)
+        }
+        var forms: [EpisodeForm] = []
+        if own.season > 0 { forms.append(EpisodeForm(season: own.season, episode: 0)) }
+        // TMDB's own season-0 number, when air order gave this special a different one.
+        if own.tmdbNumber > 0, own.tmdbNumber != own.number { forms.append(EpisodeForm(season: 0, episode: own.tmdbNumber)) }
+        var alt: PlayRequest?
+        if own.season > 0 {
+            // A plain numbered request, because that is purely the other wire form.
+            var a = req
+            a.specialId = nil
+            a.specialAlias = nil
+            a.season = own.season
+            a.episode = 0
+            a.episodeName = req.episodeName ?? (own.name.isEmpty ? nil : own.name)
+            // Both forms name one special, so a request that kept the source id would key to the same scrape and the
+            // parent-season form would never be looked for, with nothing to show that it hadn't been.
+            if key(a) == key(req) {
+                plog.warning("Dream Core: \(self.label(req), privacy: .public): the second numbering form keys to the same scrape, skipped")
+            } else {
+                alt = a
+            }
+        }
+        return SpecialForms(number: own.number, forms: forms, alt: alt)
+    }
+
+    /// The season and episode a release name uses for [r] when the file inside a torrent is picked. A special's own
+    /// wire form is season 0 with its air-order number; `specialForms` adds the rest.
+    private func wireSlot(_ r: PlayRequest, _ sp: SpecialForms?) -> (Int?, Int?) {
+        if r.isSpecial { return (0, sp.flatMap { $0.number > 0 ? $0.number : nil }) }
+        guard isEpisode(r) else { return (nil, nil) }
+        return (r.season, r.episode)
     }
 
     /// [job]'s torrents plus what the availability pills' quick check already found for [req] (the Fire Stick's
     /// `merged`): the card said Available Now from those, so Play counts them at once and never contradicts the pill.
-    private func merged(_ job: Gather, _ req: PlayRequest, _ season: Int?, _ episode: Int?) -> [Parsed] {
-        let a = parsed(job, season, episode)
-        guard let q = Services.shared.sources.quickKnown(req), !q.isEmpty else { return a }
+    /// [extra]: a special's second scrape, in the other numbering form, ranked with the first (`specialForms`).
+    private func merged(_ job: Gather, _ req: PlayRequest, _ season: Int?, _ episode: Int?,
+                        _ alts: [EpisodeForm] = [], extra: Gather? = nil) -> [Parsed] {
+        var a = parsed(job, season, episode, alts)
         var seen = Set(a.map(\.c.hash))
-        return a + parsed(q.filter { seen.insert($0.hash.lowercased()).inserted }, season, episode)
+        if let extra, extra !== job {
+            a += parsed(extra.items.filter { seen.insert($0.hash.lowercased()).inserted }, season, episode, alts)
+        }
+        guard let q = Services.shared.sources.quickKnown(req), !q.isEmpty else { return a }
+        return a + parsed(q.filter { seen.insert($0.hash.lowercased()).inserted }, season, episode, alts)
     }
 
-    private func scraped(_ i: StreamCandidate, _ season: Int?, _ episode: Int?) -> Parsed {
+    private func scraped(_ i: StreamCandidate, _ season: Int?, _ episode: Int?, _ alts: [EpisodeForm] = []) -> Parsed {
         let text = i.torrentName.uppercased()
         var cam = false
         let quality: String
@@ -579,7 +643,8 @@ public final class NativeResolver: @unchecked Sendable {
         // A season pack's size is the whole season's: unknown per episode.
         let pack = i.pack == true
         let c = Candidate(hash: i.hash.lowercased(), torrentName: i.torrentName, fileName: i.fileName, fileIdx: i.fileIdx,
-                          sizeBytes: pack ? 0 : i.sizeBytes, quality: quality, seeders: i.seeders, season: season, episode: episode)
+                          sizeBytes: pack ? 0 : i.sizeBytes, quality: quality, seeders: i.seeders, season: season,
+                          episode: episode, altForms: alts)
         let dubbed = i.torrentName.range(of: "[\\u0400-\\u04FF]", options: .regularExpression) != nil ||
             has(text, "DUB", "DUBBED", "DUBLADO", "MULTI", "DUAL", "TRUEFRENCH", "FRENCH", "ITA", "LATINO")
         return Parsed(c: c, text: text, cam: cam, dubbed: dubbed, pack: pack, provider: i.origin.isEmpty ? nil : i.origin,
@@ -649,9 +714,13 @@ public final class NativeResolver: @unchecked Sendable {
         // Only a real Play sets the viewer's filters aside when nothing passes them (no speculative CAM unlocks).
         var relaxOk: Bool { purpose == .play }
         let ep = isEpisode(req)
-        let s = ep ? req.season : nil
-        let e = ep ? req.episode : nil
         let job = gather(req, imdb: imdb, urgent: purpose == .play)
+        // A special is named both ways: the other form is scraped beside it and ranked with it.
+        let sp = await specialForms(req)
+        let (s, e) = wireSlot(req, sp)
+        let alts = sp?.forms ?? []
+        let altJob = sp?.alt.map { gather($0, imdb: imdb, urgent: purpose == .play) }
+        if let a = sp?.alt { plog.info("Dream Core: \(self.label(req), privacy: .public) is a special, also looking for \(self.label(a), privacy: .public)") }
         let f = DreamFilters.current()
         l.stage = "the runtime and dub lookups"
         let rt = await runtimeFor(req, f)
@@ -668,7 +737,7 @@ public final class NativeResolver: @unchecked Sendable {
             var kept: [Parsed]
             while true {
                 let v = job.version
-                kept = choose(merged(job, req, s, e), f, ep, skip.union(tried), rt, want, resume: resume, dub: dub)
+                kept = choose(merged(job, req, s, e, alts, extra: altJob), f, ep, skip.union(tried), rt, want, resume: resume, dub: dub)
                 let t = Mono.now()
                 if job.done || t >= deadline - Self.debridReserveMs { break }
                 l.stage = "the scrape (\(job.count) sources so far, \(Self.secs(t - job.startedAt)) in)"
@@ -698,12 +767,12 @@ public final class NativeResolver: @unchecked Sendable {
             // Nothing passes the viewer's filters once the scrape is in (or the wait is over): a Play relaxes them.
             var level = 0
             if kept.isEmpty && relaxOk {
-                let r = chooseRelaxed(merged(job, req, s, e), f, ep, skip.union(tried), rt, want, relaxOk: true, resume: resume, dub: dub)
+                let r = chooseRelaxed(merged(job, req, s, e, alts, extra: altJob), f, ep, skip.union(tried), rt, want, relaxOk: true, resume: resume, dub: dub)
                 kept = r.0; level = r.1
             }
             if kept.isEmpty {
                 if job.done || Mono.now() >= deadline {
-                    let n = merged(job, req, s, e).count
+                    let n = merged(job, req, s, e, alts, extra: altJob).count
                     if n == 0 {
                         // No answer at all (busy, not running, every provider failed) is unknown, never "not out yet".
                         if job.done && !job.answered { return none(req, k, l, "the scrapers didn't answer", .noAnswer) }
@@ -716,7 +785,7 @@ public final class NativeResolver: @unchecked Sendable {
                 continue
             }
             let topList = Array(kept.prefix(Self.top))
-            recordNames(req, merged(job, req, s, e), want)
+            recordNames(req, merged(job, req, s, e, alts, extra: altJob), want)
             let p = purpose
             l.ran = p
             if servicesFor != p { services = nil }
@@ -749,7 +818,7 @@ public final class NativeResolver: @unchecked Sendable {
             let names = svcs.map { $0.key.uppercased() }.joined(separator: "/")
             if round >= 3 { return none(req, k, l, "none of \(tried.count) cached at \(names)", .notReady) }
             if Mono.now() >= deadline { return none(req, k, l, "budget over; none of \(tried.count) cached at \(names)") }
-            if job.done && chooseRelaxed(merged(job, req, s, e), f, ep, skip.union(tried), rt, want, relaxOk: relaxOk, resume: resume, dub: dub).0.isEmpty {
+            if job.done && chooseRelaxed(merged(job, req, s, e, alts, extra: altJob), f, ep, skip.union(tried), rt, want, relaxOk: relaxOk, resume: resume, dub: dub).0.isEmpty {
                 return none(req, k, l, "none of \(tried.count) cached at \(names)", .notReady)
             }
         }
@@ -781,12 +850,19 @@ public final class NativeResolver: @unchecked Sendable {
     public func sources(_ req: PlayRequest, loose isLoose: Bool, budgetMs: Int64 = 8_000) async -> [StreamCandidate] {
         let deadline = Mono.now() + budgetMs
         let ep = isEpisode(req)
-        let s = req.season, e = req.episode
-        guard DebridAccounts.anyLinked, !(ep && (s == nil || e == nil)), await Services.shared.sources.isActive(),
+        guard DebridAccounts.anyLinked, !(ep && !episodeKnown(req)), await Services.shared.sources.isActive(),
               let imdb = await imdbFor(req) else { return [] }
         let job = gather(req, imdb: imdb)
+        // A special: the other numbering form is its own scrape, listed with the first (`specialForms`).
+        let sp = await specialForms(req)
+        let (s, e) = wireSlot(req, sp)
+        let alts = sp?.forms ?? []
+        // Every form a release may number this episode in, for the "another episode" flag on each row.
+        let askedForms = ([s, e].compactMap { $0 }.count == 2 ? [EpisodeForm(season: s!, episode: e!)] : []) + alts
+        let altJob = sp?.alt.map { gather($0, imdb: imdb) }
         await job.awaitDone(until: deadline)
-        let all = merged(job, req, ep ? s : nil, ep ? e : nil)
+        await altJob?.awaitDone(until: deadline)
+        let all = merged(job, req, s, e, alts, extra: altJob)
         let f = DreamFilters.current()
         let rt = await runtimeFor(req, f)
         let bad = lock.withLock { Set(failed[key(req)]?.keys.map { $0 } ?? []) }
@@ -808,7 +884,7 @@ public final class NativeResolver: @unchecked Sendable {
             c.outsideFilters = (isLoose || level > 0) && (!allowed(p, f, ep, rt) || (f.hideSd && p.c.quality == "SD"))
             c.cam = camGrade(p)
             let name = p.c.fileName.map(DebridFiles.base) ?? p.c.torrentName
-            c.otherEpisode = SourceNames.match(name, req) == .otherEpisode
+            c.otherEpisode = SourceNames.match(name, req, forms: askedForms) == .otherEpisode
             return c
         }
         return SourceNames.dedupe(Array(rows))
@@ -817,14 +893,18 @@ public final class NativeResolver: @unchecked Sendable {
     /// [c] (one of `sources`) unlocked through the linked debrid services in turn, cached torrents only. Remembered as
     /// [req]'s link, so "Try Another Source" skips it if it fails.
     public func resolveCandidate(_ req: PlayRequest, _ c: StreamCandidate, budgetMs: Int64 = 15_000) async -> StreamLink? {
-        await unlock(req, [candidate(c, req)], deadline: Mono.now() + budgetMs, why: "picked")
+        let sp = await specialForms(req)
+        return await unlock(req, [candidate(c, req, sp)], deadline: Mono.now() + budgetMs, why: "picked")
     }
 
-    func candidate(_ c: StreamCandidate, _ req: PlayRequest) -> Candidate {
-        let ep = isEpisode(req)
+    private func candidate(_ c: StreamCandidate, _ req: PlayRequest, _ sp: SpecialForms?) -> Candidate {
+        let (s, e) = wireSlot(req, sp)
         return Candidate(hash: c.hash.lowercased(), torrentName: c.torrentName, fileName: c.fileName, fileIdx: c.fileIdx, sizeBytes: c.sizeBytes,
-                         quality: c.quality, seeders: c.seeders, season: ep ? req.season : nil, episode: ep ? req.episode : nil)
+                         quality: c.quality, seeders: c.seeders, season: s, episode: e, altForms: sp?.forms ?? [])
     }
+
+    /// A numbered episode or movie candidate (no special forms to work out).
+    func candidate(_ c: StreamCandidate, _ req: PlayRequest) -> Candidate { candidate(c, req, nil) }
 
     /// Search All Sources: `find` with the viewer's filters off, torrents that failed here skipped. AV1 stays out when
     /// the viewer hides it. nil when nothing loose is cached either.
@@ -834,7 +914,8 @@ public final class NativeResolver: @unchecked Sendable {
         let av1 = DreamFilters.current().hideAv1
         let listed = await sources(req, loose: true, budgetMs: budgetMs / 2)
             .filter { !bad.contains($0.hash) && !(av1 && ($0.tags ?? []).contains("AV1")) }.prefix(Self.top * 2)
-        let cands = listed.map { candidate($0, req) }
+        let sp = await specialForms(req)
+        let cands = listed.map { candidate($0, req, sp) }
         if cands.isEmpty { plog.warning("Dream Core: \(self.label(req), privacy: .public) → nothing (loose: the scrapers found nothing playable)"); return nil }
         guard let f = await unlock(req, cands, deadline: deadline, why: "loose") else { return nil }
         // A CAM copy (listed last, so nothing better was ready): the loading screen says so.
@@ -971,9 +1052,11 @@ public final class NativeResolver: @unchecked Sendable {
     /// nothing sent to any debrid service and no account needed.
     public func survey(_ req: PlayRequest, budgetMs: Int64 = 8_000) async -> SourceSurvey? {
         let ep = isEpisode(req)
-        guard await Services.shared.sources.isActive(), !(ep && (req.season == nil || req.episode == nil)),
+        guard await Services.shared.sources.isActive(), !(ep && !episodeKnown(req)),
               let imdb = await imdbFor(req) else { return nil }
-        let s = ep ? req.season : nil, e = ep ? req.episode : nil
+        let sp = await specialForms(req)
+        let (s, e) = wireSlot(req, sp)
+        let alts = sp?.forms ?? []
         // A full scrape already run for it (a Play, a title page's look-ahead) counts; else the quick check (two fast
         // providers, short limits), as on the Fire Stick. A scrape that got no answer (busy, every provider failed or
         // timed out) is no answer: nil, no pill, asked again later. Never "Not Available Yet".
@@ -988,13 +1071,13 @@ public final class NativeResolver: @unchecked Sendable {
                 var wake = end
                 if job.count > 0 {
                     let since = Mono.now() - job.startedAt - job.firstMs
-                    if since >= Self.graceMs, parsed(job, s, e).contains(where: { !$0.cam }) { break }
+                    if since >= Self.graceMs, parsed(job, s, e, alts).contains(where: { !$0.cam }) { break }
                     if since < Self.graceMs { wake = min(end, Mono.now() + Self.graceMs - since) }
                 }
                 await job.await(v, until: wake)
             }
             plog.info("Avail: \(self.label(req), privacy: .public) from the running scrape in \(Mono.now() - now) ms (\(job.count) sources\(job.done ? "" : ", still running", privacy: .public))")
-            if job.count > 0 { return summarize(parsed(job, s, e), req) }
+            if job.count > 0 { return summarize(parsed(job, s, e, alts), req) }
             if !job.done { return nil }
         }
         var r = req
@@ -1004,7 +1087,7 @@ public final class NativeResolver: @unchecked Sendable {
             return nil
         }
         plog.info("Avail: \(self.label(req), privacy: .public) from the quick check in \(Mono.now() - now) ms (\(items.count) sources)")
-        return summarize(parsed(items, s, e), req)
+        return summarize(parsed(items, s, e, alts), req)
     }
 
     /// Counts and the best release of each grade (`SourceSurvey`) from a scrape's torrents; what they say about a dub
@@ -1382,18 +1465,23 @@ enum SourceNames {
         return (0..<m.numberOfRanges).map { Range(m.range(at: $0), in: s).map { String(s[$0]) } }
     }
 
-    /// Whether release [name] looks like [req]: its S/E (or year) and its title words.
-    static func match(_ name: String, _ req: PlayRequest) -> Match {
+    /// Whether release [name] looks like [req]: its S/E (or year) and its title words. [forms]: every way a release
+    /// may number this very episode, so a special named `S{parent}E00` isn't read as another episode. Left out, the
+    /// request's own season and number are the only form accepted (`NativeResolver.specialForms`).
+    static func match(_ name: String, _ req: PlayRequest, forms: [EpisodeForm] = []) -> Match {
         let title = words(req.title.name)
         let nameWords = Set(words(name))
         let have = title.isEmpty ? 1.0 : Double(title.filter { nameWords.contains($0) }.count) / Double(title.count)
-        if req.title.kind == .tv, let rs = req.season, let re = req.episode {
+        var asked = forms
+        if asked.isEmpty, let s = req.season, let e = req.episode { asked.append(EpisodeForm(season: s, episode: e)) }
+        if req.title.kind == .tv, !asked.isEmpty {
             // A range needs a "-" or "E" before its end ("E02-E05", "E02E03"): "S01E02.1080p" isn't E02 to E108.
             if let g = groups("(?<![a-z0-9])s(\\d{1,2})[ ._-]*e(\\d{1,3})(?:[ ._-]*[-e][ ._-]*e?(\\d{1,3})(?![0-9]))?", name) ?? groups("(?<![0-9])(\\d{1,2})x(\\d{2,3})(?![0-9])", name),
                let s = g[1].flatMap({ Int($0) }), let e1 = g[2].flatMap({ Int($0) }) {
                 let e2 = (g.count > 3 ? g[3].flatMap { Int($0) } : nil).flatMap { $0 >= e1 ? $0 : nil } ?? e1
-                if s != rs || !(e1...e2).contains(re) { return .otherEpisode }
-            } else if let g = groups("(?<![a-z0-9])(?:s|season[ ._-]*)(\\d{1,2})(?![0-9e])", name), let s = g[1].flatMap({ Int($0) }), s != rs {
+                if !asked.contains(where: { $0.season == s && (e1...e2).contains($0.episode) }) { return .otherEpisode }
+            } else if let g = groups("(?<![a-z0-9])(?:s|season[ ._-]*)(\\d{1,2})(?![0-9e])", name), let s = g[1].flatMap({ Int($0) }),
+                      !asked.contains(where: { $0.season == s }) {
                 return .otherEpisode
             }
         } else if let y = Int(req.title.year), !yearsIn(req.title.name).contains(y) {

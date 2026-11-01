@@ -121,7 +121,8 @@ object Seasons {
             }
         }
         val kids = kids(ctx)
-        return RowMix.tidy(ctx, raw).filter { !kids || it.genreIds.none { g -> g in NOT_FOR_KIDS } }
+        // In the list's order: the page's claims rank it (RowClaims.take), and art is weighed there, not partitioned here.
+        return RowMix.tidy(ctx, raw, artFirst = false).filter { !kids || it.genreIds.none { g -> g in NOT_FOR_KIDS } }
     }
 
     private fun mode(k: SeasonRow.Kind) = when (k) {
@@ -132,11 +133,11 @@ object Seasons {
         else -> Shelf.Mode.VARIETY
     }
 
-    /** The filter as asked (its own sort_by wins over the base's), two pages; a modest vote floor unless it sets one. */
+    /** The filter as asked (its own sort_by wins over the base's), its first page and the day's deeper one; a modest vote floor unless it sets one. */
     private fun popular(ctx: Context, type: String, q: String): List<Title> {
         val votes = if (q.contains("vote_count.gte=")) "" else "&vote_count.gte=${if (type == "movie") 50 else 20}"
         val query = BASE + q + votes
-        return RowPaging.all({ Tmdb.list(ctx, "/discover/$type", query, type) }, { Tmdb.list(ctx, "/discover/$type", "$query&page=2", type) }).flatten()
+        return RowPaging.all({ Tmdb.list(ctx, "/discover/$type", query, type) }, { Tmdb.list(ctx, "/discover/$type", "$query&page=${RowMix.rotatingPage("$q $type")}", type) }).flatten()
     }
 
     /** Hand-picked titles ("movie:603"), fetched side by side (TMDB's details, cached), in their list's order. */
@@ -256,7 +257,7 @@ object SeasonUi {
 
 /**
  * One seasonal hub's page (Home's hub row or a matching genre page opens it): the masthead, Tonight's Pick
- * across the page (Apple TV's feature module), the hub's rows for this profile (a kids profile sees only its
+ * across the page (the feature module), the hub's rows for this profile (a kids profile sees only its
  * kids-safe rows), then the other hubs that are on ("More to Celebrate"). Rows load lazily as focus nears them,
  * page on as focus nears their end, and hold a title only once, like every Cinema page.
  */

@@ -17,14 +17,17 @@ final class TitleDetailsModel {
     var scores: Scores?
     var availability: AvailabilityDetail?
     var inMyList = false
-    /// Movies: the saved spot. Shows: the in-progress or up-next episode.
+    /// Movies: the saved spot. Shows: the show's own row (the in-progress or up-next episode), never a special's.
     var history: HistoryEntry?
-    var season = 0
-    var episodes: [Int: [Episode]] = [:]
-    /// Seasons being fetched right now (the one on show and the look-ahead ones).
-    private var loadingSeasons: Set<Int> = []
+    /// The group of episodes on show; nil until the first one is picked (no sentinel number).
+    var tab: EpisodeTab?
+    var episodes: [EpisodeTab: [Episode]] = [:]
+    /// How many specials the catalog found, nil until it has answered. 0: the show has none, so no Specials row.
+    var specialsCount: Int?
+    /// Groups being fetched right now (the one on show and the look-ahead ones).
+    private var loadingSeasons: Set<EpisodeTab> = []
     private var lookedAhead = false
-    var seasonFailed: Set<Int> = []
+    var seasonFailed: Set<EpisodeTab> = []
     /// Median episode length of the first season loaded (Information's Episode Length).
     var episodeMinutes = 0
     /// Episode pills (aired in the last 21 days only), by episode id.
@@ -64,21 +67,23 @@ final class TitleDetailsModel {
         // Instant episodes (owner rule): the likely season (the history's, else Season 1) is fetched alongside the
         // details instead of after them, and a season seen earlier this session shows from memory at once.
         var guessed = false
-        if isShow, season == 0 {
-            let guess = max(1, history?.season ?? 1)
-            if let hit = SeasonCache.get(title.id, guess) { episodes[guess] = hit; season = guess; guessed = true }
-            Task { await loadSeason(guess) }
+        if isShow, tab == nil {
+            let guess = EpisodeTab.season(max(1, history?.season ?? 1))
+            if let hit = SeasonCache.get(title.id, guess) { episodes[guess] = hit; tab = guess; guessed = true }
+            Task { await loadEpisodes(guess) }
+            // The specials catalog answers behind the page (TVmaze, and TMDB's season 0 where it has one): the
+            // Specials row appears when it lands, and never when the show has none.
+            Task { await findSpecials() }
         }
         do {
             let d = try await c.details(kind: title.kind, id: title.id)
             details = d
             failed = nil
             Taste.noteOpened(d.title) // a title page opened: a small taste signal (Taste.swift)
-            if isShow, season == 0 || guessed {
-                let best = defaultSeason(d)
-                if best > 0, best != season { season = best }
+            if isShow, tab == nil || guessed {
+                if let best = defaultSeason(d), best != tab { tab = best }
             }
-            if season > 0 { Task { await loadSeason(season); await lookAhead() } }
+            if let t = tab { Task { await loadEpisodes(t); await lookAhead() } }
             Task { await loadLanguagePills() }
             scores = await c.scores(for: d)
         } catch let e as DreamError {
@@ -103,19 +108,26 @@ final class TitleDetailsModel {
         var e = await Services.shared.history.entry(for: title.key)
         if e == nil, isShow { e = await Services.shared.history.caughtUpNext(for: title.key) }
         if history != e { history = e }
+        guard isShow else { return }
+        // Each started special's own row, so its card shows its own progress (`WatchKind`).
+        let rows = await Services.shared.history.recent()
+        let mine = Dictionary(rows.filter { $0.title.id == title.id && $0.kind.isSpecial && !$0.hidden }
+            .compactMap { r in r.specialId.map { ($0, r) } }, uniquingKeysWith: { a, _ in a })
+        if startedSpecials != mine { startedSpecials = mine }
     }
 
     func toggleMyList() async {
         inMyList = await Services.shared.myList.toggle(shown)
     }
 
-    // MARK: Seasons
+    // MARK: Seasons and specials
 
     /// Seasons already out (number > 0, with episodes, aired, or up early: an episode found before its day,
     /// `Episode.outEarly`; its chip then loses "Coming Nov 1").
     var seasonsOut: [SeasonSummary] {
         (details?.seasons ?? []).filter { s in
-            s.number > 0 && s.episodeCount > 0 && (PageTime.aired(s.airDate) || episodes[s.number]?.contains { $0.outEarly } == true)
+            s.number > 0 && s.episodeCount > 0
+                && (PageTime.aired(s.airDate) || episodes[.season(s.number)]?.contains { $0.outEarly } == true)
         }.sorted { $0.number < $1.number }
     }
 
@@ -126,52 +138,78 @@ final class TitleDetailsModel {
             .sorted { $0.number < $1.number }.prefix(2).map { $0 }
     }
 
-    var allSeasons: [SeasonSummary] { seasonsOut + seasonsAhead }
+    /// The episode picker's rows: the seasons out, the ones announced, then the specials **last**, so the row the
+    /// page opens on stays Season 1 and Play keeps naming a real episode.
+    var tabs: [EpisodeTabItem] {
+        (seasonsOut + seasonsAhead).map(EpisodeTabItem.init)
+            + ((specialsCount ?? 0) > 0 ? [EpisodeTabItem(specials: specialsCount ?? 0)] : [])
+    }
 
-    private func defaultSeason(_ d: TitleDetails) -> Int {
+    var aheadTabs: Set<EpisodeTab> { Set(seasonsAhead.map { EpisodeTab.season($0.number) }) }
+
+    private func defaultSeason(_ d: TitleDetails) -> EpisodeTab? {
         let out = seasonsOut
-        if let s = history?.season, out.contains(where: { $0.number == s }) { return s }
-        return out.first?.number ?? allSeasons.first?.number ?? 0
+        if let s = history?.season, out.contains(where: { $0.number == s }) { return .season(s) }
+        if let first = out.first ?? seasonsAhead.first { return .season(first.number) }
+        return nil
     }
 
-    /// Switching seasons is instant: every season was fetched ahead (`lookAhead`), so this only swaps what shows.
-    func pick(season n: Int) {
-        guard n != season else { return }
-        season = n
-        if episodes[n] == nil, let hit = SeasonCache.get(title.id, n) { episodes[n] = hit }
-        prefetchStills(episodes[n] ?? [], first: 6)
-        Task { await loadSeason(n) }
+    /// Switching rows is instant: each was fetched ahead (`lookAhead`), so this only swaps what shows.
+    func pick(_ t: EpisodeTab) {
+        guard t != tab else { return }
+        tab = t
+        if episodes[t] == nil, let hit = SeasonCache.get(title.id, t) { episodes[t] = hit }
+        prefetchStills(episodes[t] ?? [], first: 6)
+        Task { await loadEpisodes(t) }
     }
 
-    /// Fetches a season (once; a fresh copy from this session's memory needs no fetch), then fetches its stills ahead
-    /// so the carousel never shows art loading, then asks for the recent episodes' pills (21-day rule) all at once.
-    func loadSeason(_ n: Int) async {
-        if episodes[n] == nil, let hit = SeasonCache.get(title.id, n) { episodes[n] = hit }
-        guard !loadingSeasons.contains(n), episodes[n] == nil || !SeasonCache.fresh(title.id, n) else {
-            if let eps = episodes[n] { await settle(eps, season: n) }
+    /// How many specials the show has, so the Specials row shows only when there are some. Behind the page: the
+    /// catalog asks TVmaze, which TMDB's own season list can't answer for (`SpecialsCatalog`).
+    func findSpecials() async {
+        guard isShow, specialsCount == nil else { return }
+        let eps = await Services.shared.catalog.specials(showId: title.id)
+        specialsCount = eps.count
+        guard !eps.isEmpty else { return }
+        SeasonCache.put(title.id, .specials, eps)
+        if episodes[.specials] == nil { episodes[.specials] = eps }
+    }
+
+    /// Fetches one row's episodes (once; a fresh copy from this session's memory needs no fetch), then fetches its
+    /// stills ahead so the carousel never shows art loading, then asks for the recent ones' pills (21-day rule).
+    func loadEpisodes(_ t: EpisodeTab) async {
+        if episodes[t] == nil, let hit = SeasonCache.get(title.id, t) { episodes[t] = hit }
+        guard !loadingSeasons.contains(t), episodes[t] == nil || !SeasonCache.fresh(title.id, t) else {
+            if let eps = episodes[t] { await settle(eps, tab: t) }
             return
         }
-        loadingSeasons.insert(n)
-        seasonFailed.remove(n)
+        loadingSeasons.insert(t)
+        seasonFailed.remove(t)
         do {
-            let eps = try await Services.shared.catalog.episodes(showId: title.id, season: n)
-            SeasonCache.put(title.id, n, eps)
-            if episodes[n] != eps { episodes[n] = eps }
-            await settle(eps, season: n)
+            let eps: [Episode]
+            switch t {
+            case .season(let n): eps = try await Services.shared.catalog.episodes(showId: title.id, season: n)
+            case .specials: eps = await Services.shared.catalog.specials(showId: title.id)
+            }
+            SeasonCache.put(title.id, t, eps)
+            if episodes[t] != eps { episodes[t] = eps }
+            await settle(eps, tab: t)
         } catch {
-            if episodes[n] == nil { seasonFailed.insert(n) }
+            if episodes[t] == nil { seasonFailed.insert(t) }
         }
-        loadingSeasons.remove(n)
+        loadingSeasons.remove(t)
     }
 
-    /// What follows a season's episodes arriving: Information's Episode Length, the stills, episodes up early, the pills
-    /// (an episode up early gets the same pill as an aired one).
-    private func settle(_ eps: [Episode], season n: Int) async {
-        if episodeMinutes == 0 { episodeMinutes = InfoWords.median(eps.filter { PageTime.aired($0.airDate) }.map(\.runtime)) }
-        prefetchStills(eps, first: n == season ? eps.count : 6)
+    /// What follows a row's episodes arriving: Information's Episode Length, the stills, episodes up early, the pills
+    /// (an episode up early gets the same pill as an aired one). A special's length never sets Episode Length, and
+    /// nothing in the specials is "up early": its day is enough, which the catalog already settled.
+    private func settle(_ eps: [Episode], tab t: EpisodeTab) async {
+        if episodeMinutes == 0, !t.isSpecials {
+            episodeMinutes = InfoWords.median(eps.filter { PageTime.aired($0.airDate) }.map(\.runtime))
+        }
+        prefetchStills(eps, first: t == tab ? eps.count : 6)
         let show = shown
-        await findEarly(eps, season: n, show: show)
-        let recent = (episodes[n] ?? eps).filter { (PageTime.recentEpisode($0.airDate) || $0.outEarly) && episodePills[$0.id] == nil }
+        if case .season(let n) = t { await findEarly(eps, season: n, show: show) }
+        let recent = (episodes[t] ?? eps).filter { (PageTime.recentEpisode($0.airDate) || $0.outEarly) && episodePills[$0.id] == nil }
         guard !recent.isEmpty else { return }
         await withTaskGroup(of: (String, Availability?).self) { group in
             for e in recent {
@@ -181,8 +219,8 @@ final class TitleDetailsModel {
         }
     }
 
-    /// A source decides, not the date (owner, 2026-10-30: "available as soon as there's a source"; Paramount+ posts
-    /// Showtime's Sunday episodes on Friday): the season's episodes still ahead are asked about in order, first one
+    /// A source decides, not the date (owner, 2026-10-30: "available as soon as there's a source"; a Sunday
+    /// episode can appear on the Friday before): the season's episodes still ahead are asked about in order, first one
     /// first, until one isn't up yet. Each one found plays like an aired one (`Episode.outEarly`); the rest keep their
     /// "Coming ..." line.
     private func findEarly(_ eps: [Episode], season n: Int, show: Title) async {
@@ -191,20 +229,29 @@ final class TitleDetailsModel {
             guard await Services.shared.catalog.earlyRelease(e, of: show) else { break }
             found.insert(e.id)
         }
-        guard !found.isEmpty, var list = episodes[n] else { return }
+        let t = EpisodeTab.season(n)
+        guard !found.isEmpty, var list = episodes[t] else { return }
         for i in list.indices where found.contains(list[i].id) { list[i].upcoming = false; list[i].outEarly = true }
-        guard list != episodes[n] else { return }
-        episodes[n] = list
-        SeasonCache.put(title.id, n, list)
+        guard list != episodes[t] else { return }
+        episodes[t] = list
+        SeasonCache.put(title.id, t, list)
     }
 
     /// Every other season in the background, nearest to the one on show first, so a season switch is instant.
     func lookAhead() async {
         guard !lookedAhead else { return }
         lookedAhead = true
-        let all = allSeasons.map(\.number).filter { $0 != season }.sorted { abs($0 - season) < abs($1 - season) }
-        for n in all where episodes[n] == nil {
-            await loadSeason(n)
+        // Nearest season first, so the likely next switch is already in; the specials come after them.
+        let here = tab?.seasonNumber ?? 1
+        let rest = tabs.map(\.tab).filter { $0 != tab }.sorted { a, b in
+            switch (a.seasonNumber, b.seasonNumber) {
+            case (nil, _): return false
+            case (_, nil): return true
+            case (let x?, let y?): return abs(x - here) < abs(y - here)
+            }
+        }
+        for t in rest where episodes[t] == nil {
+            await loadEpisodes(t)
         }
     }
 
@@ -213,7 +260,7 @@ final class TitleDetailsModel {
         for e in eps.sorted(by: { $0.number < $1.number }).prefix(first) {
             if let u = e.still(EpisodeCard.stillSize) {
                 ImageStore.shared.prefetch(u, afterTrailer: true)
-            } else if !fallbackFetched, let u = episodeFallbackArt(season: e.season).compactMap({ $0 }).first {
+            } else if !fallbackFetched, let u = episodeFallbackArt(for: e).compactMap({ $0 }).first {
                 // No still on TMDB (new episodes often have none yet): the card shows the fallback, fetched once.
                 ImageStore.shared.prefetch(u, afterTrailer: true)
                 fallbackFetched = true
@@ -221,10 +268,10 @@ final class TitleDetailsModel {
         }
     }
 
-    /// An episode card's art when its still is missing or won't load: the show's backdrop, then the season's poster,
-    /// then the show's poster, so every card shows a picture.
-    func episodeFallbackArt(season n: Int) -> [URL?] {
-        let seasonPoster = allSeasons.first { $0.number == n }?.posterPath
+    /// An episode card's art when its still is missing or won't load: the show's backdrop, then its season's poster,
+    /// then the show's poster, so every card shows a picture. A special has no season poster of its own.
+    func episodeFallbackArt(for ep: Episode) -> [URL?] {
+        let seasonPoster = ep.isSpecial ? nil : (seasonsOut + seasonsAhead).first { $0.number == ep.season }?.posterPath
         return [shown.backdrop("w780"), TMDBImage.url(seasonPoster, "w500"), shown.poster("w500")]
     }
 
@@ -237,8 +284,13 @@ final class TitleDetailsModel {
         return e
     }
 
+    /// Play's words. Only the show's own row ever names it: a special plays from its own card, and the show's
+    /// position in the seasons is where the viewer really is.
     var playLabel: String {
-        if let e = resumeEntry { return isShow ? "Resume S\(e.season ?? 1) E\(e.episode ?? 1)" : "Resume" }
+        if let e = resumeEntry {
+            guard isShow else { return "Resume" }
+            return "Resume " + (EpisodeWords.code(e.season, e.episode) ?? "S1 E1")
+        }
         guard isShow else { return "Play" }
         if let e = history, let s = e.season, let n = e.episode, s > 0, n > 0 { return "Play S\(s) E\(n)" }
         return "Play S1 E1"
@@ -257,7 +309,7 @@ final class TitleDetailsModel {
     var progressWords: String? {
         guard let e = resumeEntry else { return nil }
         var parts: [String] = []
-        if isShow, let s = e.season, let n = e.episode { parts.append("S\(s) E\(n)") }
+        if isShow, let code = EpisodeWords.code(e.season, e.episode) { parts.append(code) }
         if isShow, let name = e.episodeName, !name.isEmpty { parts.append(name) }
         if e.durationMs > 0 {
             let left = (e.durationMs - e.positionMs) / 60_000
@@ -267,18 +319,33 @@ final class TitleDetailsModel {
     }
 
     func request(for ep: Episode, fromStart: Bool = false) -> PlayRequest {
-        PlayRequest(title: shown, imdbId: details?.imdbId, season: ep.season, episode: ep.number, episodeName: ep.name, fromStart: fromStart)
+        if ep.isSpecial { return .special(title: shown, imdbId: details?.imdbId, ep, fromStart: fromStart) }
+        return PlayRequest(title: shown, imdbId: details?.imdbId, season: ep.season, episode: ep.number, episodeName: ep.name, fromStart: fromStart)
     }
 
-    /// The in-progress episode's progress (0...1) for a card, or nil.
+    /// A card's progress (0...1), or nil. A special has its own row, so it is read from there and the show's own
+    /// position never bleeds onto a special's card or the other way round.
     func progress(for ep: Episode) -> Double? {
+        if ep.isSpecial {
+            guard let e = ep.specialIds.compactMap({ startedSpecials[$0] }).first else { return nil }
+            return e.progress
+        }
         guard let e = resumeEntry, e.season == ep.season, e.episode == ep.number else { return nil }
         return e.progress
     }
 
+    /// A special is never Up Next: nothing follows it.
     func isUpNext(_ ep: Episode) -> Bool {
-        guard let e = history else { return false }
+        guard let e = history, !ep.isSpecial else { return false }
         return e.season == ep.season && e.episode == ep.number
+    }
+
+    /// Specials of this show the viewer has started, by source id: each special's own row, read once per refresh.
+    var startedSpecials: [String: HistoryEntry] = [:]
+
+    /// Whether the viewer finished this special (its own card's Watched mark).
+    func specialWatched(_ ep: Episode) -> Bool {
+        WatchedLedger.shared.specialWatched(show: title.id, anyOf: ep.specialIds)
     }
 
     // MARK: Language pills (LanguagePills)
@@ -361,15 +428,15 @@ enum SeasonCache {
     private static var store: [String: (at: Date, episodes: [Episode])] = [:]
     private static let freshFor: TimeInterval = 20 * 60
 
-    static func get(_ show: Int, _ season: Int) -> [Episode]? { store["\(show):\(season)"]?.episodes }
+    static func get(_ show: Int, _ tab: EpisodeTab) -> [Episode]? { store["\(show):\(tab.id)"]?.episodes }
 
-    static func fresh(_ show: Int, _ season: Int) -> Bool {
-        guard let at = store["\(show):\(season)"]?.at else { return false }
+    static func fresh(_ show: Int, _ tab: EpisodeTab) -> Bool {
+        guard let at = store["\(show):\(tab.id)"]?.at else { return false }
         return Date().timeIntervalSince(at) < freshFor
     }
 
-    static func put(_ show: Int, _ season: Int, _ episodes: [Episode]) {
+    static func put(_ show: Int, _ tab: EpisodeTab, _ episodes: [Episode]) {
         if store.count > 400 { store.removeAll() }
-        store["\(show):\(season)"] = (Date(), episodes)
+        store["\(show):\(tab.id)"] = (Date(), episodes)
     }
 }

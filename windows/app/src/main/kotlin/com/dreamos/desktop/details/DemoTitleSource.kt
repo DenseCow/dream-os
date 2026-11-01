@@ -39,7 +39,7 @@ class DemoTitleSource(private val base: TitleSource, private val mode: Mode = Mo
         }
     }
 
-    override suspend fun season(ref: TitleRef, season: Int): List<EpisodeInfo> {
+    override suspend fun season(ref: TitleRef, season: Int, special: Boolean): List<EpisodeInfo> {
         if (mode == Mode.Coming && ref.tmdbId == SEVERANCE.tmdbId && season == 3) return emptyList()
         val eps = base.season(ref, season)
         if (ref.tmdbId != SEVERANCE.tmdbId || season != 2) return eps

@@ -204,9 +204,9 @@ object GenreShelves {
                 val hot = (week1 + week2).filter { g in it.genreIds && (spec.lang.isEmpty() || it.lang == spec.lang) && RowMix.released(it) }
                 (hot + popular).distinctBy { it.key }
             }
-            // Two pages: Trending, just above, takes many of the newest.
+            // Two pages (the second the day's, Taste.rotatingPage): Trending, just above, takes many of the newest.
             Shelf.Mode.NEW -> "$BASE$q&$d.gte=${RowMix.yearsAgo(1)}&$d.lte=${RowMix.yearsAgo(0)}&vote_count.gte=${if (movie) minOf(20, low(spec, 40) / 2) else minOf(10, low(spec, 40) / 4)}".let { n ->
-                RowPaging.all({ Tmdb.list(path, n, type) }, { Tmdb.list(path, "$n&page=2", type) }).flatten()
+                RowPaging.all({ Tmdb.list(path, n, type) }, { Tmdb.list(path, "$n&page=${Taste.rotatingPage("${s.title} ${type.path}")}", type) }).flatten()
             }
             Shelf.Mode.RELEASES -> NewReleases.ofType(type, q)
             Shelf.Mode.ACCLAIMED -> RowMix.acclaimed(type, q, "${s.title} ${type.path}")
@@ -215,10 +215,10 @@ object GenreShelves {
                 else Tmdb.list(path, "$BASE$q&vote_average.gte=7&vote_count.gte=${if (movie) 150 else 60}&vote_count.lte=${if (movie) 1500 else 600}", type)
             Shelf.Mode.VARIETY -> RowMix.variety(type, BASE + q, "${s.title} ${type.path}")
             Shelf.Mode.TOP_VOTED -> "$BASE$q&sort_by=vote_count.desc".let { n ->
-                RowPaging.all({ Tmdb.list(path, n, type) }, { Tmdb.list(path, "$n&page=2", type) }).flatten()
+                RowPaging.all({ Tmdb.list(path, n, type) }, { Tmdb.list(path, "$n&page=${Taste.rotatingPage("${s.title} ${type.path}")}", type) }).flatten()
             }
             Shelf.Mode.TOP -> "$BASE$q&sort_by=vote_average.desc&vote_count.gte=${if (movie) 1000 else 250}".let { n ->
-                RowPaging.all({ Tmdb.list(path, n, type) }, { Tmdb.list(path, "$n&page=2", type) }).flatten()
+                RowPaging.all({ Tmdb.list(path, n, type) }, { Tmdb.list(path, "$n&page=${Taste.rotatingPage("${s.title} ${type.path}")}", type) }).flatten()
             }
         }
     }

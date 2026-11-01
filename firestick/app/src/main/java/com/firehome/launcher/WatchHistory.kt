@@ -21,8 +21,15 @@ import java.util.concurrent.TimeUnit
  * Stored per profile as JSON.
  */
 object WatchHistory {
+    /**
+     * What an entry is. A special ([Specials]) is neither a movie nor an episode of a season: it belongs to a
+     * show but sits outside its order, and it lives a movie's life here (its own card, its own progress, off
+     * the row when it is finished). Every branch on it is a `when`, so a new kind cannot be forgotten.
+     */
+    enum class Kind { MOVIE, EPISODE, SPECIAL }
+
     class Entry(
-        val type: String,          // "movie" or "episode"
+        val type: String,          // "movie", "episode" or "special" ([Kind])
         val tmdbId: Int,           // movie id, or the show's id for episodes
         val title: String,         // movie title or show name
         val episodeTitle: String?,
@@ -44,12 +51,25 @@ object WatchHistory {
         val rating: Double,
         val deepLink: String?,
         val player: String? = null, // the source that played it, if known
+        /** A special: its id from the source that listed it ([Specials.ID]); null for a movie or an episode. */
+        val specialId: String? = null,
     ) {
-        val isShow get() = type == "episode"
-        /** "tv:123" / "movie:123", same as [Title.key]. */
-        val key get() = (if (isShow) "tv:" else "movie:") + tmdbId
+        val kind get() = when (type) { "episode" -> Kind.EPISODE; "special" -> Kind.SPECIAL; else -> Kind.MOVIE }
+        /** An episode of a season: everything about where the viewer is in a show goes by this. */
+        val isSeries get() = kind == Kind.EPISODE
+        /** A special ([Specials]): outside the show's order, so never part of its position. */
+        val isSpecial get() = kind == Kind.SPECIAL
+        /** Belongs to a show, either way: what cards, artwork and taste go by. */
+        val ofShow get() = kind != Kind.MOVIE
 
-        fun toTitle() = Title(tmdbId, if (isShow) "tv" else "movie", title, overview, posterPath, backdropPath, year?.toString() ?: "", rating)
+        /** "tv:123", "movie:123" (same as [Title.key]), or "tv:123/sp:<id>" for a special, which has its own row. */
+        val key get() = when (kind) {
+            Kind.MOVIE -> "movie:$tmdbId"
+            Kind.EPISODE -> "tv:$tmdbId"
+            Kind.SPECIAL -> specialKey(tmdbId, specialId.orEmpty())
+        }
+
+        fun toTitle() = Title(tmdbId, if (ofShow) "tv" else "movie", title, overview, posterPath, backdropPath, year?.toString() ?: "", rating)
 
         /** Episode still if there is one, else the show/movie backdrop, else its poster. */
         fun image(): String? = images().firstOrNull()
@@ -68,6 +88,7 @@ object WatchHistory {
             put("source", source); put("upNext", upNext); put("hidden", hidden)
             put("poster", posterPath ?: ""); put("backdrop", backdropPath ?: ""); put("still", stillPath ?: "")
             put("overview", overview); put("rating", rating); put("link", deepLink ?: ""); put("player", player ?: "")
+            specialId?.let { put("spId", it) }
         }
 
         fun copy(
@@ -75,9 +96,10 @@ object WatchHistory {
             progress: Float = this.progress, positionMs: Long = this.positionMs, durationMs: Long = this.durationMs,
             updatedAt: Long = this.updatedAt, source: String = this.source, upNext: Boolean = this.upNext,
             hidden: Boolean = this.hidden, stillPath: String? = this.stillPath, deepLink: String? = this.deepLink,
-            player: String? = this.player,
+            player: String? = this.player, specialId: String? = this.specialId,
         ) = Entry(type, tmdbId, title, episodeTitle, season, episode, year, imdb, progress, positionMs, durationMs,
-            updatedAt, source, upNext, hidden, posterPath, backdropPath, stillPath, overview, rating, deepLink, player)
+            updatedAt, source, upNext, hidden, posterPath, backdropPath, stillPath, overview, rating, deepLink, player,
+            specialId)
 
         companion object {
             fun fromJson(o: JSONObject) = Entry(
@@ -87,7 +109,7 @@ object WatchHistory {
                 o.optString("source"), o.optBoolean("upNext"), o.optBoolean("hidden"),
                 o.optString("poster").ifEmpty { null }, o.optString("backdrop").ifEmpty { null }, o.optString("still").ifEmpty { null },
                 o.optString("overview"), o.optDouble("rating", 0.0), o.optString("link").ifEmpty { null },
-                o.optString("player").ifEmpty { null },
+                o.optString("player").ifEmpty { null }, o.optString("spId").ifEmpty { null },
             )
         }
     }
@@ -99,6 +121,8 @@ object WatchHistory {
         val isEpisode: Boolean?,     // null = unknown (decide from TMDB)
         val season: Int = 0,
         val episode: Int = 0,
+        /** A special ([Specials]): its id, which is what the entry is kept under. Null for anything else. */
+        val specialId: String? = null,
         val episodeTitle: String? = null,
         val year: Int? = null,
         val tmdbId: Int? = null,     // movie id, or show id for episodes
@@ -118,8 +142,41 @@ object WatchHistory {
     /** Played in Dream OS itself (any source that isn't an app's package name, older history included): resumed by the play flow. */
     fun ours(e: Entry) = '.' !in e.source
 
-    /** [e] (a show's entry) is for an episode after S[season]E[episode]: the viewer has moved on past that one. */
-    fun later(e: Entry, season: Int, episode: Int) = e.isShow && (e.season > season || e.season == season && e.episode > episode)
+    /** A special's own row, beside the show's ([Entry.key]). */
+    fun specialKey(showId: Int, specialId: String) = "tv:$showId/sp:$specialId"
+
+    /**
+     * Where the viewer is in show [showId]: its episode entry, finished and removed ones included. A special
+     * has a row of its own ([specialEntry]), so it is never this, and the show's position survives a special.
+     */
+    fun seriesEntry(ctx: Context, showId: Int): Entry? = seriesEntry(recent(ctx), showId)
+
+    fun seriesEntry(history: List<Entry>, showId: Int): Entry? =
+        history.firstOrNull { it.isSeries && it.tmdbId == showId }
+
+    /** [seriesEntry] while it is on Continue Watching: what Resume and the Play button follow. */
+    fun seriesOnRow(ctx: Context, showId: Int): Entry? =
+        entries(ctx).firstOrNull { it.isSeries && it.tmdbId == showId }
+
+    /** The row for one special of [showId] ([Specials.ID]), finished and removed ones included. */
+    fun specialEntry(ctx: Context, showId: Int, specialId: String): Entry? = specialEntry(recent(ctx), showId, specialId)
+
+    fun specialEntry(history: List<Entry>, showId: Int, specialId: String): Entry? =
+        history.firstOrNull { it.isSpecial && it.tmdbId == showId && it.specialId == specialId }
+
+    /** The entry [r] plays from: a special's own row, else the movie's or the show's. */
+    fun entryFor(ctx: Context, r: PlaybackRequest): Entry? {
+        val sp = r.specialId
+        if (sp != null) return specialEntry(ctx, r.tmdbId, sp)
+        return recent(ctx).firstOrNull { it.key == (if (r.type == "episode") "tv:" else "movie:") + r.tmdbId }
+    }
+
+    /**
+     * [e] (a show's entry) is for an episode after S[season]E[episode]: the viewer has moved on past that one.
+     * Only an episode of a season has a place in that order, so this is false for a special ([Kind.SPECIAL]),
+     * which is outside it: a show is never "past" one, and one is never past an episode.
+     */
+    fun later(e: Entry, season: Int, episode: Int) = e.isSeries && (e.season > season || e.season == season && e.episode > episode)
     private const val MAX = 40
     /** Watched this far into something, it counts toward recommendations ([watchedEnough]). */
     private const val MEANINGFUL_MS = 10 * 60_000L
@@ -181,10 +238,25 @@ object WatchHistory {
 
     /** TMDB ids of shows watched recently (Dream Player or apps), newest first, including finished ones. */
     fun recentShowTmdbIds(ctx: Context): List<Int> = synchronized(lock) { load(ctx) }
-        .filter { it.isShow }.sortedByDescending { it.updatedAt }.map { it.tmdbId }.distinct()
+        .filter { it.ofShow }.sortedByDescending { it.updatedAt }.map { it.tmdbId }.distinct()
 
-    /** Takes the title off the row (it comes back if the user watches it again). */
-    fun remove(ctx: Context, key: String) = synchronized(lock) {
+    /**
+     * [Specials]: a special's row moves onto its canonical id, so a part-watched special keeps its card and its
+     * spot when TMDB catches up with the id it was first saved under. Does nothing when there is no such row.
+     */
+    internal fun adoptSpecialId(ctx: Context, showId: Int, from: String, to: String) = synchronized(lock) {
+        val list = load(ctx)
+        val i = list.indexOfFirst { it.isSpecial && it.tmdbId == showId && it.specialId == from }
+        if (i < 0) return@synchronized
+        list[i] = list[i].copy(specialId = to)
+        save(ctx, list)
+        Log.w(TAG, "watch history: a special of show $showId is now kept under $to")
+    }
+
+    /** Takes [e] off the row (it comes back if the user watches it again); a special goes on its own. */
+    fun remove(ctx: Context, e: Entry) = remove(ctx, e.key)
+
+    private fun remove(ctx: Context, key: String) = synchronized(lock) {
         val list = load(ctx)
         val i = list.indexOfFirst { it.key == key }
         if (i >= 0) {
@@ -208,13 +280,15 @@ object WatchHistory {
     internal fun mergeRemote(ctx: Context, items: List<Entry>): Int {
         fun newer(e: Entry, old: Entry?) = old == null || e.updatedAt > old.updatedAt &&
             !(old.season == e.season && old.episode == e.episode && e.updatedAt - old.updatedAt < ECHO_MS) &&
-            !later(old, e.season, e.episode)
+            // A special has no place in the order, so "the show moved past it" never applies to one.
+            (e.isSpecial || !later(old, e.season, e.episode))
         for (e in items) if (e.progress >= FINISHED) Watched.finished(ctx, e) // Trakt's finished ones count as watched
         val current = synchronized(lock) { load(ctx) }.associateBy { it.key }
         val resolved = items.filter { newer(it, current[it.key]) }.map { e ->
             when {
                 e.progress < FINISHED -> e
-                !e.isShow -> e.copy(hidden = true)
+                // Finished: a movie and a special leave the row; only a series rolls on to its next episode.
+                !e.isSeries -> e.copy(hidden = true)
                 else -> nextEpisode(ctx, e) ?: e.copy(hidden = true)
             }
         }
@@ -251,28 +325,42 @@ object WatchHistory {
     private fun recordNow(ctx: Context, s: Sighting) {
         if (!Tmdb.hasKey(ctx) || s.title.isBlank() && s.tmdbId == null && s.imdb == null) return
         val m = match(ctx, s) ?: run { Log.w(TAG, "watch history: no TMDB match for '${s.title}'"); return }
-        val isShow = m.optString("_type") == "tv"
+        val ofShow = m.optString("_type") == "tv"
+        val special = s.specialId.takeIf { ofShow }
+        val kind = when {
+            !ofShow -> Kind.MOVIE
+            special != null -> Kind.SPECIAL
+            else -> Kind.EPISODE
+        }
         val tmdbId = m.getInt("id")
         val now = System.currentTimeMillis()
-        var season = s.season
-        var episode = s.episode
+        var season = if (kind == Kind.SPECIAL) 0 else s.season
+        var episode = if (kind == Kind.SPECIAL) 0 else s.episode
         var epTitle = s.episodeTitle
         var still: String? = null
         var duration = s.durationMs
-        if (isShow && season > 0 && episode > 0) {
-            seasonEpisodes(ctx, tmdbId, season)?.firstOrNull { it.optInt("episode_number") == episode }?.let { ep ->
+        when (kind) {
+            // A special's name, still and runtime come from the catalog: TMDB often has no record of one ([Specials]).
+            Kind.SPECIAL -> Specials.byId(ctx, tmdbId, special!!)?.let { ep ->
                 if (epTitle.isNullOrBlank()) epTitle = ep.optString("name").ifEmpty { null }
                 still = ep.optString("still_path").takeIf { it.isNotEmpty() && it != "null" }
                 if (duration <= 0) duration = ep.optInt("runtime") * 60_000L
             }
-        } else if (!isShow && duration <= 0) {
-            duration = m.optInt("runtime") * 60_000L
+            Kind.EPISODE -> if (season > 0 && episode > 0) {
+                seasonEpisodes(ctx, tmdbId, season)?.firstOrNull { it.optInt("episode_number") == episode }?.let { ep ->
+                    if (epTitle.isNullOrBlank()) epTitle = ep.optString("name").ifEmpty { null }
+                    still = ep.optString("still_path").takeIf { it.isNotEmpty() && it != "null" }
+                    if (duration <= 0) duration = ep.optInt("runtime") * 60_000L
+                }
+            }
+            Kind.MOVIE -> if (duration <= 0) duration = m.optInt("runtime") * 60_000L
         }
         val progress = if (duration > 0) (s.positionMs.toFloat() / duration).coerceIn(0f, 1f) else 0f
-        val date = m.optString(if (isShow) "first_air_date" else "release_date")
+        val date = m.optString(if (ofShow) "first_air_date" else "release_date")
         val base = Entry(
-            type = if (isShow) "episode" else "movie", tmdbId = tmdbId,
-            title = m.optString(if (isShow) "name" else "title").ifEmpty { s.title },
+            type = when (kind) { Kind.MOVIE -> "movie"; Kind.EPISODE -> "episode"; Kind.SPECIAL -> "special" },
+            tmdbId = tmdbId,
+            title = m.optString(if (ofShow) "name" else "title").ifEmpty { s.title },
             episodeTitle = epTitle, season = season, episode = episode,
             year = date.take(4).toIntOrNull() ?: s.year,
             imdb = (m.optJSONObject("external_ids")?.optString("imdb_id")?.ifEmpty { null } ?: m.optString("imdb_id").ifEmpty { null })
@@ -282,13 +370,14 @@ object WatchHistory {
             posterPath = m.optString("poster_path").takeIf { it.isNotEmpty() && it != "null" },
             backdropPath = m.optString("backdrop_path").takeIf { it.isNotEmpty() && it != "null" },
             stillPath = still, overview = m.optString("overview"), rating = m.optDouble("vote_average", 0.0),
-            deepLink = s.deepLink, player = s.player,
+            deepLink = s.deepLink, player = s.player, specialId = special,
         )
         // The Watched pill (outside [lock]: the ledger reads the history the first time).
         if (progress >= FINISHED) Watched.finished(ctx, base)
         // A finished episode's Up Next is looked up before taking [lock]: it's TMDB calls, and the Home row reads the
         // history under the same lock on the main thread.
-        val rolled = if (isShow && progress >= FINISHED) nextEpisode(ctx, base) else null
+        // Only a series rolls on to a next episode; a special and a movie just leave the row when they end.
+        val rolled = if (base.isSeries && progress >= FINISHED) nextEpisode(ctx, base) else null
         synchronized(lock) {
             val list = load(ctx)
             val old = list.firstOrNull { it.key == base.key }
@@ -296,7 +385,7 @@ object WatchHistory {
             val base = if (base.player == null && old?.player != null && old.source == base.source) base.copy(player = old.player) else base
             // An older episode finishing (credits still rolling after the next one was queued, a late save) never takes
             // the show back from a later one: the Up Next card, or the later episode's own spot, stays.
-            if (old != null && isShow && !old.hidden && progress >= FINISHED && later(old, season, episode)) return
+            if (old != null && base.isSeries && !old.hidden && progress >= FINISHED && later(old, season, episode)) return
             // Ignore a peek (under 90 s) at something that isn't on the row yet.
             if ((old == null || old.hidden) && s.positionMs < 90_000 && progress < FINISHED) return
             // Same thing still playing and barely moved: skip the write (and the Home row rebuild it triggers).
@@ -314,12 +403,14 @@ object WatchHistory {
             list.removeAll { it.key == base.key }
             when {
                 progress < FINISHED -> list.add(base)
-                !isShow -> list.add(base.copy(hidden = true)) // finished movie: off the row
+                // Finished: a movie and a special go off the row; a series rolls on to its next episode.
+                !base.isSeries -> list.add(base.copy(hidden = true))
                 else -> list.add(rolled?.copy(player = base.player) ?: base.copy(hidden = true))
             }
             save(ctx, list)
             // Fire OS hides Log.d: only the add/finish transitions are worth a visible line, not every poll.
-            if (firstOrDone) Log.w(TAG, "watch history: ${base.title} S${season}E$episode ${(progress * 100).toInt()}% via ${s.source}")
+            val what = if (base.isSpecial) "a special" else "S${season}E$episode"
+            if (firstOrDone) Log.w(TAG, "watch history: ${base.title} $what ${(progress * 100).toInt()}% via ${s.source}")
         }
     }
 
@@ -327,11 +418,12 @@ object WatchHistory {
      * A show the viewer caught up on (finished its latest episode with nothing after it yet, so it left Continue
      * Watching): the episode out after it now (aired, or out early with a source), as an Up Next entry. The title page's
      * Play button jumps there ("Play S2 E1"). Null when the show is still in the row, the viewer removed it from the
-     * row (that one starts fresh at S1 E1), or nothing newer is out. Blocking (TMDB, cached).
+     * row (that one starts fresh at S1 E1), or nothing newer is out. A special is never the entry this reads
+     * ([seriesEntry]) and nothing ever follows one. Blocking (TMDB, cached).
      */
-    fun caughtUpNext(ctx: Context, key: String): Entry? {
-        val e = synchronized(lock) { load(ctx) }.firstOrNull { it.key == key } ?: return null
-        if (!e.isShow || !e.hidden || e.upNext || e.progress < FINISHED || e.season <= 0 || e.episode <= 0) return null
+    fun caughtUpNext(ctx: Context, showId: Int): Entry? {
+        val e = seriesEntry(ctx, showId) ?: return null
+        if (!e.hidden || e.upNext || e.progress < FINISHED || e.season <= 0 || e.episode <= 0) return null
         return nextEpisode(ctx, e)
     }
 

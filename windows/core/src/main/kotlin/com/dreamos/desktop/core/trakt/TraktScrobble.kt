@@ -1,5 +1,6 @@
 package com.dreamos.desktop.core.trakt
 
+import com.dreamos.desktop.core.model.EpisodeCode
 import com.dreamos.desktop.core.model.PlayRequest
 import com.dreamos.desktop.core.util.Log
 import kotlinx.serialization.json.JsonObject
@@ -55,15 +56,26 @@ internal object TraktScrobbler {
         val t = req.title
         if (t.id <= 0 || durationMs in 1 until MIN_DURATION_MS) return
         val ep = t.isShow
-        if (ep && (req.season == null || req.episode == null || req.season <= 0 || req.episode <= 0)) return
-        val key = if (ep) "tv:${t.id}:${req.season}:${req.episode}" else "movie:${t.id}"
+        // A special goes to Trakt as the episode TMDB knows, by id, or not at all ([TraktItem.specialId]); a numbered
+        // episode still needs its number.
+        val item = when {
+            !ep -> TraktItem(movie = true, tmdb = t.id)
+            req.isSpecial -> TraktItem(false, t.id, specialId = req.specialId).takeIf { it.episodeTmdb > 0 } ?: return
+            req.season == null || req.episode == null || req.season <= 0 || req.episode <= 0 -> return
+            else -> TraktItem(false, t.id, req.season, req.episode)
+        }
+        val key = item.key.let { if (ep && !req.isSpecial) "tv:${t.id}:${req.season}:${req.episode}" else it }
         var p = play
         if (p == null || p.key != key) {
             p?.let { close(it) }
             play = null
             if (action == ScrobbleAction.STOP || !Trakt.signedIn(pid)) return
-            p = Play(key, TraktItem(!ep, t.id, req.season ?: 0, req.episode ?: 0),
-                if (ep) "${t.name} S${req.season}E${req.episode}" else t.name, pid)
+            val label = when {
+                !ep -> t.name
+                req.isSpecial -> "${t.name} ${EpisodeCode.specialWords(req.episodeName)}"
+                else -> "${t.name} ${EpisodeCode.of(req.season!!, req.episode!!)}"
+            }
+            p = Play(key, item, label, pid)
             play = p
         }
         if (progress > 0) p.progress = (progress * 100).coerceIn(0.0, 100.0)

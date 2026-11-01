@@ -17,7 +17,7 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 
 /** Drawn line icons (STANDARDS 2: icons are drawn, never text characters). Monoline, round caps. */
-enum class Glyph { Back, ChevronRight, ChevronLeft, ChevronDown, Check, Plus, Play, Restart, Lock, Pencil, Speaker, Warning, Info, Open, Close, Film, Sources, Copy, Face, Bell, Trash, Person, Clock, Key, Pc, Nodes, Bolt, Grid, Snow, Sliders, People, SpeakerOff }
+enum class Glyph { Back, ChevronRight, ChevronLeft, ChevronDown, Check, Plus, Play, Restart, Lock, Pencil, Speaker, Warning, Info, Open, Close, Film, Sources, Copy, Face, Bell, Trash, Person, Clock, Key, Pc, Nodes, Bolt, Grid, Snow, Sliders, People, SpeakerOff, Pause }
 
 @Composable
 fun GlyphIcon(glyph: Glyph, color: Color, size: Dp = 20.dp, modifier: Modifier = Modifier, weight: Float = 1f) {
@@ -49,6 +49,10 @@ fun DrawScope.drawGlyph(glyph: Glyph, color: Color, weight: Float = 1f) {
             drawLine(color, Offset(0.74f * s, 0.26f * s), Offset(0.26f * s, 0.74f * s), w, StrokeCap.Round)
         }
         Glyph.Play -> drawPath(p(0.3f, 0.18f, 0.82f, 0.5f, 0.3f, 0.82f, close = true), color)
+        Glyph.Pause -> {
+            drawLine(color, Offset(0.37f * s, 0.2f * s), Offset(0.37f * s, 0.8f * s), w * 2.2f, StrokeCap.Round)
+            drawLine(color, Offset(0.63f * s, 0.2f * s), Offset(0.63f * s, 0.8f * s), w * 2.2f, StrokeCap.Round)
+        }
         Glyph.Restart -> {
             drawArc(color, 200f, 290f, false, Offset(0.2f * s, 0.2f * s), Size(0.6f * s, 0.6f * s), style = st)
             drawPath(p(0.14f, 0.26f, 0.23f, 0.45f, 0.42f, 0.37f), color, style = st)

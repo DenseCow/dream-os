@@ -73,7 +73,7 @@ extension Color {
     }
 }
 
-/// "Who's Watching?" (ProfilePicker.kt, Netflix / Disney+ look): the profiles as big faces, Add Profile, and
+/// "Who's Watching?" (ProfilePicker.kt): the profiles as big faces, Add Profile, and
 /// Edit Profiles (tapping a face then edits it). A PIN-locked profile asks for its PIN; leaving a Kids profile
 /// whose "Ask for a PIN to Leave" is on asks for a grown-up's PIN.
 struct ProfilePickerView: View {

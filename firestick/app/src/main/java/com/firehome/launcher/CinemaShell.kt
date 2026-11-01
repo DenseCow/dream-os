@@ -22,12 +22,12 @@ import android.widget.TextView
 /**
  * Dream Cinema's home screen.
  *
- *  - The top bar (Disney+, Apple TV): the Dream OS logo on the left, icon-and-label tabs in the middle
+ *  - The top bar: the Dream OS logo on the left, icon-and-label tabs in the middle
  *    (Home, Search, Movies, TV Shows, My List, Apps), the time, Settings and the profile on the right.
  *    It floats over the hero and slides away once you browse into the rows; Up at the top brings it back.
  *    A tab switches its page once focus rests on it (OK switches at once and goes into the page).
  *  - Pages ([CPage]) fill the screen edge to edge: Home and the browse pages are a full-bleed hero
- *    carousel followed by rows, Movies and TV Shows add Hulu's category chips, My List and Apps are
+ *    carousel followed by rows, Movies and TV Shows add the category chips, My List and Apps are
  *    calm grids, Search is the keyboard on the left with results on the right.
  *  - Focus glows in a travelling rainbow ([CinemaStyle.focusGlow]).
  *  - Back is always one obvious step: from a row to the top of the page, from the page to the bar, from

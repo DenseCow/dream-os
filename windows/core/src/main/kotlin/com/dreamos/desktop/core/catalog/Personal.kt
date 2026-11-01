@@ -19,9 +19,16 @@ object Personal {
         WatchHistory.entries().filter { kind == null || it.title.kind == kind }.take(CONTINUE_MAX).map { item(it) }
 
     fun item(e: HistoryEntry): CatalogItem {
-        val ep = if (e.isShow && e.season > 0) Episode(e.title.id, e.season, e.episode, e.episodeName.orEmpty(), stillPath = e.stillPath) else null
-        // "Up Next · S2 · E5" / "S2 · E5" under the card (fire-home CinemaKit.continueCard).
-        val sub = ep?.let { listOfNotNull(if (e.upNext) "Up Next" else null, "S${it.season} · E${it.number}").joinToString(" · ") }
+        // A special has its own card beside the show's: its own kind, its own name, its own progress.
+        val ep = when (e.kind) {
+            EntryKind.MOVIE -> null
+            EntryKind.SPECIAL -> Episode(e.title.id, e.season, e.episode, e.episodeName.orEmpty(), stillPath = e.stillPath,
+                kind = EpisodeKind.SPECIAL, specialId = e.specialId)
+            EntryKind.SERIES -> if (e.season > 0) Episode(e.title.id, e.season, e.episode, e.episodeName.orEmpty(), stillPath = e.stillPath) else null
+        }
+        // "Up Next · S2 · E5" / "S2 · E5" under the card, a special's own title for a special.
+        val sub = ep?.let { listOfNotNull(if (e.upNext) "Up Next" else null,
+            EpisodeCode.label(it.kind, it.season, it.number, it.name, " · ")).joinToString(" · ") }
         return CatalogItem(e.title, episode = ep, progress = if (e.upNext) 0.0 else e.progress, subtitle = sub,
             badge = if (e.upNext) "UP NEXT" else null, timeLeft = if (e.upNext) null else timeLeft(e.positionMs, e.durationMs))
     }

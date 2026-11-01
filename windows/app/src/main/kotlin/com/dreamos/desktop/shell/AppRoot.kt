@@ -243,7 +243,8 @@ class PagesBridge(private val state: ShellState) : PagesNav {
     override fun openSettings() = state.open(Route.Settings())
     override fun openUpdate() = state.open(Route.Settings(SettingsGroup.About, SettingsRoute.About))
     override fun play(request: PagesPlay) =
-        state.playAt(Targets.titleOf(request.title.tmdbId, request.title.isShow, request.title.name), request.season, request.episode, null, request.fromStart)
+        state.playAt(Targets.titleOf(request.title.tmdbId, request.title.isShow, request.title.name), request.season, request.episode, null,
+            request.fromStart, request.specialId)
     override fun playTrailer(title: TitleRef, videoKey: String) {
         state.playTrailer(Targets.titleOf(title.tmdbId, title.isShow, title.name), videoKey.ifBlank { null })
     }

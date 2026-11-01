@@ -70,7 +70,7 @@ class GenreSpec(
         )
 
         /**
-         * Browse's Popular Categories (Netflix, Hulu and Apple TV style): moods, formats and themes beyond the
+         * Browse's Popular Categories: moods, formats and themes beyond the
          * genres, each with movies and shows where TMDB has both. A seasonal one (Halloween, Holiday) leads
          * while it's in season and is hidden the rest of the year. Each was checked against TMDB to fill its
          * rows (Award Winners was left out: TMDB has no awards data, and its award keywords bring a handful).

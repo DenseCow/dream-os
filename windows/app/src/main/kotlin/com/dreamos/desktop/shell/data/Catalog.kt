@@ -5,6 +5,7 @@ import com.dreamos.desktop.core.model.DiscoverCategory
 import com.dreamos.desktop.core.model.DiscoverFilter
 import com.dreamos.desktop.core.model.DiscoverPage
 import com.dreamos.desktop.core.model.Genre
+import com.dreamos.desktop.core.model.HistoryEntry
 import com.dreamos.desktop.core.model.HubTile
 import com.dreamos.desktop.core.model.MediaKind
 import com.dreamos.desktop.core.model.SearchResults
@@ -51,9 +52,16 @@ data class CardItem(
     /** The episode's air day ("yyyy-MM-dd") and whether it is still to come (New Episodes for You). */
     val airDate: String? = null,
     val upcoming: Boolean = false,
+    /** This card plays one of the show's specials (its source id), which has its own card and its own entry. */
+    val specialId: String? = null,
+    /** The episode's or special's own name, for a menu that names what it plays. */
+    val episodeName: String? = null,
 ) {
     /** A New Episodes for You card: an episode, not one being watched (Continue Watching's carry progress). */
-    val newEpisode: Boolean get() = season != null && episode != null && progress == null && !upNext
+    val newEpisode: Boolean get() = (season != null && episode != null || specialId != null) && progress == null && !upNext
+
+    /** What identifies this card on its row: a special's own card sits beside the show's, so it needs its own. */
+    val cardKey: String get() = specialId?.let { HistoryEntry.specialKey(title.key, it) } ?: title.key
 }
 
 /**
@@ -64,7 +72,7 @@ object Covers {
     @Volatile var known: (Title) -> String? = { null }
 
     /** [c]'s cover: its own key art, else one known now; never for a card that plays an episode. */
-    fun of(c: CardItem): String? = c.keyArt ?: if (c.still == null && c.episode == null) known(c.title) else null
+    fun of(c: CardItem): String? = c.keyArt ?: if (c.still == null && c.episode == null && c.specialId == null) known(c.title) else null
 }
 
 /** How a row draws its cards. */
@@ -153,7 +161,8 @@ interface Catalog {
 
     val myList: StateFlow<List<Title>>
     fun toggleMyList(t: Title)
-    fun removeContinue(t: Title)
+    /** [specialId]: the card is one of the show's specials, so its own entry goes and the show's stays. */
+    fun removeContinue(t: Title, specialId: String = "")
 
     /** Shown rows may be stale (profile, history, My List, settings, a new day): pages reload their rows. */
     val changes: Flow<Unit>

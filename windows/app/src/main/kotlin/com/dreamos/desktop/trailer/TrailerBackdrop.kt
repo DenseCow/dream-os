@@ -75,7 +75,9 @@ enum class BackgroundTrailers(val label: String) {
  *   loop: after an end the next one waits until the viewer moves and the page rests again.
  * - Sound per profile ([BackgroundTrailers]): On with Sound fades up to 80% over 1.8 s; On, Muted never opens an
  *   audio device.
- * - [stopNow] (Play, Trailer, an episode, the page leaving) stops the sound and lets go of the decoder at once.
+ * - [stopNow] (Play, an episode, Choose a Source, the page leaving) stops the sound and lets go of the decoder at
+ *   once. Trailer is the one exception: while this trailer is on screen the button takes the live decoder away
+ *   ([promote]) and it becomes the full-screen picture, so nothing is loaded again.
  */
 @Stable
 class TrailerBackdropState internal constructor(private val scope: CoroutineScope) {
@@ -87,6 +89,8 @@ class TrailerBackdropState internal constructor(private val scope: CoroutineScop
     private var released = false
     /** A trailer ended (or failed) by itself: the next one waits for the viewer to move. */
     private var waitForUser = false
+    /** The playing trailer was handed to the full-screen surface: the hero keeps still until it comes back. */
+    private var promoted = false
 
     /**
      * IDLE: nothing. ARMED: the rest is running; the trailer is looked up, opened hidden and run to its first real
@@ -107,12 +111,16 @@ class TrailerBackdropState internal constructor(private val scope: CoroutineScop
     private var hideJob: Job? = null
     private var volumeJob: Job? = null
 
-    private var video: BackdropVideo? = null
+    private var video: LiveVideo? = null
     private var trailer: Trailer? = null
+    /** Which video the open decoder is playing (the Trailer button's spot, and the hand-over to full screen). */
+    private var videoKey: String? = null
     private var sources: List<TrailerSource> = emptyList()
     private var sourceAt = 0
     private var mode = BackgroundTrailers.MUTED
     private var startedAt = 0L
+    /** The zoom that took this video's baked-in letterbox bars away (1 when it has none). */
+    private var zoom = 1f
     @Volatile private var firstFrameAt = 0L
     /** The picture is on screen (from the reveal to the teardown): new frames repaint the canvas. */
     @Volatile private var shown = false
@@ -185,11 +193,98 @@ class TrailerBackdropState internal constructor(private val scope: CoroutineScop
     }
 
     /**
+     * The Trailer button, when the hero is already playing [title]'s trailer on screen: the live decoder is handed
+     * over for the full-screen surface to take, picture and sound running, instead of a second one being opened on
+     * the same video (owner, 2026-10-31). Null when there is nothing to promote (Background Trailers off, still
+     * resolving, waiting for the rest, stopped, or another title): the caller then starts the trailer as before.
+     *
+     * The hero lets go of the decoder here without destroying it and keeps still until [LiveTrailer.back], which
+     * hands the same instance back, still playing, when the viewer closes full screen (owner, 2026-10-31: coming out
+     * must carry on the way going in did).
+     */
+    internal fun promote(title: TrailerRef): LiveTrailer? {
+        if (released || promoted) return null
+        val v = video ?: return null
+        val r = ref ?: return null
+        val key = videoKey ?: return null
+        if (phase != Phase.PLAYING || !shown || r.key != title.key) return null
+        // Where it is now, in case the full-screen surface can't carry on: the button's next try continues from here.
+        TrailerEngine.rememberSpot(r, key, v.positionMs)
+        val handed = LiveTrailer(v, r, key, muted = !audioOpen, back = ::handedBack)
+        promoted = true
+        videoKeyHandedOut = key
+        Log.i(TAG, "hero: ${r.name.ifEmpty { r.key }} ($key) handed to full screen at ${v.positionMs} ms")
+        // Everything the teardown does, except letting go of the decoder: it is the surface's now.
+        letGo(destroy = false)
+        return handed
+    }
+
+    /**
+     * The full-screen trailer is over. [still] is the decoder, still playing: the hero takes it back and carries on
+     * behind the picture where it is, at the sound its own setting asks for (full screen raised it; the hero is not a
+     * deliberate watch, so it goes back to muted unless the viewer chose sound). Nothing live to take ([still] null,
+     * or this page is gone): the hero keeps its spot and waits for the viewer to move, as after any end.
+     */
+    private fun handedBack(still: LiveVideo?, soundOpen: Boolean) {
+        promoted = false
+        if (still == null) { waitForUser = true; evaluate(); return }
+        val key = videoKeyHandedOut
+        if (released || ref == null || key == null || !canPlay() || BackgroundTrailers.current() == BackgroundTrailers.OFF) {
+            // Nobody can play it here any more (the page left, the window went away, trailers were turned off).
+            still.destroy()
+            waitForUser = true
+            evaluate()
+            return
+        }
+        adopt(still, key, soundOpen)
+    }
+
+    /** Which video went to full screen, so the hero knows what it is taking back. */
+    private var videoKeyHandedOut: String? = null
+
+    /**
+     * The promotion in reverse: the same decoder, still playing, becomes the hero's picture again. Nothing is loaded,
+     * no second instance is opened, and from here it ends, stops and is let go of exactly as a hero trailer always is.
+     * The page comes back lit (the viewer just asked for it); 4 s of stillness fades it away again.
+     */
+    private fun adopt(v: LiveVideo, key: String, soundOpen: Boolean) {
+        val g = ++gen
+        video = v
+        videoKey = key
+        videoKeyHandedOut = null
+        audioOpen = soundOpen
+        shown = true
+        prerolled = false
+        phase = Phase.PLAYING
+        playing = true
+        startedAt = System.currentTimeMillis()
+        firstFrameAt = startedAt
+        v.listen(
+            onFrame = { n -> if (shown) frameTick = n },
+            onEvent = { e -> scope.launch { onVideoEvent(g, e) } },
+        )
+        v.cover(zoom)
+        v.size(sizePx.width, sizePx.height)
+        // Silent first, whatever full screen was playing at: the hero's own level comes back up from there.
+        volumeJob?.cancel()
+        volume = 0
+        v.setVolume(0)
+        soundOn = wantsSound()
+        if (soundOn) fadeVolume(VOLUME, VOLUME_IN_MS)
+        scope.launch { videoAlpha.snapTo(1f) }
+        immerse(false)
+        rehide()
+        watchJob?.cancel()
+        watchJob = scope.launch { watch(g) }
+        Log.i(TAG, "hero: took the trailer back at ${v.positionMs} ms, ${if (soundOn) "sound" else "muted"}")
+    }
+
+    /**
      * The viewer moved the mouse, scrolled or pressed a key ([press]: a click or key). Returns true when that event
      * should go no further: a click or key while the trailer has the screen only brings the page back.
      */
     fun input(press: Boolean): Boolean {
-        if (released) return false
+        if (released || promoted) return false
         if (phase == Phase.PLAYING) {
             val consumed = press && immersive
             if (immersive) immerse(false)
@@ -228,14 +323,14 @@ class TrailerBackdropState internal constructor(private val scope: CoroutineScop
         hideJob?.cancel()
     }
 
-    private fun wanted() = ref != null && resting && visible && !waitForUser &&
+    private fun wanted() = ref != null && resting && visible && !waitForUser && !promoted &&
         BackgroundTrailers.current() != BackgroundTrailers.OFF && BackdropVideo.available
 
     /** Dream OS in front and focused, the hero laid out, Dream Player not up. */
     private fun canPlay() = !released && focused && sizePx.width > 0 && !DreamPlayer.isOpen
 
     private fun evaluate() {
-        if (released) return
+        if (released || promoted) return
         if (!wanted()) {
             if (phase == Phase.ARMED) disarm()
             else if (phase == Phase.STARTING || phase == Phase.PLAYING) stop(Stop.SOFT)
@@ -332,6 +427,8 @@ class TrailerBackdropState internal constructor(private val scope: CoroutineScop
             return
         }
         video = v
+        videoKey = t.videoKey
+        zoom = 1f
         audioOpen = wantsSound()
         soundOn = wantsSound()
         v.size(sizePx.width, sizePx.height)
@@ -392,7 +489,7 @@ class TrailerBackdropState internal constructor(private val scope: CoroutineScop
             v.probeFrames(null)
             scope.launch {
                 if (g != gen || !(phase == Phase.ARMED || phase == Phase.STARTING)) return@launch
-                if (z > 1.01f) { v.setZoom(z); delay(160) }
+                if (z > 1.01f) { zoom = z; v.setZoom(z); delay(160) }
                 pictureUp(g)
             }
         }
@@ -531,12 +628,19 @@ class TrailerBackdropState internal constructor(private val scope: CoroutineScop
         }
     }
 
-    private fun teardown() {
+    private fun teardown() = letGo(destroy = true)
+
+    /**
+     * Back to IDLE with nothing of the trailer left in the page. [destroy] false only for [promote]: the decoder
+     * plays on, under the full-screen surface, which lets go of it when it is done.
+     */
+    private fun letGo(destroy: Boolean) {
         volumeJob?.cancel()
         volume = 0
         audioOpen = false
-        video?.destroy()
+        if (destroy) video?.destroy()
         video = null
+        videoKey = null
         prerolled = false
         shown = false
         phase = Phase.IDLE
@@ -566,6 +670,29 @@ class TrailerBackdropState internal constructor(private val scope: CoroutineScop
     }
 
     internal fun <T> paint(draw: (androidx.compose.ui.graphics.ImageBitmap?) -> T): T? = video?.withFrame(draw)
+
+    // ---- for the checks (TrailerPromoteTest, TrailerCloseLoopTest) ----
+
+    /** The hero as it is while [v] plays [videoKey] of [ref] on screen, without a page or a lookup. */
+    internal fun playingForChecks(ref: TrailerRef, videoKey: String, v: LiveVideo, soundOpen: Boolean = false) {
+        sizePx = IntSize(1280, 720)
+        this.ref = ref
+        this.videoKey = videoKey
+        video = v
+        audioOpen = soundOpen
+        resting = true
+        visible = true
+        waitForUser = false
+        shown = true
+        phase = Phase.PLAYING
+        playing = true
+    }
+
+    /** True while the page holds a decoder of its own. */
+    internal val holdsVideoForChecks: Boolean get() = video != null
+
+    /** True while the hero keeps still (a trailer ended, something is about to play, or one is up full screen). */
+    internal val stillForChecks: Boolean get() = waitForUser || promoted
 
     companion object {
         private const val SOUND_TOGGLE_MS = 900
@@ -652,7 +779,7 @@ fun Modifier.trailerWatch(state: TrailerBackdropState): Modifier = this
 /** For the page's UI over the hero (scrims, title, buttons, the top bar): fades away while the trailer has the screen. */
 fun Modifier.trailerUi(state: TrailerBackdropState): Modifier = graphicsLayer { alpha = state.uiAlpha.value }
 
-private val NoPointer: PointerIcon by lazy {
+internal val NoPointer: PointerIcon by lazy {
     // No custom cursors without a display (offscreen checks run headless).
     if (java.awt.GraphicsEnvironment.isHeadless()) return@lazy PointerIcon.Default
     val img = java.awt.image.BufferedImage(1, 1, java.awt.image.BufferedImage.TYPE_INT_ARGB)

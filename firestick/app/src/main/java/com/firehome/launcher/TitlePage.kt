@@ -33,6 +33,11 @@ interface TitlePage {
         fun nextEpisode(t: Title): WatchHistory.Entry?     // in-progress/up-next episode, or null
         fun watch(t: Title, pick: Boolean)                 // movie: plays; show: next episode, or asks (pick=true always asks)
         fun playEpisode(t: Title, season: Int, episode: Int)
+        /**
+         * Plays one special of [t], as the catalog lists it ([Specials]): the whole entry goes over, so what
+         * identifies a special is never hand-listed field by field ([PlayFlow.special]).
+         */
+        fun playSpecial(t: Title, special: org.json.JSONObject)
         fun resume(e: WatchHistory.Entry)                   // as Continue Watching: its player, from the saved spot
         fun openOnService(svc: Tmdb.Service, t: Title)
         fun playTrailer(t: Title, startMs: Long, videoKey: String?) // full screen in Dream Player, from that spot when it's that video

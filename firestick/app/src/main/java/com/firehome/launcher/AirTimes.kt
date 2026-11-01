@@ -24,7 +24,8 @@ import java.util.concurrent.ConcurrentHashMap
  * calls per 10 s; calls here are at least [GAP_MS] apart. Nothing is shown when TVmaze has nothing: the
  * TMDB date stays the rule then. An episode TVmaze lists without an `airtime` has only a day (its airstamp
  * is a noon stand-in), so it gets no exact instant either. [episodes] gives a show's whole list (the title
- * page's upcoming episodes, [Upcoming]).
+ * page's upcoming episodes, [Upcoming]) and [specials] the specials beside it ([Specials]); both come out of
+ * the one call, which asks for specials too (without `?specials=1` TVmaze leaves them out entirely).
  */
 object AirTimes {
     private const val TAG = "FireHome"
@@ -35,8 +36,11 @@ object AirTimes {
     /** Full episode lists kept in memory (a long-running show's is ~100 KB): the shows looked at most recently. */
     private const val MAX_SCHEDULES = 24
 
-    /** One episode's exact instant (epoch ms). */
-    class Air(val season: Int, val number: Int, val at: Long)
+    /**
+     * One episode's exact instant (epoch ms). [special]: a special, which TVmaze gives no number ([number] is
+     * then 0 and [season] is the season it sits beside, not its own; [Specials] numbers it S00E[n]).
+     */
+    class Air(val season: Int, val number: Int, val at: Long, val special: Boolean = false)
 
     /** A show's last aired and next episode by TVmaze. */
     class Info(val prev: Air?, val next: Air?, val fetchedAt: Long)
@@ -47,7 +51,15 @@ object AirTimes {
      */
     class Episode(val season: Int, val number: Int, val name: String, val date: String, val at: Long)
 
-    private class Schedule(val eps: List<Episode>, val fetchedAt: Long)
+    /**
+     * One special from the same list ([Specials] turns it into an episode-shaped object): TVmaze gives specials
+     * no number, and its `season` is the season the special sits beside, kept here as [parentSeason]. [id] is
+     * TVmaze's own episode id, which identifies a special TMDB has no record of.
+     */
+    class Special(val id: Int, val parentSeason: Int, val name: String, val date: String, val at: Long,
+                  val runtime: Int, val summary: String)
+
+    private class Schedule(val eps: List<Episode>, val specials: List<Special>, val fetchedAt: Long)
 
     private val memory = ConcurrentHashMap<Int, Info>()
     private val schedules = ConcurrentHashMap<Int, Schedule>()
@@ -59,27 +71,46 @@ object AirTimes {
     private fun lockFor(tmdbId: Int): Any = showLocks.getOrPut(tmdbId) { Any() }
 
     /**
-     * Every regular episode of TMDB show [tmdbId] (specials left out) with its air day and, when TVmaze has
-     * one, its exact instant; null when TVmaze doesn't have the show. One call per show, kept [INFO_TTL].
-     * Blocking; cached.
+     * Every regular episode of TMDB show [tmdbId] with its air day and, when TVmaze has one, its exact
+     * instant; null when TVmaze doesn't have the show. Specials are listed on their own ([specials]): they
+     * have no episode number, so they never belong in a season's numbered list. One call per show, kept
+     * [INFO_TTL]. Blocking; cached.
      */
-    fun episodes(ctx: Context, tmdbId: Int): List<Episode>? {
-        schedules[tmdbId]?.takeIf { System.currentTimeMillis() - it.fetchedAt < INFO_TTL }?.let { return it.eps }
+    fun episodes(ctx: Context, tmdbId: Int): List<Episode>? = schedule(ctx, tmdbId)?.eps
+
+    /**
+     * Every special TVmaze lists for TMDB show [tmdbId], in its order (air order), or null when TVmaze doesn't
+     * have the show. Shares [episodes]' one call and cache. Blocking.
+     */
+    fun specials(ctx: Context, tmdbId: Int): List<Special>? = schedule(ctx, tmdbId)?.specials
+
+    private fun schedule(ctx: Context, tmdbId: Int): Schedule? {
+        schedules[tmdbId]?.takeIf { System.currentTimeMillis() - it.fetchedAt < INFO_TTL }?.let { return it }
         synchronized(lockFor(tmdbId)) {
-            schedules[tmdbId]?.takeIf { System.currentTimeMillis() - it.fetchedAt < INFO_TTL }?.let { return it.eps }
+            schedules[tmdbId]?.takeIf { System.currentTimeMillis() - it.fetchedAt < INFO_TTL }?.let { return it }
             val app = ctx.applicationContext
             val maze = mazeId(app, tmdbId, null, null) ?: return null
-            val a = tryFetch("$API/shows/$maze/episodes")?.let { try { JSONArray(it) } catch (e: Exception) { null } }
-                ?: return schedules[tmdbId]?.eps
-            val eps = (0 until a.length()).mapNotNull { i ->
-                val o = a.optJSONObject(i) ?: return@mapNotNull null
-                val n = o.optInt("number", -1).takeIf { it > 0 } ?: return@mapNotNull null
-                Episode(o.optInt("season"), n, o.optString("name").takeIf { it != "null" }.orEmpty(),
-                    o.optString("airdate").takeIf { it.length == 10 }.orEmpty(), exact(o))
+            // `specials=1` or TVmaze leaves them out of the list altogether.
+            val a = tryFetch("$API/shows/$maze/episodes?specials=1")?.let { try { JSONArray(it) } catch (e: Exception) { null } }
+                ?: return schedules[tmdbId]
+            val eps = ArrayList<Episode>(a.length())
+            val specials = ArrayList<Special>()
+            for (i in 0 until a.length()) {
+                val o = a.optJSONObject(i) ?: continue
+                val date = o.optString("airdate").takeIf { it.length == 10 }.orEmpty()
+                val name = o.optString("name").takeIf { it != "null" }.orEmpty()
+                // A special has no number of its own; its "season" is the season it sits beside.
+                if (o.isNull("number") || o.optInt("number", -1) <= 0) {
+                    specials += Special(o.optInt("id"), o.optInt("season"), name, date, exact(o), o.optInt("runtime"),
+                        o.optString("summary").takeIf { it != "null" }.orEmpty())
+                } else {
+                    eps += Episode(o.optInt("season"), o.optInt("number"), name, date, exact(o))
+                }
             }
-            schedules[tmdbId] = Schedule(eps, System.currentTimeMillis())
+            val s = Schedule(eps, specials, System.currentTimeMillis())
+            schedules[tmdbId] = s
             trimSchedules()
-            return eps
+            return s
         }
     }
 
@@ -109,7 +140,10 @@ object AirTimes {
     private fun air(o: JSONObject?): Air? {
         if (o == null) return null
         val at = exact(o).takeIf { it > 0 } ?: return null
-        val n = o.optInt("number", -1).takeIf { it >= 0 } ?: return null
+        // A special comes through as the show's previous or next episode with a null number (a JSON null reads
+        // as -1): it is kept, marked, with the season it sits beside ([Specials] gives it its S00E[n] place).
+        if (o.isNull("number")) return Air(o.optInt("season"), 0, at, special = true)
+        val n = o.optInt("number", -1).takeIf { it > 0 } ?: return null
         return Air(o.optInt("season"), n, at)
     }
 

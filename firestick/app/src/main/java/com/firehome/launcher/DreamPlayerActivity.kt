@@ -4,6 +4,7 @@ import android.app.Activity
 import android.app.ActivityManager
 import android.content.Context
 import android.content.Intent
+import android.graphics.Bitmap
 import android.graphics.Color
 import android.media.MediaMetadata
 import android.media.session.MediaSession
@@ -22,7 +23,10 @@ import android.view.View
 import android.view.ViewGroup.LayoutParams.MATCH_PARENT
 import android.view.WindowManager
 import android.widget.FrameLayout
+import android.widget.ImageView
+import androidx.media3.common.Player
 import androidx.media3.common.text.Cue
+import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.CaptionStyleCompat
 import androidx.media3.ui.SubtitleView
@@ -94,6 +98,10 @@ class DreamPlayerActivity : Activity(), PlayerHost {
         private const val SILENT_TRIES = 3
         /** No first frame this long after a load while another link is ready: that one plays instead. */
         private const val START_WATCH_MS = 12_000L
+        /** The grab handed over with a trailer dissolves into the live picture this quickly. */
+        private const val STILL_FADE_MS = 220L
+        /** Less of a trailer than this left: it is not worth giving back, it would end behind the hero at once. */
+        private const val TRAILER_BACK_MIN_MS = 2_000L
         /** Sound this long with no picture counts as a failed source (a video track no decoder here can start). */
         private const val NO_PICTURE_MS = 12_000L
         private const val DAMAGED_TEXT = "This file is damaged or incomplete. Try Again plays another copy."
@@ -201,6 +209,8 @@ class DreamPlayerActivity : Activity(), PlayerHost {
         private set
     private lateinit var videoFrame: AspectRatioFrameLayout
     private lateinit var surface: SurfaceView
+    /** Everything this screen draws, in one frame: the video, the subtitles, the overlay and the dialogs. */
+    private lateinit var contentRoot: FrameLayout
 
     private lateinit var overlay: PlayerOverlay
     private lateinit var skip: SkipController
@@ -251,6 +261,10 @@ class DreamPlayerActivity : Activity(), PlayerHost {
     private var trailerGen = 0
     /** Skip markers and post-play were started (not for trailers). */
     private var fullComponents = false
+    /** The grab that came with a handed-over trailer, held until this screen's first frame ([settleHandoverStill]). */
+    private var handoverStill: ImageView? = null
+    /** This screen is playing a trailer the hero handed over, so closing gives that same player back. */
+    private var adopted = false
     private val trailerTimeout = Runnable {
         if (trailerMode && !firstFrame && !isFinishing) {
             Log.w(TAG, "dream player: trailer gave no picture in ${TRAILER_TIMEOUT_MS / 1000} s")
@@ -273,6 +287,7 @@ class DreamPlayerActivity : Activity(), PlayerHost {
             View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY or View.SYSTEM_UI_FLAG_LAYOUT_STABLE
 
         val root = FrameLayout(this).apply { setBackgroundColor(Color.BLACK) }
+        contentRoot = root
         surface = SurfaceView(this)
         videoFrame = AspectRatioFrameLayout(this).apply {
             resizeMode = AspectRatioFrameLayout.RESIZE_MODE_FIT
@@ -304,6 +319,7 @@ class DreamPlayerActivity : Activity(), PlayerHost {
                 handler.removeCallbacks(startWatch)
                 curtainHiddenAt = SystemClock.uptimeMillis()
                 curtain.hide()
+                settleHandoverStill()
                 dreamSubs.onFirstFrame()
                 // How long this service's stream took to start (Dream Core asks a clearly faster one first next time).
                 if (!trailerMode) request?.let { r -> rawUrl?.let { u -> try { NativeResolver.firstFrame(this, r, u) } catch (e: Exception) {} } }
@@ -499,10 +515,59 @@ class DreamPlayerActivity : Activity(), PlayerHost {
         val req = PlaybackRequest(title = name, type = "movie", tmdbId = 0, backdrop = t.backdrop("w1280"),
             startMs = i.getLongExtra(EXTRA_T_START, 0L).coerceAtLeast(0L), autoplayNext = false, trailer = true)
         request = req
+        // The hero handed its playing trailer over: this screen takes that very player, so there is no lookup
+        // and no curtain. The picture it was showing waits on screen until this screen's surface has a frame.
+        val handed = HeroTrailer.takeHandover()
+        if (handed != null) {
+            trailerPlaying = handed.videoKey
+            trailerVideo = null
+            handed.still?.let { showHandoverStill(it) }
+            updateMetadata()
+            updatePlaybackState()
+            handler.removeCallbacks(trailerTimeout)
+            handler.postDelayed(trailerTimeout, TRAILER_TIMEOUT_MS)
+            // What it is playing, so Try Again and a return from the screensaver can prepare it like any stream.
+            val src = try { TrailerEngine.cached(t)?.takeIf { it.videoKey == handed.videoKey }?.let { trailerSource(it) } } catch (e: Exception) { null }
+            if (src == null) Log.w(TAG, "dream player: the handed-over trailer's links are no longer cached")
+            startSession(req, src?.url.orEmpty(), src ?: ExoEngine.Source(""), 0L, adopt = handed.player)
+            return
+        }
         curtain.show(req)
         updateMetadata()
         updatePlaybackState()
         resolveTrailer(req)
+    }
+
+    /** The streams of a resolved trailer as a source: a small manifest in the cache folder, or a muxed link. */
+    private fun trailerSource(r: TrailerEngine.Resolved): ExoEngine.Source = when (val plan = r.plan) {
+        is TrailerPick.Plan.Dash -> java.io.File(cacheDir, "trailer.mpd").let { f ->
+            f.writeText(plan.manifest(1080)); ExoEngine.Source(f.absolutePath, emptyMap(), "application/dash+xml")
+        }
+        is TrailerPick.Plan.Hls -> java.io.File(cacheDir, "trailer.m3u8").let { f ->
+            f.writeText(plan.master); ExoEngine.Source(f.absolutePath, emptyMap(), "application/x-mpegURL")
+        }
+        is TrailerPick.Plan.Progressive -> ExoEngine.Source(plan.url, emptyMap(), "video/mp4")
+    }
+
+    /** The picture that came with a handed-over player, over the video until this screen's first frame lands. */
+    private fun showHandoverStill(b: Bitmap) {
+        settleHandoverStill()
+        val iv = ImageView(this).apply { scaleType = ImageView.ScaleType.CENTER_CROP; setImageBitmap(b) }
+        handoverStill = iv
+        contentRoot.addView(iv, 1, FrameLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT))
+    }
+
+    /** The live picture is on screen (at its true frame now): the grab dissolves into it. */
+    private fun settleHandoverStill() {
+        val iv = handoverStill ?: return
+        handoverStill = null
+        iv.animate().cancel()
+        iv.animate().alpha(0f).setStartDelay(0).setDuration(STILL_FADE_MS).setInterpolator(Ui.SETTLE).withEndAction {
+            val bmp = (iv.drawable as? android.graphics.drawable.BitmapDrawable)?.bitmap
+            iv.setImageDrawable(null)
+            contentRoot.removeView(iv)
+            bmp?.recycle()
+        }.start()
     }
 
     private fun resolveTrailer(req: PlaybackRequest, retry: Boolean = false) {
@@ -522,15 +587,7 @@ class DreamPlayerActivity : Activity(), PlayerHost {
             // Normally one small DASH manifest (1080p AVC + AAC, 720p/480p for slow networks) in the cache folder;
             // else the HLS master (H.264 variants only, also a local file) or a muxed MP4's link.
             val src = try {
-                when (val plan = r.plan) {
-                    is TrailerPick.Plan.Dash -> java.io.File(cacheDir, "trailer.mpd").let { f ->
-                        f.writeText(plan.manifest(1080)); ExoEngine.Source(f.absolutePath, emptyMap(), "application/dash+xml")
-                    }
-                    is TrailerPick.Plan.Hls -> java.io.File(cacheDir, "trailer.m3u8").let { f ->
-                        f.writeText(plan.master); ExoEngine.Source(f.absolutePath, emptyMap(), "application/x-mpegURL")
-                    }
-                    is TrailerPick.Plan.Progressive -> ExoEngine.Source(plan.url, emptyMap(), "video/mp4")
-                }
+                trailerSource(r)
             } catch (e: Exception) {
                 handler.removeCallbacks(trailerTimeout)
                 curtain.showError("trailer manifest: $e")
@@ -553,6 +610,7 @@ class DreamPlayerActivity : Activity(), PlayerHost {
         val key = trailerPlaying ?: return false // still looking up: the lookup itself already tried the others
         TrailerEngine.failed(t, key, why)
         trailerPlaying = null
+        settleHandoverStill() // the lookup takes over: nothing of the handed-over picture stays on screen
         if (trailerAdvances >= MAX_TRAILER_ADVANCES) return false
         trailerAdvances++
         val req = request?.takeIf { trailerMode } ?: return false
@@ -570,6 +628,7 @@ class DreamPlayerActivity : Activity(), PlayerHost {
         val req = request?.takeIf { trailerMode } ?: return close()
         trailerTitle?.let { TrailerEngine.forget(it) }
         trailerAdvances = 0
+        settleHandoverStill()
         stopComponents()
         if (exo.hasSource) exo.clear()
         val fresh = req.copy(startMs = 0)
@@ -579,8 +638,10 @@ class DreamPlayerActivity : Activity(), PlayerHost {
     }
 
     private fun endTrailerMode() {
+        settleHandoverStill()
         if (!trailerMode) return
         trailerMode = false
+        adopted = false
         trailerTitle = null
         trailerVideo = null
         trailerPlaying = null
@@ -590,7 +651,8 @@ class DreamPlayerActivity : Activity(), PlayerHost {
 
     // ---- session ----
 
-    private fun startSession(req: PlaybackRequest?, raw: String, src: ExoEngine.Source, startMs: Long) {
+    /** [adopt]: a player already playing what [src] holds (a trailer handed over), taken instead of loaded. */
+    private fun startSession(req: PlaybackRequest?, raw: String, src: ExoEngine.Source, startMs: Long, adopt: ExoPlayer? = null) {
         val wasWaiting = waiting
         stopComponents()
         waiting = false
@@ -607,11 +669,10 @@ class DreamPlayerActivity : Activity(), PlayerHost {
         noPictureReported = false
         // On the row for this title, and not for a later episode: an older episode started by mistake (a stale card, a
         // misplaced press) must play 90 s for real before it takes the show back from where the viewer is.
-        onRow = req != null && req.tmdbId > 0 && (if (req.type == "episode") "tv:" else "movie:").let { p ->
-            WatchHistory.recent(this).any { e ->
-                e.key == p + req.tmdbId && !e.hidden &&
-                    (req.type != "episode" || !WatchHistory.later(e, req.season ?: 0, req.episode ?: 0))
-            }
+        // A special has its own row, so [WatchHistory.entryFor] finds that one, not the show's position.
+        onRow = req != null && req.tmdbId > 0 && WatchHistory.entryFor(this, req).let { e ->
+            e != null && !e.hidden &&
+                (req.type != "episode" || !WatchHistory.later(e, req.season ?: 0, req.episode ?: 0))
         }
         creditsStartMs = null
         markersAsked = false
@@ -620,13 +681,19 @@ class DreamPlayerActivity : Activity(), PlayerHost {
         handler.removeCallbacks(startWatch)
         if (!trailerMode && req != null && req.tmdbId > 0) handler.postDelayed(startWatch, START_WATCH_MS)
         // Not waiting (a retry after an error, say): a calm curtain until the first frame.
-        // A trailer's curtain is already up from the lookup.
-        if (trailerMode) { if (!curtain.isShowing) curtain.show(req) }
-        else if (!wasWaiting || !curtain.isShowing) curtain.show(req)
-        Log.w(TAG, "dream player: start '${req?.title ?: "unknown"}'${if (trailerMode) " (trailer)" else ""} at ${startMs / 1000}s, ${src.headers.size} headers, ${src.subtitles.size} subs")
+        // A trailer's curtain is already up from the lookup; a trailer handed over needs none at all.
+        if (adopt == null) {
+            if (trailerMode) { if (!curtain.isShowing) curtain.show(req) }
+            else if (!wasWaiting || !curtain.isShowing) curtain.show(req)
+        }
+        Log.w(TAG, "dream player: ${if (adopt != null) "taking over" else "start"} '${req?.title ?: "unknown"}'" +
+            "${if (trailerMode) " (trailer)" else ""} at ${startMs / 1000}s, ${src.headers.size} headers, ${src.subtitles.size} subs")
         // Dream Subtitles fetched while the stream was resolved go into the media item now (no re-prepare later).
         val dl = dreamSubs.begin(req, raw, src.subtitles.isNotEmpty())
-        exo.load(if (dl.isEmpty()) src else ExoEngine.Source(src.url, src.headers, src.mimeHint, src.subtitles + dl), startMs)
+        // A handed-over player is taken as it is: a media item or a seek now would be the reload this avoids.
+        adopted = adopt != null
+        if (adopt != null) exo.adopt(adopt, src)
+        else exo.load(if (dl.isEmpty()) src else ExoEngine.Source(src.url, src.headers, src.mimeHint, src.subtitles + dl), startMs)
         overlay.start()
         // A trailer: just the controls (scrubber, pause/play). No skip markers, post-play or autoplay.
         if (!trailerMode) {
@@ -790,6 +857,7 @@ class DreamPlayerActivity : Activity(), PlayerHost {
             isEpisode = ep,
             season = if (ep) req.season ?: 0 else 0,
             episode = if (ep) req.episode ?: 0 else 0,
+            specialId = req.specialId,
             episodeTitle = req.episodeTitle,
             year = req.year,
             tmdbId = req.tmdbId.takeIf { it > 0 },
@@ -815,8 +883,30 @@ class DreamPlayerActivity : Activity(), PlayerHost {
         PlayFlow.play(this, next)
     }
 
+    /**
+     * Closing a trailer the hero handed over: the same player goes back behind the artwork and plays on there,
+     * never reloaded, the sound back at the Background Trailers setting. Nothing goes back when there is
+     * nothing live to give (it ended, it failed, or the page is gone): the player is released as always and the
+     * page's still settles over it.
+     */
+    private fun giveTrailerBack() {
+        if (!trailerMode || !adopted) return
+        val key = trailerPlaying ?: return
+        val p = exo.player ?: return
+        val state = p.playbackState
+        val left = exo.durationMs.takeIf { it > 0 }?.minus(p.currentPosition) ?: Long.MAX_VALUE
+        if (exo.error != null || state == Player.STATE_ENDED || state == Player.STATE_IDLE || left < TRAILER_BACK_MIN_MS) {
+            Log.w(TAG, "dream player: nothing live to give back (state $state, ${left / 1000} s left)")
+            return
+        }
+        adopted = false
+        val given = exo.detach() ?: return
+        if (!HeroTrailer.handBack(given, key)) given.release()
+    }
+
     override fun close() {
         if (isFinishing) return
+        giveTrailerBack()
         saveProgress(force = true)
         Trakt.onPlayerClosed(this)
         if (waiting) PlayFlow.cancel(this, request)
@@ -1085,7 +1175,7 @@ class DreamPlayerActivity : Activity(), PlayerHost {
         val r = request
         metaDuration = exo.durationMs
         val sub = if (r?.trailer == true) "Trailer" else if (r?.type == "episode" && r.season != null && r.episode != null)
-            "S${r.season} E${r.episode}" + (r.episodeTitle?.let { " · $it" } ?: "") else r?.year?.toString()
+            PlayFlow.episodeCode(r.isSpecial, r.season, r.episode) + (r.episodeTitle?.let { " · $it" } ?: "") else r?.year?.toString()
         s.setMetadata(MediaMetadata.Builder()
             .putString(MediaMetadata.METADATA_KEY_TITLE, r?.title ?: "Dream Player")
             .putString(MediaMetadata.METADATA_KEY_DISPLAY_TITLE, r?.title ?: "Dream Player")

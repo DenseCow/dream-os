@@ -5,7 +5,7 @@ import DreamCore
 /// or upcoming; shows premiered in the last ~12 months or not yet (their latest episode while it aired in the last
 /// 21 days, else their premiere). Every title asks the scrapers' index (`PlaybackService.survey`, else DreamContent
 /// reads `SourceService.find` names itself), unreleased ones too: a source decides, not the date (owner, 2026-10-30:
-/// "available as soon as there's a source"; Paramount+ posts Showtime's Sunday episodes on Friday). Until it answers,
+/// "available as soon as there's a source"; a Sunday episode can appear on the Friday before). Until it answers,
 /// an unreleased title shows a local "Coming ..." stand-in, which it keeps when nothing is found. Asked by cards on screen
 /// and ahead of the screen (`ahead`: a page's cards in row order, at background priority, holding off while a Play
 /// runs), cached on disk (Available Now 24 h, anything else 1 h, sooner after a known release instant). A stale answer
@@ -110,7 +110,7 @@ actor AvailabilityChecker {
         if t.kind == .tv, let kept = keptShowAnswer(t) { return Self.detail(kept) }
         if target == nil && t.kind == .tv { target = await showTarget(t) }
         // STANDARDS §5: a movie counts as new for ~90 days after its digital OR theatrical release. A film in theaters
-        // months ago but digital only recently (Spider-Man: Brand New Day: Jul 29 / Oct 6) keeps its pill.
+        // months ago but digital only recently (one film was in theaters Jul 29 and digital Oct 6) keeps its pill.
         if target == nil, t.kind == .movie, t.date.count == 10, t.date >= DreamTime.ymdPlus(-Self.digitalLookback),
            let digital = await Self.digitalDate(t.id), digital >= DreamTime.ymdPlus(-Self.recentDays) {
             target = Target(key: "movie:\(t.id)", request: PlayRequest(title: t), releaseAt: nil, date: t.date)
@@ -124,13 +124,21 @@ actor AvailabilityChecker {
     static let digitalLookback = 240
 
     func episode(_ e: Episode, show: Title) async -> AvailabilityDetail? {
-        guard e.upcoming || e.outEarly || Self.recentEpisode(at: e.airsAt, date: e.airDate) else { return nil }
+        guard e.upcoming || e.outEarly || Self.recentEpisode(e) else { return nil }
         return await want(Self.episodeTarget(e, show: show)).map(Self.detail)
     }
 
     private static func episodeTarget(_ e: Episode, show: Title) -> Target {
-        Target(key: episodeKey(show.id, e.season, e.number),
-               request: PlayRequest(title: show, season: e.season, episode: e.number, episodeName: e.name), releaseAt: e.airsAt, date: e.airDate)
+        // A special is its own kind, keyed on its source id: read as a numbered episode it would check the wrong one,
+        // since its season is the one it aired beside and its number only an air-order place.
+        if e.isSpecial {
+            // Through the whole-episode factory, so every id it answers to comes along without being listed here.
+            return Target(key: "tv:\(show.id)/sp:\(e.specialId)", request: .special(title: show, e),
+                          releaseAt: e.airsAt, date: e.airDate)
+        }
+        return Target(key: episodeKey(show.id, e.season, e.number),
+                      request: PlayRequest(title: show, season: e.season, episode: e.number, episodeName: e.name),
+                      releaseAt: e.airsAt, date: e.airDate)
     }
 
     private static func episodeKey(_ show: Int, _ season: Int, _ number: Int) -> String { "tv:\(show):\(season):\(number)" }
@@ -155,15 +163,20 @@ actor AvailabilityChecker {
     /// or failed in the last 90 s; the cache it answers from is the pills' own, so nothing else is kept. False when
     /// nothing is found.
     func earlyRelease(_ e: Episode, show: Title) async -> Bool {
-        if outEarly(show.id, e.season, e.number) { return true }
-        _ = await want(Self.episodeTarget(e, show: show))
-        let out = outEarly(show.id, e.season, e.number)
+        // By the target's own key, so a special is asked about as a special.
+        let target = Self.episodeTarget(e, show: show)
+        if outEarly(target.key) { return true }
+        _ = await want(target)
+        let out = outEarly(target.key)
         if out {
             let due = e.airsAt.map { "\($0)" } ?? (e.airDate.isEmpty ? "date unknown" : e.airDate)
-            Log.core.notice("Avail: \(show.name, privacy: .public) S\(e.season, privacy: .public)E\(e.number, privacy: .public) is out early (due \(due, privacy: .public))")
+            let what = EpisodeWords.name(e.isSpecial ? .special : .episode, season: e.season, episode: e.number, title: e.name) ?? ""
+            Log.core.notice("Avail: \(show.name, privacy: .public) \(what, privacy: .public) is out early (due \(due, privacy: .public))")
         }
         return out
     }
+
+    private func outEarly(_ key: String) -> Bool { (cache[key]?.status).map { $0 != .none } ?? false }
 
     /// Every kept card answer still in its pill window, by title key (the cards' memory at launch).
     func known() -> [String: Availability] {
@@ -332,6 +345,16 @@ actor AvailabilityChecker {
         return Target(key: "movie:\(t.id)", request: PlayRequest(title: t), releaseAt: nil, date: t.date)
     }
 
+    /// Whether [e] is recent enough to be asked about at all. A special goes by its **air day**: its airstamp says
+    /// when it was announced for, which is what the wording wants ("Coming Tonight at 9:00 PM"), but never what
+    /// decides. An announced 9 PM stamp would otherwise hide a special that has been streaming since the morning:
+    /// the instant is still ahead, so this gate said no, and `outEarly` could never become true because the lookup
+    /// this gate guards is the thing that would have discovered it (STANDARDS section 5, a source decides, not the
+    /// date). The instant still travels on the target, so the label keeps it.
+    static func recentEpisode(_ e: Episode, now: Date = Date()) -> Bool {
+        recentEpisode(at: e.isSpecial ? nil : e.airsAt, date: e.airDate, now: now)
+    }
+
     static func recentEpisode(at: Date?, date: String, now: Date = Date()) -> Bool {
         if let at { return at <= now && now.timeIntervalSince(at) <= Double(episodeDays) * 86_400 }
         if date.count == 10 { return date <= DreamTime.ymdPlus(0) && date >= DreamTime.ymdPlus(-episodeDays) }
@@ -355,7 +378,12 @@ actor AvailabilityChecker {
         func ep(_ o: Any?) -> (Int, Int, String, Date?)? {
             guard let o = o as? [String: Any] else { return nil }
             let date = Tmdb.str(o, "air_date"); guard date.count == 10 else { return nil }
-            return (o["season_number"] as? Int ?? 0, o["episode_number"] as? Int ?? 0, date, nil)
+            let s = o["season_number"] as? Int ?? 0, n = o["episode_number"] as? Int ?? 0
+            // A card pill for the show is about its numbered episodes. TMDB can name a special here (season 0), and
+            // taken as one it would build a numbered request at season 0: the sentinel this model does without.
+            // A special's own pill comes from `episode(_:show:)` with its source id.
+            guard s > 0, n > 0 else { return nil }
+            return (s, n, date, nil)
         }
         // The exact air time only matters within a day of today or of the 21-day window's edge; otherwise TMDB's day
         // does, and TVmaze (one call every 0.55 s, shared with New Episodes at launch) is asked in the background.

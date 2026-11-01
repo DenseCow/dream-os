@@ -247,9 +247,11 @@ open class CinemaRowsPage(shell: CinemaShell) : CPage(shell) {
             Net.load(0, { RowPaging.next(name, page, seen, load) }) { res ->
                 busy = false
                 if (r.parent == null || released) return@load
-                val fresh = res?.second.orEmpty().filter { shown.add(it.key) }.take(RowPaging.MAX_TITLES - r.cards.size)
+                // A fetch that failed leaves the row where it was: the next approach to its end asks again.
+                if (res == null || res.failed) return@load
+                val fresh = res.titles.filter { shown.add(it.key) }.take(RowPaging.MAX_TITLES - r.cards.size)
                 if (fresh.isEmpty()) { done = true; return@load }
-                page = res!!.first + 1
+                page = res.page + 1
                 r.append(make(r, fresh))
             }
         }
@@ -482,7 +484,7 @@ open class CinemaRowsPage(shell: CinemaShell) : CPage(shell) {
     }
 
     /**
-     * Netflix's look-ahead: the lazy rows from the one above focus to [LOOKAHEAD] past it start loading,
+     * The look-ahead: the lazy rows from the one above focus to [LOOKAHEAD] past it start loading,
      * nearest first ([loadRank]). Lists still waiting are re-ranked for where focus is now, and those for
      * rows [DROP_BEHIND] or more behind it are dropped (they start again if focus comes back), so a fast
      * scroll down never leaves the rows it passed queued ahead of the ones it is heading for.
@@ -600,7 +602,7 @@ open class CinemaRowsPage(shell: CinemaShell) : CPage(shell) {
     }
 
     /**
-     * Back, one calm step at a time (Netflix): in a row or a line of chips, first back to its first item (the
+     * Back, one calm step at a time: in a row or a line of chips, first back to its first item (the
      * row glides there like any move); from there, up to the top of the page (the hero's Play); at the top,
      * false (the shell goes to the bar). Nothing reloads, rebuilds or jumps on the way.
      */
@@ -657,7 +659,7 @@ open class CinemaRowsPage(shell: CinemaShell) : CPage(shell) {
     }
 
     /**
-     * Apple TV's Spotlight: one title across the page, between rows (a break in the rhythm of rows). [pick]
+     * The Spotlight: one title across the page, between rows (a break in the rhythm of rows). [pick]
      * chooses it from [load]'s titles; left out when there's nothing with art.
      */
     protected fun spotlight(kick: String, load: () -> List<Title>?, pick: (List<Title>) -> Title? = { it.firstOrNull() }) {
@@ -725,8 +727,8 @@ open class CinemaRowsPage(shell: CinemaShell) : CPage(shell) {
 
 /**
  * Cinema's Home: the hero carousel (what suits the time of day) with the first row peeking up under it,
- * Continue Watching, Hulu-style big cards of Top Picks for You, then Trending, Top 10 (Netflix's numbered
- * row), Spotlights (Apple TV), New Episodes, My List, Because You Watched and the services. No apps and no
+ * Continue Watching, big cards of Top Picks for You, then Trending, Top 10 (the numbered
+ * row), Spotlights, New Episodes, My List, Because You Watched and the services. No apps and no
  * service tiles here (those live on Apps and Browse). Each title shows in one row only ([RowClaims]); the
  * picks and the featured titles are Home's own ([HomePicks]).
  */
@@ -756,7 +758,7 @@ class CinemaHome(shell: CinemaShell) : CinemaRowsPage(shell) {
         if (!Tmdb.hasKey(ctx)) { noKey(); host.homeReady(); return }
         val h = CinemaHero(kit, host, HERO_H, compact = false)
         hero = h
-        // The first row tucks up into the hero's faded bottom (Apple TV's top-shelf peek).
+        // The first row tucks up into the hero's faded bottom, so there is something to reach for.
         add(h, gap = -12)
         newEpBanner = NewEpisodeBanner(kit, host) { v, on -> setShown(v, on); window() }.also {
             it.visibility = View.GONE
@@ -820,7 +822,7 @@ class CinemaHome(shell: CinemaShell) : CinemaRowsPage(shell) {
         val seeds = (BecauseYouWatched.pick(ctx, shows = false).entries + BecauseYouWatched.pick(ctx, shows = true).entries)
             .sortedByDescending { it.updatedAt }.take(2)
         fun becauseRow(e: WatchHistory.Entry) {
-            val type = if (e.isShow) "tv" else "movie"
+            val type = if (e.ofShow) "tv" else "movie"
             val title = "Because You Watched ${e.title}"
             row(title, RowKind.STANDARD, load = {
                 trending()
@@ -849,9 +851,13 @@ class CinemaHome(shell: CinemaShell) : CinemaRowsPage(shell) {
             row(title, RowKind.STANDARD, load = {
                 trending()
                 // Shows and movies interleaved in TMDB's popularity order; take ranks them (steadied quality and taste):
-                // a plain rating sort let an 8.3 from 131 votes lead over Breaking Bad.
-                val (tv, mv) = RowPaging.all({ Tmdb.onService(ctx, svc.providerId, "tv") }, { Tmdb.onService(ctx, svc.providerId, "movie") })
-                claims.take(title, RowMix.interleave(listOf(tv, mv)), 16)
+                // a plain rating sort let an 8.3 from 131 votes lead over a show rated by thousands. Each type brings
+                // its first page and, behind it, the day's deeper one (RowMix.rotatingPage): the pool changes day to
+                // day, and a title's place in the list still says where TMDB put it (the rank's order term is positional).
+                val deeper = RowMix.rotatingPage(title)
+                val (tv, mv, tv2, mv2) = RowPaging.all({ Tmdb.onService(ctx, svc.providerId, "tv") }, { Tmdb.onService(ctx, svc.providerId, "movie") },
+                    { Tmdb.onService(ctx, svc.providerId, "tv", deeper) }, { Tmdb.onService(ctx, svc.providerId, "movie", deeper) })
+                claims.take(title, RowMix.interleave(listOf(tv + tv2, mv + mv2)), 16)
                     .takeIf { it.size >= MIN_ROW }
             }) { _, list -> titleCards(list) { kit.landscape(it) } }
             when (i) {
@@ -1007,7 +1013,8 @@ class CinemaHome(shell: CinemaShell) : CinemaRowsPage(shell) {
         r.fill((s.recent + s.upcoming.take(10)).map { item ->
             kit.episode(item).also { (_, c) ->
                 // An episode card: upcoming ones say when; aired ones carry a status only while new (EPISODE_DAYS).
-                if (item.upcoming || Availability.recentEpisode(item.ep.at, item.ep.airDate)) Availability.attach(c, Availability.episode(item))
+                if (item.upcoming || Availability.recentEpisode(item.ep.at, item.ep.airDate, special = item.ep.special))
+                    Availability.attach(c, Availability.episode(item))
                 c.setOnClickListener {
                     NewEpisodes.markSeen(ctx, item)
                     if (item.upcoming) host.openDetails(item.show.title(), c) else host.episodeChoice(item)
@@ -1051,7 +1058,7 @@ class CinemaHome(shell: CinemaShell) : CinemaRowsPage(shell) {
 }
 
 /**
- * Movies and TV Shows: a smaller hero, Hulu's category chips, and rows for the chip that is current.
+ * Movies and TV Shows: a smaller hero, the category chips, and rows for the chip that is current.
  * Featured is the editorial mix (trending as big cards, Top 10, new, acclaimed, coming soon, hidden gems,
  * the installed services); a genre chip turns every row to that genre. Focus resting on a chip switches
  * the rows below it (and the hero takes that category's own featured titles).
@@ -1112,7 +1119,7 @@ class CinemaCategory(shell: CinemaShell, private val kind: String) : CinemaRowsP
         val r = continueRow?.takeIf { it.parent != null } ?: return
         if (WatchHistory.version == continueShown || r.hasFocus()) return
         continueShown = WatchHistory.version
-        val mine = WatchHistory.entries(ctx).filter { it.isShow == !movie }.take(15)
+        val mine = WatchHistory.entries(ctx).filter { it.ofShow == !movie }.take(15)
         if (mine.isEmpty()) { setShown(r, false); return }
         val apps = host.apps()
         r.fill(mine.map { e -> kit.continueCard(e, apps).also { (_, c) -> c.setOnClickListener { host.resume(e) }; c.setOnLongClickListener { host.continueMenu(e, e.toTitle(), c); true } } }, animate = false)
@@ -1184,7 +1191,7 @@ class CinemaCategory(shell: CinemaShell, private val kind: String) : CinemaRowsP
             titles("Bingeworthy Shows") {
                 val q = "&include_adult=false&sort_by=popularity.desc&vote_count.gte=1000&vote_average.gte=7.8&first_air_date.gte=${RowMix.yearsAgo(12)}" +
                     "&without_genres=10763,10764,10766,10767,10762"
-                RowPaging.all({ Tmdb.list(ctx, "/discover/tv", q, "tv") }, { Tmdb.list(ctx, "/discover/tv", "$q&page=2", "tv") }).flatten()
+                RowPaging.all({ Tmdb.list(ctx, "/discover/tv", q, "tv") }, { Tmdb.list(ctx, "/discover/tv", "$q&page=${RowMix.rotatingPage("Bingeworthy Shows")}", "tv") }).flatten()
             }
         }
         // A category in season (Halloween, Holiday) comes before the services.
@@ -1192,7 +1199,11 @@ class CinemaCategory(shell: CinemaShell, private val kind: String) : CinemaRowsP
         for (c in seasonal) categoryRow(c)
         // Home's services (installed ones first): Dream OS plays them all, installed or not.
         val installed = host.apps().map { it.pkg }.toSet()
-        for (name in CinemaHome.services(installed)) titles("Popular on $name") { discover(filters { service = name }, RowMix.recent(kind)) }
+        // The first page, then the day's deeper one behind it (RowMix.rotatingPage): a service's row changes day to day.
+        for (name in CinemaHome.services(installed)) titles("Popular on $name") {
+            val f = filters { service = name }
+            RowPaging.all({ discover(f, RowMix.recent(kind)) }, { discover(f, RowMix.recent(kind) + "&page=${RowMix.rotatingPage("Popular on $name $kind")}") }).flatten()
+        }
         // Every genre (friendly names) with Browse's categories of this type among them (the most
         // watched first), then anime and the decades. The genres come in the order this profile would want them
         // (loved genres first, untouched ones last; ties keep TMDB's order); a new profile sees the plain order.
@@ -1200,7 +1211,7 @@ class CinemaCategory(shell: CinemaShell, private val kind: String) : CinemaRowsP
         val early = themes.filter { it.name in EARLY_THEMES }.sortedBy { EARLY_THEMES.indexOf(it.name) }
         val taste = Taste.current(ctx)
         val plain = Discover.genres(kind)
-        val ordered = if (taste.strength < 0.25) plain
+        val ordered = if (taste.strength < AlgoRules.GENRE_ORDER_MIN_STRENGTH) plain
             else plain.withIndex().sortedWith(compareByDescending<IndexedValue<Discover.Genre>> { taste.genre[it.value.id] ?: 0.0 }.thenBy { it.index }).map { it.value }
         for ((i, g) in ordered.withIndex()) {
             val title = names[g.id] ?: g.name
@@ -1315,7 +1326,7 @@ class CinemaService(shell: CinemaShell, private val spec: ServiceSpec) : CinemaR
             RowMix.interleave(RowPaging.all(*listOf("tv", "movie").map { type -> { RowMix.hiddenGems(ctx, type, extra, "Hidden Gems ${spec.name}") } }.toTypedArray()))
         }
         // The genres and Browse's categories on this service, movies and shows together ("Horror on HBO Max",
-        // "Adult Animation on Hulu"): the most watched first, a category in season leading. Each loads as focus
+        // "Adult Animation on <service>"): the most watched first, a category in season leading. Each loads as focus
         // nears it, its lists side by side; a row needs a few more titles than usual to show.
         for (g in categories()) GenreShelves.onService(g, spec.name)?.let { shelf ->
             titles(shelf.title, min = CATEGORY_MIN) { GenreShelves.load(ctx, g, shelf) }
@@ -1351,11 +1362,13 @@ class CinemaService(shell: CinemaShell, private val spec: ServiceSpec) : CinemaR
         private fun heroTitles(ctx: android.content.Context, spec: ServiceSpec) = mixed(ctx, spec) { rating = 7 }
             .filter { it.backdropPath != null && RowMix.released(it) && (spec.name == "Crunchyroll" || !RowMix.animeHidden(ctx, it)) }.take(6)
 
-        private fun popular(ctx: android.content.Context, spec: ServiceSpec) = RowPaging.all({ mixed(ctx, spec) }, { mixed(ctx, spec, "&page=2") }).flatten()
+        /** The first page, then the day's deeper one behind it (RowMix.rotatingPage): the page's lead rows change day to day. */
+        private fun popular(ctx: android.content.Context, spec: ServiceSpec) =
+            RowPaging.all({ mixed(ctx, spec) }, { mixed(ctx, spec, "&page=${RowMix.rotatingPage("Popular on ${spec.name}")}") }).flatten()
 
         private fun originals(ctx: android.content.Context, spec: ServiceSpec): List<Title> {
             val q = "&include_adult=false&sort_by=popularity.desc&with_networks=${spec.networks}"
-            return RowPaging.all({ Tmdb.list(ctx, "/discover/tv", q, "tv") }, { Tmdb.list(ctx, "/discover/tv", "$q&page=2", "tv") }).flatten()
+            return RowPaging.all({ Tmdb.list(ctx, "/discover/tv", q, "tv") }, { Tmdb.list(ctx, "/discover/tv", "$q&page=${RowMix.rotatingPage("${spec.name} Originals")}", "tv") }).flatten()
         }
 
         /** Recent digital releases, new series and new seasons on the service (NewReleases.kt), not the newest-dated (often unreleased) titles. */

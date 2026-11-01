@@ -78,9 +78,37 @@ data class HistoryEntry(
     val hidden: Boolean = false,
     /** "dream" for Dream Player; "trakt" for a point pulled from Trakt. */
     val source: String = "dream",
+    /**
+     * A special of this show rather than one of its numbered episodes ([EntryKind.SPECIAL]): its own entry under its
+     * own [key], so the show's own position is never touched. Its identity is a source id; [season] is then the season
+     * it aired beside and [episode] its place in air order, neither of which is a place in the series.
+     * Rows written before specials existed have none, so they read as before.
+     *
+     * A special's [season] and [episode] stay 0: it has no place in the series, and nothing outside a series branch
+     * may read them.
+     */
+    val specialId: String = "",
 ) {
-    val key: String get() = title.key
-    val isShow: Boolean get() = title.isShow
+    /**
+     * Movie, numbered episode, or special. Three-valued because a special is neither: it belongs to a show but lives
+     * a movie's life (its own card and progress, finished means off the row, never Up Next). A branch that has to
+     * name one of the three can't quietly treat a special as a movie, which is what an `isShow` boolean allowed.
+     */
+    val kind: EntryKind get() = when {
+        specialId.isNotEmpty() -> EntryKind.SPECIAL
+        title.isShow -> EntryKind.SERIES
+        else -> EntryKind.MOVIE
+    }
+
+    /** One of a show's numbered episodes: everything about a series position asks this. */
+    val isSeries: Boolean get() = kind == EntryKind.SERIES
+    val isSpecial: Boolean get() = kind == EntryKind.SPECIAL
+
+    /** Belongs to a show, either kind: presentation, taste and "which shows does the viewer watch" ask this. */
+    val ofShow: Boolean get() = title.isShow
+
+    /** A special has its own entry; a show's numbered episodes share the show's, as they always have. */
+    val key: String get() = if (isSpecial) specialKey(title.key, specialId) else title.key
     val progress: Double get() = if (durationMs > 0) (positionMs.toDouble() / durationMs).coerceIn(0.0, 1.0) else 0.0
     val finished: Boolean get() = progress >= FINISHED
 
@@ -92,6 +120,9 @@ data class HistoryEntry(
     companion object {
         /** Watched this far, a title counts as finished (fire-home WatchHistory.FINISHED). */
         const val FINISHED = 0.92
+
+        /** The entry key for one of a show's specials. A movie and a show's numbered episodes use the title's key. */
+        fun specialKey(titleKey: String, specialId: String) = "$titleKey/sp:$specialId"
     }
 }
 
@@ -105,8 +136,24 @@ data class PlayRequest(
     val episodeName: String? = null,
     /** The viewer picked "Start Over" / "From the Beginning". */
     val fromStart: Boolean = false,
+    /**
+     * Playing a special of this show: its source id. It says which kind this is, which history entry it resumes from
+     * and which wire forms the resolver asks for. [season] is then the season the special aired beside and [episode]
+     * its place in air order, neither of which is a place in the series. "" for a movie or a numbered episode.
+     */
+    val specialId: String = "",
 ) {
-    val key: String get() = title.key + if (season != null && episode != null) ":s${season}e$episode" else ""
+    val isSpecial: Boolean get() = specialId.isNotEmpty()
+    val kind: EpisodeKind get() = if (isSpecial) EpisodeKind.SPECIAL else EpisodeKind.SERIES
+
+    /** The watch-history entry this plays against ([HistoryEntry.key]). */
+    val historyKey: String get() = if (isSpecial) HistoryEntry.specialKey(title.key, specialId) else title.key
+
+    val key: String get() = when {
+        isSpecial -> historyKey
+        season != null && episode != null -> title.key + ":s${season}e$episode"
+        else -> title.key
+    }
 }
 
 /** A user-facing failure: [message] is a plain sentence ("Couldn't reach Trakt. Try again."), never technical. */

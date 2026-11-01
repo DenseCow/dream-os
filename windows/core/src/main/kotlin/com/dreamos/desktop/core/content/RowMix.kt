@@ -1,5 +1,6 @@
 package com.dreamos.desktop.core.content
 
+import com.dreamos.desktop.core.model.EntryKind
 import com.dreamos.desktop.core.model.HistoryEntry
 import com.dreamos.desktop.core.model.MediaKind
 import com.dreamos.desktop.core.model.Title
@@ -219,7 +220,7 @@ object RowMix {
 
     /** Titles this profile has finished: movies watched to the end, shows caught up to their last episode. */
     fun finished(history: List<HistoryEntry> = WatchHistory.recent()): Set<String> = history
-        .filter { it.progress >= HistoryEntry.FINISHED && (it.hidden || !it.isShow) }.mapTo(HashSet()) { it.key }
+        .filter { it.progress >= HistoryEntry.FINISHED && (it.hidden || it.kind == EntryKind.MOVIE) }.mapTo(HashSet()) { it.key }
 
     /**
      * Anime: Japanese animation, and Chinese or Korean animated series that aren't for kids or families (donghua and

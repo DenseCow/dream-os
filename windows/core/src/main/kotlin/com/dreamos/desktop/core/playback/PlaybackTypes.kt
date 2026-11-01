@@ -1,5 +1,7 @@
 package com.dreamos.desktop.core.playback
 
+import com.dreamos.desktop.core.model.EpisodeCode
+import com.dreamos.desktop.core.model.EpisodeKind
 import kotlinx.serialization.Serializable
 
 /*
@@ -10,12 +12,18 @@ import kotlinx.serialization.Serializable
  * PlayTarget is the small local stand-in until that lands, then gets a `from(Title, Episode)` builder.
  */
 
-/** Movie or one episode of a show. */
+/**
+ * Movie, one episode of a show, or a special, which plays like an episode but sits outside the show's numbered order
+ * (STANDARDS §5): [PlayTarget.isEpisode] covers both episode kinds, [PlayTarget.isSpecial] marks what differs.
+ */
 @Serializable
-enum class MediaKind { MOVIE, EPISODE }
+enum class MediaKind { MOVIE, EPISODE, SPECIAL }
 
 /**
- * What to play: a movie, or one episode of a show. [tmdbId] is the movie's id, or the SHOW's id for an episode.
+ * What to play: a movie, one episode of a show, or a special. [tmdbId] is the movie's id, or the SHOW's id for either
+ * episode kind. A special carries no [season] or [episode] at all, only [specialId]: nothing can then read a place
+ * in the series off it by accident, and the resolver derives the numbering the index and release names use from the
+ * catalog at request time.
  * [originalLanguage] (TMDB's ISO 639-1) and [spokenLanguages] drive the dub preference and the language pills.
  */
 @Serializable
@@ -28,6 +36,8 @@ data class PlayTarget(
     val season: Int? = null,
     val episode: Int? = null,
     val episodeTitle: String? = null,
+    /** A special's identity, a source id ("tmdb:<episode id>", else "tvmaze:<episode id>"); "" otherwise. */
+    val specialId: String = "",
     val originalLanguage: String? = null,
     val spokenLanguages: List<String> = emptyList(),
     val isAnime: Boolean = false,
@@ -39,23 +49,42 @@ data class PlayTarget(
     val poster: String? = null,
     val logo: String? = null,
 ) {
-    val isEpisode get() = kind == MediaKind.EPISODE
+    val isEpisode get() = kind != MediaKind.MOVIE
+    val isSpecial get() = kind == MediaKind.SPECIAL
+
+    /** This target's episode kind, for the shared formatter ([EpisodeCode]). */
+    val episodeKind get() = if (isSpecial) EpisodeKind.SPECIAL else EpisodeKind.SERIES
 
     /**
      * The key every playback store uses for this title / episode: "movie:603", "tv:1396:1:2". The same as fire-home's
-     * AnimeDubs.key and the iPhone's pills key, so data moved between apps lines up.
+     * AnimeDubs.key and the iPhone's pills key, so data moved between apps lines up. A special's key says so instead
+     * of naming a season, so it can never read as an episode of the series.
      */
     val key: String get() {
         val id = if (tmdbId > 0) "$tmdbId" else imdb.orEmpty()
-        return if (isEpisode) "tv:$id:$season:$episode" else "movie:$id"
+        return when {
+            // A special is keyed on its source id, not its place in air order, which moves as the catalog fills in.
+            isSpecial -> "tv:$id/sp:$specialId"
+            isEpisode -> "tv:$id:$season:$episode"
+            else -> "movie:$id"
+        }
     }
 
-    /** For the log: "Severance S2E3", "Dune (2021)". */
-    val label: String get() = if (isEpisode) "$title S${season}E$episode" else title + (year?.let { " ($it)" } ?: "")
+    /** For the log: "A Show S2E3", "A Special, Specials E1", "A Film (2021)". */
+    val label: String get() = when {
+        isSpecial -> "$title ${EpisodeCode.specialWords(episodeTitle)}"
+        isEpisode -> "$title S${season}E$episode"
+        else -> title + (year?.let { " ($it)" } ?: "")
+    }
 
-    /** The same show at another episode (next episode look-ahead, Up Next). */
+    /**
+     * The same show at another episode (next episode look-ahead, Up Next); never a special, which is never next.
+     * A special's own id goes with its kind: leaving it on an episode would hand the next reader an identity that
+     * does not belong to what it is holding.
+     */
     fun atEpisode(season: Int, episode: Int, episodeTitle: String? = null, airDate: String? = null) =
-        copy(season = season, episode = episode, episodeTitle = episodeTitle, airDate = airDate)
+        copy(kind = MediaKind.EPISODE, season = season, episode = episode, episodeTitle = episodeTitle,
+            airDate = airDate, specialId = "")
 }
 
 /**
@@ -93,8 +122,18 @@ data class ScrapedSource(
 )
 
 /**
+ * One of the ways release names number an episode: "S02E05" is `EpisodeForm(2, 5)`. A special is numbered both as
+ * S00E{n}, the way the index answers for it, and as S{parent}E00 with its own title in the file name, so a lookup for
+ * one asks for and accepts both (STANDARDS §5). This is the release-name boundary, where season 0 is what the outside
+ * world writes and nothing more.
+ */
+@Serializable
+data class EpisodeForm(val season: Int, val episode: Int)
+
+/**
  * One torrent Dream Core ranks and asks the debrid services about (fire-home Candidate, iPhone StreamCandidate).
  * [season] / [episode]: what was asked for (episodes), so a service can pick the right file in a pack.
+ * [altForms]: the other ways release names may number that same episode, accepted when picking the file.
  */
 @Serializable
 data class Source(
@@ -109,6 +148,7 @@ data class Source(
     val pack: Boolean = false,
     val season: Int? = null,
     val episode: Int? = null,
+    val altForms: List<EpisodeForm> = emptyList(),
 )
 
 /** The debrid services Dream Core can use, in the default ask order. [key] is the stored id on every platform. */

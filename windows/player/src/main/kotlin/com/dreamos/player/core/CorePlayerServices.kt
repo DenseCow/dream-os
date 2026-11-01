@@ -37,7 +37,10 @@ class CorePlayerServices(
     private val openTitlePage: (tmdbId: Int, isShow: Boolean) -> Unit = { _, _ -> },
 ) : PlayerServices {
 
-    /** What the viewer asked to play, as core's history and Trakt know it. */
+    /**
+     * What the viewer asked to play, as core's history and Trakt know it. A special must keep its [PlayTarget.specialId]
+     * here: it is what sends the report, the resume and the scrobble to the special's own row instead of the show's.
+     */
     fun asked(t: PlayTarget): Asked = Asked(
         title = Title(
             id = t.tmdbId,
@@ -51,14 +54,17 @@ class CorePlayerServices(
         season = t.season,
         episode = t.episode,
         episodeName = t.episodeTitle,
+        specialId = t.specialId,
     )
 
     private fun kind(t: PlayTarget) = if (t.isEpisode) MediaKind.TV else MediaKind.MOVIE
 
     override suspend fun details(target: PlayTarget): PlayerDetails? {
         val d = runCatching { Services.titles.details(kind(target), target.tmdbId) }.getOrNull() ?: return null
-        val ep = if (target.isEpisode) runCatching { Services.titles.episodes(target.tmdbId, target.season ?: 1) }.getOrNull()
-            ?.firstOrNull { it.number == target.episode } else null
+        val ep = if (!target.isEpisode) null else runCatching {
+            if (target.isSpecial) Services.titles.specials(target.tmdbId).firstOrNull { it.specialId == target.specialId }
+            else Services.titles.episodes(target.tmdbId, target.season ?: 1).firstOrNull { it.number == target.episode }
+        }.getOrNull()
         return PlayerDetails(
             logoUrl = d.logo("w500"),
             backdropUrl = d.title.backdrop("w1280"),
@@ -76,17 +82,24 @@ class CorePlayerServices(
         )
     }
 
-    override suspend fun seasons(showId: Int): List<SeasonItem> =
-        runCatching { Services.titles.details(MediaKind.TV, showId).seasons }.getOrNull().orEmpty()
-            .map { SeasonItem(it.number, it.name, it.episodeCount) }
+    /** The seasons, then the Specials tab last when the show has any (TMDB lists no season 0 for many that do). */
+    override suspend fun seasons(showId: Int): List<SeasonItem> {
+        val tmdb = runCatching { Services.titles.details(MediaKind.TV, showId).seasons }.getOrNull().orEmpty()
+        val specials = runCatching { Services.titles.specialsCount(showId) }.getOrDefault(0)
+        return com.dreamos.desktop.core.content.Specials.ordered(tmdb, specials)
+            .map { SeasonItem(it.number, it.name, it.episodeCount, special = it.number == 0) }
+    }
 
-    override suspend fun episodes(showId: Int, season: Int): List<EpisodeItem> =
-        runCatching { Services.titles.episodes(showId, season) }.getOrNull().orEmpty().map {
-            EpisodeItem(it.season, it.number, it.name, it.overview, it.still("w300"), it.airDate, it.runtime, upcoming = it.upcoming && !it.outEarly, airsAt = it.airsAt)
-        }
+    override suspend fun episodes(showId: Int, season: Int, special: Boolean): List<EpisodeItem> =
+        runCatching { if (special) Services.titles.specials(showId) else Services.titles.episodes(showId, season) }
+            .getOrNull().orEmpty().map {
+                EpisodeItem(it.season, it.number, it.name, it.specialId, it.overview, it.still("w300"), it.airDate, it.runtime,
+                    upcoming = it.upcoming && !it.outEarly, airsAt = it.airsAt)
+            }
 
     override suspend fun nextEpisode(target: PlayTarget): PlayTarget? {
-        if (!target.isEpisode) return null
+        // Nothing follows a special: it sits outside the show's order, so it is never Up Next and never rolls on.
+        if (!target.isEpisode || target.isSpecial) return null
         val (season, ep) = runCatching { WatchHistory.episodeAfter(target.tmdbId, target.season ?: return null, target.episode ?: return null) }
             .getOrNull() ?: return null
         val n = ep["episode_number"]?.jsonPrimitive?.intOrNull ?: return null
@@ -124,10 +137,13 @@ class CorePlayerServices(
      */
     override fun watchedFraction(target: PlayTarget): Float? = runCatching {
         val e = runBlocking { Services.history.entry(asked(target).key) } ?: return@runCatching null
+        val own = if (!e.upNext && e.durationMs > 0) (e.positionMs.toFloat() / e.durationMs).coerceIn(0f, 1f) else null
+        // A special's row is only ever about that special, so there is no earlier or later to compare.
+        if (target.isSpecial) return@runCatching own
         val s = target.season ?: 0
         val n = target.episode ?: 0
         when {
-            e.season == s && e.episode == n -> if (!e.upNext && e.durationMs > 0) (e.positionMs.toFloat() / e.durationMs).coerceIn(0f, 1f) else null
+            e.season == s && e.episode == n -> own
             s in 1 until e.season || (s == e.season && n < e.episode) -> 1f
             else -> null
         }

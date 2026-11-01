@@ -39,12 +39,27 @@ import java.util.concurrent.atomic.AtomicBoolean
 internal class BackdropVideo(
     /** True: no sound at all (no audio device opened, no audio decoded): "On, Muted". */
     muted: Boolean,
-    /** A new frame is in [frame]; called on the render thread. */
-    private val onFrame: (Long) -> Unit,
+    /** A new frame is drawn; called on the render thread. */
+    onFrame: (Long) -> Unit,
     /** The file opened, played to its end or failed; called on mpv's event thread. */
-    private val onEvent: (Event) -> Unit,
-) {
+    onEvent: (Event) -> Unit,
+) : LiveVideo {
     enum class Event { STARTED, ENDED, FAILED }
+
+    // Who hears the frames and the ends: the hero while it owns the picture, the full-screen surface once the
+    // playing trailer is handed to it ([listen]). Volatile: the render and event threads read them every frame.
+    @Volatile private var frameHeard: (Long) -> Unit = onFrame
+    @Volatile private var eventHeard: (Event) -> Unit = onEvent
+
+    /**
+     * Hands the frames and the ends to someone else, picture and sound running: the Trailer button promoting the
+     * hero's live trailer to full screen. A frame or event already on its way reaches the old listener, which
+     * ignores it (the hero paints nothing once it has let the picture go).
+     */
+    override fun listen(onFrame: (Long) -> Unit, onEvent: (Event) -> Unit) {
+        frameHeard = onFrame
+        eventHeard = onEvent
+    }
 
     private val mpv = LibMpv.api
     private val core = MpvCore("trailer")
@@ -108,7 +123,7 @@ internal class BackdropVideo(
     }
 
     /** Draw at [w] x [h] pixels (the hero's size; capped, kept a multiple of 16 for mpv's fast path). */
-    fun size(w: Int, h: Int) {
+    override fun size(w: Int, h: Int) {
         if (w <= 0 || h <= 0) return
         val scale = minOf(1f, MAX_W.toFloat() / w, MAX_H.toFloat() / h)
         wantW = maxOf(16, (w * scale).toInt() / 16 * 16)
@@ -116,18 +131,18 @@ internal class BackdropVideo(
         wake.release()
     }
 
-    fun load(url: String) { if (alive.get()) core.command("loadfile", url, "replace") }
+    override fun load(url: String) { if (alive.get()) core.command("loadfile", url, "replace") }
 
-    fun setVolume(v: Int) = set("volume", v.coerceIn(0, 100).toString())
+    override fun setVolume(v: Int) { set("volume", v.coerceIn(0, 100).toString()) }
 
     /** Holds the picture (and sound) where it is, or lets it run on. */
-    fun pause(on: Boolean) = set("pause", if (on) "yes" else "no")
+    override fun pause(on: Boolean) { set("pause", if (on) "yes" else "no") }
 
     /** On screen now: read ahead the full minute, as a trailer playing should. */
-    fun playing() = set("demuxer-readahead-secs", "60")
+    override fun playing() { set("demuxer-readahead-secs", "60") }
 
     /** Opened muted (no audio device): turns the sound path on now, still at volume 0. False under -Ddream.trailer.silent. */
-    fun enableSound(): Boolean {
+    override fun enableSound(): Boolean {
         if (SILENT || !alive.get()) return false
         set("volume", "0")
         set("ao", "wasapi,")
@@ -137,27 +152,42 @@ internal class BackdropVideo(
     }
 
     /** Extra zoom past the cover crop (letterbox bars baked into the video). */
-    fun setZoom(z: Float) = set("video-zoom", (Math.log(z.toDouble()) / Math.log(2.0)).toString())
+    override fun setZoom(z: Float) { set("video-zoom", (Math.log(z.toDouble()) / Math.log(2.0)).toString()) }
 
-    val positionMs: Long get() = ((double("time-pos") ?: 0.0) * 1000).toLong()
-    val durationMs: Long get() = ((double("duration") ?: 0.0) * 1000).toLong()
+    /**
+     * The whole picture inside what's drawn, bars and all, instead of the hero's cover crop: how a player shows a
+     * film. The hero's letterbox zoom goes with it (a deliberate watch keeps the film's own framing).
+     */
+    override fun fit() {
+        set("panscan", "0")
+        setZoom(1f)
+    }
+
+    /** Back to the hero's framing: cover the whole hero, with the letterbox zoom it had over it. */
+    override fun cover(zoom: Float) {
+        set("panscan", "1.0")
+        setZoom(zoom)
+    }
+
+    override val positionMs: Long get() = ((double("time-pos") ?: 0.0) * 1000).toLong()
+    override val durationMs: Long get() = ((double("duration") ?: 0.0) * 1000).toLong()
     /** Seconds buffered ahead (dev checks). */
     val cacheAheadSec: Double get() = double("demuxer-cache-duration") ?: 0.0
     /** The picture's height as decoded (dev checks). */
     val videoHeight: Long get() = (double("height") ?: 0.0).toLong()
 
     /** Checks each new frame with [check] until it's set to null (render thread). */
-    fun probeFrames(check: ((Sampler) -> Unit)?) { probe = check }
+    override fun probeFrames(check: ((Sampler) -> Unit)?) { probe = check }
 
     /** The picture to paint (null before the first frame), handed to [paint] under the frame lock. */
-    fun <T> withFrame(paint: (ImageBitmap?) -> T): T = synchronized(lock) { paint(front?.image) }
+    override fun <T> withFrame(paint: (ImageBitmap?) -> T): T = synchronized(lock) { paint(front?.image) }
 
     /**
      * Mutes now and returns at once; the rest (stop, render context, libmpv, bitmaps) is let go on a thread of its own.
      * Safe to call twice, and from any thread, the frame and event callbacks included. When the release is still going
      * after [SLOW_MS], every thread's stack goes to the log.
      */
-    fun destroy() {
+    override fun destroy() {
         if (!alive.compareAndSet(true, false)) return
         // Queued, not waited for: the caller is usually the UI thread.
         core.commandAsync(0, "set", "mute", "yes")
@@ -240,7 +270,7 @@ internal class BackdropVideo(
                     front = b
                     n = ++frames
                 }
-                onFrame(n)
+                frameHeard(n)
             }
         } catch (t: Throwable) {
             Log.w(TAG, "render stopped: ${t.javaClass.simpleName}: ${t.message}")
@@ -251,10 +281,10 @@ internal class BackdropVideo(
     private fun onCoreEvent(e: MpvCore.Event) {
         if (!alive.get()) return
         when (e) {
-            MpvCore.Event.PlaybackRestart -> onEvent(Event.STARTED)
+            MpvCore.Event.PlaybackRestart -> eventHeard(Event.STARTED)
             is MpvCore.Event.EndFile -> when (e.reason) {
-                LibMpv.END_ERROR -> onEvent(Event.FAILED)
-                LibMpv.END_EOF -> onEvent(Event.ENDED)
+                LibMpv.END_ERROR -> eventHeard(Event.FAILED)
+                LibMpv.END_EOF -> eventHeard(Event.ENDED)
             }
             else -> {}
         }

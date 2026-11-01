@@ -42,7 +42,15 @@ data class CatalogItem(
     /** Continue Watching: "42 Min Left" (the Fire Stick's words), null when unknown, under a minute or Up Next. */
     val timeLeft: String? = null,
 ) {
-    val id: String get() = title.key + (episode?.let { ":${it.season}:${it.number}" } ?: "")
+    /**
+     * This card's own identity. A special carries no place in the series, so two of one show would share a season and
+     * an episode: it is keyed by its source id instead ([Episode.specialId]).
+     */
+    val id: String get() = title.key + when {
+        episode == null -> ""
+        episode.isSpecial -> "/sp:${episode.specialId}"
+        else -> ":${episode.season}:${episode.number}"
+    }
     fun keyArt(size: String = "w780"): String? = TmdbImage.url(keyArtPath, size)
 
     /** Art to try in order (the next one when one fails), for a landscape card. */
@@ -195,9 +203,23 @@ data class NewEpisodeInfo(
     val stillPath: String? = null,
     val overview: String = "",
     val upcoming: Boolean = false,
+    /**
+     * A special sits outside the show's order: [season] is then the season it aired beside and [number] its place in
+     * air order, and nothing built from them reads as a season (STANDARDS §5).
+     */
+    val kind: EpisodeKind = EpisodeKind.SERIES,
+    /** A special's identity, a source id; "" for a numbered episode. */
+    val specialId: String = "",
 ) {
-    val key: String get() = "${show.id}:s${season}e$number"
-    val episode: Episode get() = Episode(show.id, season, number, name, overview, stillPath, airDate, airsAt = at, upcoming = upcoming)
+    val isSpecial: Boolean get() = kind == EpisodeKind.SPECIAL
+
+    /**
+     * The per-profile badge and banner key. A special is keyed on its source id, never on its air-order place, which
+     * moves when the sources backfill an earlier special; a numbered episode's key is unchanged.
+     */
+    val key: String get() = if (isSpecial) episode.id else "${show.id}:s${season}e$number"
+    val episode: Episode get() = Episode(show.id, season, number, name, overview, stillPath, airDate, airsAt = at,
+        upcoming = upcoming, kind = kind, specialId = specialId)
 }
 
 @Serializable

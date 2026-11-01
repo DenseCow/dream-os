@@ -64,7 +64,7 @@ struct BrowseView: View {
         .padding(.horizontal, Cinema.gutter)
     }
 
-    /// Genres as a two-line row you swipe through (Apple TV app style), not a wall of cards.
+    /// Genres as a two-line row you swipe through, not a wall of cards.
     private func genreGrid(_ layout: CinemaLayout) -> some View {
         let w: CGFloat = 156
         let list = genres.uniqued()

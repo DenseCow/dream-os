@@ -27,6 +27,7 @@ import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MimeTypes
+import androidx.media3.common.PlaybackParameters
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
 import androidx.media3.common.VideoSize
@@ -45,7 +46,7 @@ import java.lang.ref.WeakReference
 import kotlin.math.abs
 
 /**
- * A title's trailer playing silently-or-softly behind a hero, where its backdrop was (Netflix / Hulu style).
+ * A title's trailer playing silently-or-softly behind a hero, where its backdrop was.
  *
  * Drop-in: [attach] it to a full-bleed [FrameLayout] that sits right above the backdrop image and under
  * the scrims and the info block, and report [setState] whenever the title, the hero focus or the page's
@@ -63,7 +64,12 @@ import kotlin.math.abs
  *   player and its decoder are released at once. No loops.
  * - 1080p AVC (VP9 when there's no AVC) + AAC, 720p/480p kept as fallbacks for slow networks; 720p max
  *   when memory is tight. Letterboxed trailers are zoomed to fill like the backdrop.
- * - Sound per profile, from the "Background Trailers" setting (On with Sound / On, Muted / Off).
+ * - Sound per profile, from the "Background Trailers" setting (On with Sound / On, Muted / Off), muted
+ *   until the viewer asks for sound.
+ * - A playing trailer is promoted, never reloaded: [handOver] gives the running player itself to Dream Player
+ *   ([takeHandover]), which shows it full screen with its own controls at the true frame, and [handBack] brings
+ *   that same player here again when the watch closes ([reclaim]). It is never looked up, prepared or buffered
+ *   again in either direction; only a trailer that ended or failed full screen leaves the page with the still.
  * - After a trailer ends the next one waits until the user moves and rests again.
  */
 class HeroTrailer private constructor(
@@ -85,6 +91,10 @@ class HeroTrailer private constructor(
     private var released = false
     /** A trailer ended (or failed) by itself: the next one waits for the user to move. */
     private var waitForUser = false
+    /** Dream Player took this page's trailer ([handOver]): nothing starts again behind the hero. */
+    private var handedOver = false
+    /** The trailer came back from Dream Player ([reclaim]): the page stays up as it was, instead of clearing. */
+    private var reclaimed = false
 
     /** ARMED: the [REST_MS] wait runs; RESOLVING: waiting for the stream; STARTING: the still covers the first frames. */
     private enum class Phase { IDLE, ARMED, RESOLVING, STARTING, PLAYING, STOPPING }
@@ -138,6 +148,27 @@ class HeroTrailer private constructor(
         if (!immersive) return
         setImmersive(false, animate = true)
         rehide()
+    }
+
+    /**
+     * The viewer pressed Trailer while this one is playing: the running player itself goes to Dream Player, so
+     * the trailer is never looked up, prepared or buffered again. It plays on through the move, and the picture
+     * it was showing is grabbed first, so [open] opens the player screen with that picture on it. Closing the
+     * watch brings that same player back here ([reclaim]); nothing starts behind the hero in the meantime.
+     * False when nothing is playing for [t], and then [open] never runs: the host opens the trailer the way it
+     * always has instead.
+     */
+    fun handOver(t: Title, open: () -> Unit): Boolean {
+        if (released || phase != Phase.PLAYING || player == null || playingKey == null || title?.key != t.key) {
+            Log.w(APP, "trailer: nothing playing to hand over for ${t.key} (${phase.name.lowercase()})")
+            return false
+        }
+        // The grab is a few milliseconds; the move waits for it so Dream Player opens with the picture on it.
+        grabStill { still ->
+            park(still)
+            open()
+        }
+        return true
     }
 
     /** A key while the UI shows over a playing trailer: the UI stays up for another [UI_IDLE_MS]. */
@@ -232,7 +263,7 @@ class HeroTrailer private constructor(
         evaluate()
     }
 
-    private fun wanted() = title != null && resting && visible && !waitForUser && mode(ctx) != OFF
+    private fun wanted() = title != null && resting && visible && !waitForUser && !handedOver && mode(ctx) != OFF
 
     private fun evaluate() {
         if (released) return
@@ -522,7 +553,8 @@ class HeroTrailer private constructor(
             if (phase == Phase.PLAYING && cover === cv) cv.visibility = View.INVISIBLE
         }.start()
         fadeVolume(targetVolume(), VOLUME_IN_MS)
-        setImmersive(true, animate = true)
+        // Handed back from a watch: the page stays as it was before Trailer was pressed and settles by itself.
+        if (reclaimed) { reclaimed = false; rehide() } else setImmersive(true, animate = true)
     }
 
     private fun setImmersive(on: Boolean, animate: Boolean) {
@@ -617,6 +649,122 @@ class HeroTrailer private constructor(
         onStopped?.let { onStopped = null; it() }
     }
 
+    // ---- handing the playing trailer to Dream Player ----
+
+    /**
+     * Lets go of the player without stopping it. The hero's listener comes off and its surface with it, so the
+     * decoder keeps running on a placeholder while the screens change; the views then go the usual way, and
+     * [teardown] leaves the player alone because this page no longer holds it.
+     */
+    private fun park(still: Bitmap?) {
+        val p = player
+        val key = playingKey
+        if (p == null || key == null) { still?.recycle(); return }
+        main.removeCallbacks(watchdog)
+        main.removeCallbacks(hideAgain)
+        volumeAnim?.cancel()
+        volumeAnim = null
+        p.removeListener(listener)
+        p.setVideoSurfaceView(null)
+        player = null
+        handedOver = true
+        waitForUser = true
+        // The spot lives inside the player now. It is remembered again the next time this trailer really
+        // stops, so a press after one that ended full screen looks it up afresh instead of resuming past it.
+        lastKey = null
+        lastTitle = null
+        lastPos = 0
+        Log.w(APP, "trailer: handing ${title?.key} ($key) to Dream Player at ${p.currentPosition} ms, " +
+            "the same player, nothing looked up or buffered again")
+        hand(p, key, still)
+        teardown()
+    }
+
+    /**
+     * Takes the player back from Dream Player, still playing, when the viewer closes a trailer they watched
+     * there: a new surface with the page's own still over it, the sound straight back to the Background
+     * Trailers setting, and the picture dissolving in as it does at the start of any trailer. The page is left
+     * as it was before Trailer was pressed, its UI up and settling by itself. False when it can't be taken.
+     */
+    private fun reclaim(p: ExoPlayer, key: String): Boolean {
+        if (released || title == null || phase != Phase.IDLE || player != null) return false
+        // Behind the hero it is never loud: the watch raised the sound, and this is not one.
+        p.volume = targetVolume()
+        // Behind the hero there is no pausing and no speed: a trailer paused or slowed in the player carries on plainly.
+        p.setPlaybackParameters(PlaybackParameters(1f))
+        p.play()
+        val still = backdrop()?.takeIf { !it.isRecycled }
+        val sv = SurfaceView(ctx)
+        val cv = ImageView(ctx).apply { scaleType = ImageView.ScaleType.CENTER_CROP; if (still != null) setImageBitmap(still) }
+        slot.addView(sv, FrameLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT, Gravity.CENTER))
+        slot.addView(cv, FrameLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT))
+        surface = sv
+        cover = cv
+        videoW = 0; videoH = 0; pixelRatio = 1f; zoom = 1f; lastZoom = 0f; probes = 0
+        // The frame is known already, so the surface has the right shape before the first picture arrives.
+        p.videoSize.let {
+            if (it.width > 0 && it.height > 0) {
+                videoW = it.width
+                videoH = it.height
+                pixelRatio = if (it.pixelWidthHeightRatio > 0f) it.pixelWidthHeightRatio else 1f
+                layoutSurface()
+            }
+        }
+        p.addListener(listener)
+        p.setVideoSurfaceView(sv)
+        player = p
+        playingKey = key
+        handedOver = false
+        waitForUser = false
+        reclaimed = true
+        phase = Phase.STARTING
+        startedAt = SystemClock.elapsedRealtime()
+        armedAt = startedAt
+        firstFrameAt = 0L
+        Log.w(APP, "trailer: ${title?.key} ($key) back from Dream Player at ${p.currentPosition} ms, the same player")
+        main.removeCallbacks(watchdog)
+        // This page's window is still on its way back: for a moment the screen doesn't count as ours yet.
+        main.postDelayed(watchdog, RECLAIM_WATCH_MS)
+        return true
+    }
+
+    /**
+     * Nothing is coming back (the watch never opened, or it ended full screen and the page could not take the
+     * player): this page stops waiting, so a trailer plays behind the artwork again once the viewer moves and
+     * rests. Without it the page would sit on its still for as long as it stays open.
+     */
+    private fun unpark() {
+        if (released || !handedOver) return
+        handedOver = false
+        waitForUser = true
+        Log.w(APP, "trailer: ${title?.key} takes itself back, nothing came from Dream Player")
+        evaluate()
+    }
+
+    /**
+     * The picture on screen, at half height, for Dream Player to hold until its own first frame lands. [done]
+     * always runs, with null when the grab can't be made or doesn't answer in [STILL_WAIT_MS].
+     */
+    private fun grabStill(done: (Bitmap?) -> Unit) {
+        val sv = surface
+        if (sv == null || !sv.holder.surface.isValid) { done(null); return }
+        var answered = false
+        val late = Runnable { if (!answered) { answered = true; done(null) } }
+        try {
+            val b = Bitmap.createBitmap(STILL_W, STILL_H, Bitmap.Config.ARGB_8888)
+            PixelCopy.request(sv, b, { res ->
+                main.removeCallbacks(late)
+                val ok = res == PixelCopy.SUCCESS && !answered
+                if (!ok) b.recycle()
+                if (!answered) { answered = true; done(if (ok) b else null) }
+            }, main)
+            main.postDelayed(late, STILL_WAIT_MS)
+        } catch (e: Exception) {
+            Log.w(APP, "trailer: no grab of the picture to hand over ($e)")
+            if (!answered) { answered = true; done(null) }
+        }
+    }
+
     // ---- sound ----
 
     private fun targetVolume() = if (mode(ctx) == SOUND) VOLUME else 0f
@@ -636,6 +784,8 @@ class HeroTrailer private constructor(
 
     companion object {
         private const val TAG = "Trailer"
+        /** The app's own tag, for the hand-over between the hero and a full-screen watch. */
+        private const val APP = "FireHome"
 
         const val SOUND = 0
         const val MUTED = 1
@@ -648,12 +798,79 @@ class HeroTrailer private constructor(
         /** True while any hero trailer is loaded or playing (the ratings prefetch rests then). Main thread. */
         val anyPlaying: Boolean get() = live.any { it.playingKey != null }
 
+        // ---- the trailer waiting for Dream Player ----
+
+        /** A trailer handed over: the player already playing it, which video it is, and the last picture seen. */
+        class Handover(val player: ExoPlayer, val videoKey: String, val still: Bitmap?)
+
+        private var handPlayer: ExoPlayer? = null
+        private var handKey: String? = null
+        private var handStill: Bitmap? = null
+        private val handMain = Handler(Looper.getMainLooper())
+        private val handDrop = Runnable { dropHandover("was never taken") }
+
+        /** True while a playing trailer waits for Dream Player, which then skips its own lookup and curtain. */
+        val handoverWaiting: Boolean get() = handPlayer != null
+
+        /** No page took the player back: whoever handed one over stops waiting for it. */
+        private fun unparkAll() {
+            for (h in live.toList()) h.unpark()
+        }
+
+        private fun hand(p: ExoPlayer, key: String, still: Bitmap?) {
+            // The page calling this is parking right now: it must not be taken back out of the park it just entered.
+            dropHandover("replaced by a newer one", unpark = false)
+            handPlayer = p
+            handKey = key
+            handStill = still
+            handMain.postDelayed(handDrop, HAND_DROP_MS)
+        }
+
+        /** Dream Player takes the waiting trailer and owns it from here, releasing it like any other player. */
+        fun takeHandover(): Handover? {
+            val p = handPlayer ?: return null
+            val key = handKey ?: return null
+            val still = handStill
+            handPlayer = null
+            handKey = null
+            handStill = null
+            handMain.removeCallbacks(handDrop)
+            return Handover(p, key, still)
+        }
+
+        /**
+         * Dream Player is closing and gives the trailer back, still playing: the page that handed it over takes
+         * it on behind its artwork. False when no page can have it any more, and then the caller releases it.
+         */
+        fun handBack(p: ExoPlayer, videoKey: String): Boolean {
+            for (h in live.toList()) if (h.handedOver && h.reclaim(p, videoKey)) return true
+            Log.w(APP, "trailer: no page left to take the trailer back")
+            unparkAll()
+            return false
+        }
+
+        /** Dream Player never opened: the decoder can't be left running for nobody. */
+        private fun dropHandover(why: String, unpark: Boolean = true) {
+            val p = handPlayer ?: return
+            handPlayer = null
+            handKey = null
+            handStill?.recycle()
+            handStill = null
+            handMain.removeCallbacks(handDrop)
+            Log.w(APP, "trailer: the handed-over player $why, releasing it")
+            try { p.release() } catch (e: Throwable) {}
+            if (unpark) unparkAll()
+        }
+
         fun attach(slot: FrameLayout, kit: PremiumKit, backdrop: () -> Bitmap?) = HeroTrailer(slot, kit, backdrop)
 
         private fun prefs(ctx: Context) = ctx.getSharedPreferences("trailers", Context.MODE_PRIVATE)
 
-        /** Background Trailers for the current profile: [SOUND] (default), [MUTED] or [OFF]. */
-        fun mode(ctx: Context) = prefs(ctx).getInt("mode" + Profiles.suffix(ctx), SOUND).coerceIn(SOUND, OFF)
+        /**
+         * Background Trailers for the current profile: [SOUND], [MUTED] (the default on every build, owner
+         * 2026-10-31) or [OFF]. A profile that has chosen keeps its choice; only an untouched one is muted.
+         */
+        fun mode(ctx: Context) = prefs(ctx).getInt("mode" + Profiles.suffix(ctx), MUTED).coerceIn(SOUND, OFF)
 
         fun setMode(ctx: Context, m: Int) = prefs(ctx).edit().putInt("mode" + Profiles.suffix(ctx), m.coerceIn(SOUND, OFF)).apply()
 
@@ -734,6 +951,14 @@ class HeroTrailer private constructor(
         private const val VOLUME_IN_MS = 1_800L
         /** A touch below full: a trailer starts on its own, it shouldn't jolt the room. */
         private const val VOLUME = 0.8f
+        /** The grab of the picture handed to Dream Player: half height is plenty for the moment it shows. */
+        private const val STILL_W = 960
+        private const val STILL_H = 540
+        private const val STILL_WAIT_MS = 80L
+        /** How long a handed-over player waits to be taken before it is released. */
+        private const val HAND_DROP_MS = 5_000L
+        /** A trailer just handed back: the page's window needs a moment before the screen counts as ours again. */
+        private const val RECLAIM_WATCH_MS = 2_500L
         private const val MIN_FREE_MB = 250
         private const val TIGHT_MB = 300
         private const val PROBE_W = 96

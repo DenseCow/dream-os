@@ -85,7 +85,7 @@ struct PlayerScreen: View {
         .statusBarHidden()
         .persistentSystemOverlays(.hidden)
         .preferredColorScheme(.dark)
-        // Like Netflix, the screen never sleeps while the player is open (loading, playing, paused, Up Next), whatever
+        // The screen never sleeps while the player is open (loading, playing, paused, Up Next), whatever
         // the phone's Auto-Lock setting says (owner). Closing the player hands Auto-Lock back.
         .onAppear { UIApplication.shared.isIdleTimerDisabled = true }
         .onDisappear { UIApplication.shared.isIdleTimerDisabled = false }
@@ -300,7 +300,7 @@ struct ControlsOverlay: View {
 
     private var scrubbing: Bool { scrubTarget != nil }
 
-    /// The big Play / Pause in the middle with Back 10 / Forward 10 beside it (Apple TV / Netflix style).
+    /// The big Play / Pause in the middle with Back 10 / Forward 10 beside it.
     private var centerTransport: some View {
         HStack(spacing: 56) {
             RoundIcon(system: "gobackward.10", label: "Back 10 Seconds", diameter: 60, glyph: 24) {
@@ -351,10 +351,8 @@ struct ControlsOverlay: View {
     private var subLine: String {
         guard let r = session.request else { return "" }
         if session.isTrailer { return "Trailer" }
-        if let se = r.season, let e = r.episode {
-            let name = r.episodeName ?? session.episodeInfo?.name
-            return ["S\(se) E\(e)", name].compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: "  ·  ")
-        }
+        if let line = EpisodeWords.playing(r.kind, season: r.season, episode: r.episode,
+                                           title: r.episodeName ?? session.episodeInfo?.name) { return line }
         return ["Movie", r.title.year.isEmpty ? nil : r.title.year].compactMap { $0 }.joined(separator: "  ·  ")
     }
 
@@ -639,9 +637,9 @@ struct PauseCard: View {
 
     private func pauseLine(_ r: PlayRequest?) -> String? {
         guard let r else { return nil }
-        if let s = r.season, let e = r.episode {
-            return ["S\(s) · E\(e)", r.episodeName ?? session.episodeInfo?.name].compactMap { $0 }.joined(separator: "  ")
-        }
+        if let line = EpisodeWords.playing(r.kind, season: r.season, episode: r.episode,
+                                           title: r.episodeName ?? session.episodeInfo?.name,
+                                           separator: " · ", join: "  ") { return line }
         let d = session.details
         return [r.title.year.nilIfEmpty, Labels.runtime(d?.runtime ?? 0), d?.genres.prefix(2).joined(separator: ", ").nilIfEmpty]
             .compactMap { $0 }.joined(separator: "  ·  ")

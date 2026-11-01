@@ -85,6 +85,7 @@ object PlayFlow {
         put("title", r.title); put("type", r.type); put("tmdb", r.tmdbId)
         r.imdb?.let { put("imdb", it) }; r.year?.let { put("year", it) }
         r.season?.let { put("season", it) }; r.episode?.let { put("episode", it) }
+        r.specialId?.let { put("specialId", it) }
         r.episodeTitle?.let { put("epTitle", it) }
         r.backdrop?.let { put("backdrop", it) }; r.poster?.let { put("poster", it) }; r.logo?.let { put("logo", it) }
         put("startMs", r.startMs); r.player?.let { put("player", it) }; put("autoplayNext", r.autoplayNext)
@@ -94,7 +95,7 @@ object PlayFlow {
         title = o.optString("title"), type = o.optString("type", "movie"), tmdbId = o.optInt("tmdb"),
         imdb = o.optString("imdb").ifEmpty { null }, year = o.optInt("year").takeIf { it > 0 },
         season = if (o.has("season")) o.optInt("season") else null, episode = if (o.has("episode")) o.optInt("episode") else null,
-        episodeTitle = o.optString("epTitle").ifEmpty { null },
+        episodeTitle = o.optString("epTitle").ifEmpty { null }, specialId = o.optString("specialId").ifEmpty { null },
         backdrop = o.optString("backdrop").ifEmpty { null }, poster = o.optString("poster").ifEmpty { null },
         logo = o.optString("logo").ifEmpty { null }, startMs = o.optLong("startMs"),
         player = o.optString("player").ifEmpty { null }, autoplayNext = o.optBoolean("autoplayNext", true),
@@ -103,6 +104,18 @@ object PlayFlow {
     /** The request on an intent that opens Dream Player, or null. */
     fun requestFrom(intent: Intent?): PlaybackRequest? =
         intent?.getStringExtra(EXTRA_REQUEST)?.let { try { fromJson(JSONObject(it)) } catch (e: Exception) { null } }
+
+    /**
+     * An episode as every screen writes it: "S2 E5", or just "Specials" for a [special], whose own title says
+     * which one it is. Never a number for a special: its place in air order moves when an older one is added
+     * later (STANDARDS section 5). [sep] goes between the two parts. Null for a movie.
+     */
+    fun episodeCode(special: Boolean, season: Int?, episode: Int?, sep: String = " "): String? {
+        if (special) return "Specials"
+        val e = episode ?: return null
+        val s = season ?: return null
+        return "S$s" + sep + "E$e"
+    }
 
     /** A TMDB image path (or a full URL) as a URL at [size]. */
     fun img(path: String?, size: String) =
@@ -115,11 +128,37 @@ object PlayFlow {
     fun request(
         tv: Boolean, tmdbId: Int, title: String, year: Int?, imdb: String?, season: Int = 0, episode: Int = 0,
         startMs: Long = 0, backdropPath: String? = null, posterPath: String? = null, episodeTitle: String? = null,
+        specialId: String? = null,
     ) = PlaybackRequest(
         title = title, type = if (tv) "episode" else "movie", tmdbId = tmdbId, imdb = imdb, year = year,
-        season = if (tv) season else null, episode = if (tv) episode else null, episodeTitle = episodeTitle,
+        season = if (tv && specialId == null) season else null, episode = if (tv && specialId == null) episode else null,
+        episodeTitle = episodeTitle, specialId = specialId,
         backdrop = img(backdropPath, "w1280"), poster = img(posterPath, "w342"), startMs = startMs,
     )
+
+    /**
+     * The request that plays one special, built from its catalog entry ([Specials]) rather than by naming its
+     * fields one at a time: everything that identifies a special comes out of that one object, so a field
+     * added to it later cannot be left behind at one of the call sites. Null when the entry carries no id.
+     */
+    fun special(
+        o: JSONObject, tmdbId: Int, title: String, year: Int? = null, imdb: String? = null,
+        backdropPath: String? = null, posterPath: String? = null, startMs: Long = 0,
+    ): PlaybackRequest? {
+        val id = Specials.idOf(o).ifEmpty { return null }
+        return request(true, tmdbId, title, year, imdb, startMs = startMs, backdropPath = backdropPath,
+            posterPath = posterPath, episodeTitle = Upcoming.title(o), specialId = id)
+    }
+
+    /**
+     * The request that plays [e] as the watch history has it, kind and all: the one place an entry becomes a
+     * request, so a field added to [WatchHistory.Entry] is picked up everywhere that resumes one.
+     */
+    fun from(e: WatchHistory.Entry, startMs: Long = 0): PlaybackRequest = request(
+        e.ofShow, e.tmdbId, e.title, e.year, e.imdb,
+        if (e.isSeries) e.season else 0, if (e.isSeries) e.episode else 0,
+        startMs = startMs, backdropPath = e.backdropPath, posterPath = e.posterPath,
+        episodeTitle = e.episodeTitle.takeIf { e.ofShow }, specialId = e.specialId)
 
     private fun tmdbType(r: PlaybackRequest) = if (r.type == "episode") "tv" else "movie"
 
@@ -136,10 +175,10 @@ object PlayFlow {
      * the end of a movie still holds its old Resume spot, and the movie must not start there again.
      */
     private fun historyStart(ctx: Context, r: PlaybackRequest): Long? {
-        val key = (if (r.type == "episode") "tv:" else "movie:") + r.tmdbId
-        val e = WatchHistory.recent(ctx).firstOrNull { it.key == key } ?: return null
+        // A special has its own row, so the entry found is already the right one; a series' is its position.
+        val e = WatchHistory.entryFor(ctx, r) ?: return null
         if (!ours(e)) return null
-        if (r.type == "episode") {
+        if (e.isSeries) {
             val s = r.season ?: 0
             val ep = r.episode ?: 0
             if (e.season > s || e.season == s && e.episode > ep) return 0L // the show moved on: that one was watched
@@ -164,9 +203,13 @@ object PlayFlow {
             )
         }
         if (out.logo == null) out = out.copy(logo = logoUrl(ctx, r))
-        if (r.type == "episode" && out.episodeTitle == null && r.season != null && r.episode != null) {
-            WatchHistory.seasonEpisodes(ctx, r.tmdbId, r.season)?.firstOrNull { it.optInt("episode_number") == r.episode }
-                ?.optString("name")?.ifEmpty { null }?.let { out = out.copy(episodeTitle = it) }
+        if (r.type == "episode" && out.episodeTitle == null && (r.episode != null || r.isSpecial)) {
+            // A special's name comes from the catalog: TMDB has no episode list for most specials ([Specials]).
+            // A special is looked up by its id and never falls back to a season: standing in season 1 for the
+            // season it has not got would name a real episode's title.
+            val ep = if (r.isSpecial) r.specialId?.let { Specials.byId(ctx, r.tmdbId, it) }
+                else WatchHistory.seasonEpisodes(ctx, r.tmdbId, r.season ?: 1)?.firstOrNull { it.optInt("episode_number") == r.episode }
+            ep?.optString("name")?.ifEmpty { null }?.let { out = out.copy(episodeTitle = it) }
         }
         return out
     }
@@ -210,9 +253,10 @@ object PlayFlow {
     class NextUp(val request: PlaybackRequest, val still: String?, val overview: String, val runtimeMin: Int)
 
     /**
-     * The aired episode after [season] [episode] of show [showId] and the season it's in: the next one in that season,
-     * else the lowest episode of the next season the show lists (specials, season 0, never count). Null at the end
-     * of the series or when it hasn't aired. Continue Watching's Up Next uses the same rule. Blocking.
+     * The aired episode after [season] [episode] of show [showId] and the season it's in: the next one in that
+     * season, else the lowest episode of the next season the show lists (TMDB's season 0 is specials, and never
+     * counts). Null at the end of the series or when it hasn't aired. A special never reaches this: nothing
+     * follows one, so it is never Up Next (STANDARDS §5). Continue Watching's Up Next uses the same rule. Blocking.
      */
     fun episodeAfter(ctx: Context, showId: Int, season: Int, episode: Int): Pair<Int, JSONObject>? {
         val today = DreamTime.todayYmd(ctx)
@@ -232,7 +276,8 @@ object PlayFlow {
 
     /** The episode after [r] ([episodeAfter]), or null at the end of the series / when the next one hasn't aired. Blocking. */
     fun nextEpisode(ctx: Context, r: PlaybackRequest): NextUp? {
-        if (r.type != "episode") return null
+        // Nothing follows a special: it sits outside the show's order, so it is never Up Next (STANDARDS section 5).
+        if (r.type != "episode" || r.isSpecial) return null
         val (s, next) = episodeAfter(ctx, r.tmdbId, r.season ?: return null, r.episode ?: return null) ?: return null
         val req = r.copy(season = s, episode = next.optInt("episode_number"), episodeTitle = next.optString("name").ifEmpty { null }, startMs = 0)
         return NextUp(req, img(next.optString("still_path"), "w500"), next.optString("overview"), next.optInt("runtime"))
@@ -252,7 +297,8 @@ object PlayFlow {
         /** Where the Play waits, for the log when the curtain's deadline gives up: [RESOLVE], [LOOKUP], [HAND_OFF], [PLAYER]. */
         @Volatile var phase = RESOLVE
 
-        fun isFor(r: PlaybackRequest?) = r != null && r.tmdbId == request.tmdbId && r.season == request.season && r.episode == request.episode
+        fun isFor(r: PlaybackRequest?) = r != null && r.tmdbId == request.tmdbId &&
+            r.season == request.season && r.episode == request.episode && r.specialId == request.specialId
     }
 
     private const val RESOLVE = "resolve"
@@ -822,7 +868,7 @@ class LoadingCurtain(private val host: PlayerHost) {
         if (r == null) return ""
         if (r.trailer) return "Trailer"
         if (r.type != "episode" || r.season == null || r.episode == null) return r.year?.toString() ?: ""
-        return "S${r.season} · E${r.episode}" + (r.episodeTitle?.let { "    $it" } ?: "")
+        return PlayFlow.episodeCode(r.isSpecial, r.season, r.episode, " · ").orEmpty() + (r.episodeTitle?.let { "    $it" } ?: "")
     }
 
     fun hide() {

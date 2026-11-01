@@ -331,7 +331,9 @@ private struct InfoSheet: View {
 
     private func kicker(_ r: PlayRequest?) -> String? {
         guard let r else { return nil }
-        if let s = r.season, let e = r.episode { return "\(r.title.name)  ·  S\(s) · E\(e)" }
+        if let n = EpisodeWords.name(r.kind, season: r.season, episode: r.episode, title: r.episodeName, separator: " · ") {
+            return "\(r.title.name)  ·  \(n)"
+        }
         return r.title.year.isEmpty ? "Movie" : "Movie  ·  \(r.title.year)"
     }
 
@@ -379,27 +381,39 @@ private struct InfoSheet: View {
 private struct EpisodesSheet: View {
     @ObservedObject var session: PlayerSession
     let close: () -> Void
-    @State private var season = 1
+    /// Which group is listed: a numbered season, or the show's specials, always last. Its own small case rather than
+    /// a season number, so nothing here can read a special as "season 0".
+    private enum Group: Hashable {
+        case season(Int), specials
+        var isSpecials: Bool { self == .specials }
+        var seasonNumber: Int? { if case .season(let n) = self { return n } else { return nil } }
+    }
+
+    @State private var group = Group.season(1)
     @State private var episodes: [Episode]?
     @State private var history: HistoryEntry?
+    /// How many specials the catalog found, nil until it answers (TMDB lists no season 0 for most of them).
+    @State private var specialsCount: Int?
 
     var body: some View {
         let r = session.request
         SheetHeader(kicker: r?.title.name, title: "Episodes", close: close)
-        let seasons = Array((session.details?.seasons ?? []).filter { $0.episodeCount > 0 }
-            .sorted { ($0.number == 0 ? 9999 : $0.number) < ($1.number == 0 ? 9999 : $1.number) }.prefix(60))
-        // The season picker: one clear pill that opens the list of seasons, the episode count beside it.
+        let rows: [(group: Group, label: String)] =
+            (session.details?.seasons ?? []).filter { $0.number > 0 && $0.episodeCount > 0 }
+                .sorted { $0.number < $1.number }.prefix(60).map { (.season($0.number), chipLabel($0)) }
+            + ((specialsCount ?? 0) > 0 ? [(.specials, EpisodeWords.specials)] : [])
+        // The season picker: one clear pill that opens the list, the episode count beside it.
         HStack(spacing: 14) {
             Menu {
-                Picker("Season", selection: Binding(get: { season }, set: { n in
-                    guard n != season else { return }
-                    haptic(.light); season = n; Task { await load() }
+                Picker("Season", selection: Binding(get: { group }, set: { g in
+                    guard g != group else { return }
+                    haptic(.light); group = g; Task { await load() }
                 })) {
-                    ForEach(seasons) { s in Text(chipLabel(s)).tag(s.number) }
+                    ForEach(rows, id: \.group) { row in Text(row.label).tag(row.group) }
                 }
             } label: {
                 HStack(spacing: 10) {
-                    Text(seasons.first { $0.number == season }.map(chipLabel) ?? (season == 0 ? "Specials" : "Season \(season)"))
+                    Text(rows.first { $0.group == group }?.label ?? EpisodeWords.season(group.seasonNumber ?? 1, special: group.isSpecials))
                         .font(.system(size: 16, weight: .semibold))
                     Image(systemName: "chevron.down").font(.system(size: 12, weight: .bold))
                 }
@@ -408,9 +422,9 @@ private struct EpisodesSheet: View {
                 .background(Capsule().fill(.white.opacity(0.10)))
                 .overlay(Capsule().strokeBorder(.white.opacity(0.16), lineWidth: 1))
             }
-            .disabled(seasons.count < 2)
+            .disabled(rows.count < 2)
             if let episodes, !episodes.isEmpty {
-                Text(episodes.count == 1 ? "1 Episode" : "\(episodes.count) Episodes")
+                Text(EpisodeWords.count(episodes.count, special: group.isSpecials))
                     .font(.system(size: 14, weight: .medium)).foregroundStyle(.white.opacity(0.55))
             }
             Spacer(minLength: 0)
@@ -422,10 +436,11 @@ private struct EpisodesSheet: View {
                 LazyVStack(alignment: .leading, spacing: 12) {
                     if let episodes {
                         if episodes.isEmpty {
-                            Text("No Episodes to Watch Yet").font(.system(size: 15, weight: .medium)).foregroundStyle(.white.opacity(0.55))
+                            Text(group.isSpecials ? "No Specials to Watch Yet" : "No Episodes to Watch Yet")
+                                .font(.system(size: 15, weight: .medium)).foregroundStyle(.white.opacity(0.55))
                                 .padding(.horizontal, 10).padding(.vertical, 18)
                         }
-                        ForEach(episodes.prefix(60)) { ep in episodeRow(ep).id(ep.number) }
+                        ForEach(episodes.prefix(60)) { ep in episodeRow(ep).id(ep.id) }
                     } else {
                         ForEach(0..<4, id: \.self) { _ in
                             HStack(spacing: 16) {
@@ -443,37 +458,52 @@ private struct EpisodesSheet: View {
                 .padding(.horizontal, 12).padding(.top, 14).padding(.bottom, 24)
             }
             .onChange(of: episodes?.count) { _, _ in
-                if season == r?.season, let e = r?.episode { proxy.scrollTo(e, anchor: .center) }
+                if group == .season(r?.season ?? -1), let e = r?.episode, let id = episodes?.first(where: { $0.number == e })?.id {
+                    proxy.scrollTo(id, anchor: .center)
+                }
+                if group.isSpecials, let id = r?.specialId, let row = episodes?.first(where: { $0.specialId == id }) {
+                    proxy.scrollTo(row.id, anchor: .center)
+                }
             }
         }
         .task {
-            season = r?.season ?? 1
+            // A special is playing: open on the specials, since that is where the viewer is.
+            group = r?.isSpecial == true ? .specials : .season(r?.season ?? 1)
             if let key = r?.title.key { history = await Services.shared.history.entry(for: key) }
+            if let id = session.request?.title.id { specialsCount = await Services.shared.catalog.specials(showId: id).count }
             await load()
         }
     }
 
     private func chipLabel(_ s: SeasonSummary) -> String {
         if !s.name.isEmpty, !s.name.hasPrefix("Season"), s.name.count <= 18 { return s.name }
-        return s.number == 0 ? "Specials" : "Season \(s.number)"
+        return EpisodeWords.season(s.number)
     }
 
     private func load() async {
         guard let id = session.request?.title.id else { return }
         episodes = nil
-        let s = season
+        let g = group
         let today = ISO8601DateFormatter.string(from: Date(), timeZone: .current, formatOptions: [.withFullDate])
-        let all = (try? await Services.shared.catalog.episodes(showId: id, season: s)) ?? []
-        // Another season picked meanwhile: its own load fills the list (a slow answer showed the wrong season's).
-        guard s == season else { return }
+        let all: [Episode]
+        switch g {
+        case .season(let n): all = (try? await Services.shared.catalog.episodes(showId: id, season: n)) ?? []
+        case .specials: all = await Services.shared.catalog.specials(showId: id)
+        }
+        // Another group picked meanwhile: its own load fills the list (a slow answer showed the wrong one's).
+        guard g == group else { return }
         episodes = all.filter { $0.outEarly || (!$0.airDate.isEmpty && $0.airDate <= today) } // up early too: it plays
     }
 
+    /// A row's progress. A special has its own history row and no place in the order, so nothing is inferred from
+    /// where the viewer is in the seasons.
     private func progress(_ ep: Episode) -> Double? {
-        let r = session.request
-        if r?.season == ep.season && r?.episode == ep.number {
+        if playing(ep) {
             let d = session.state.duration
             return d > 0 ? session.state.position / d : nil
+        }
+        if ep.isSpecial {
+            return WatchedState.shared.special(show: ep.showId, anyOf: ep.specialIds) ? 1 : nil
         }
         guard let h = history, let hs = h.season, let he = h.episode else { return nil }
         if hs == ep.season && he == ep.number && !h.upNext { return h.progress }
@@ -481,24 +511,38 @@ private struct EpisodesSheet: View {
         return nil
     }
 
+    /// This very row is what's on screen.
+    private func playing(_ ep: Episode) -> Bool {
+        guard let r = session.request else { return false }
+        if ep.isSpecial { return r.specialId == ep.specialId }
+        return !r.isSpecial && r.season == ep.season && r.episode == ep.number
+    }
+
     /// One tidy row: the still on the left, "E3 · Title", a two-line synopsis and the runtime on the right.
     /// The episode that is playing carries the rainbow edge.
     private func episodeRow(_ ep: Episode) -> some View {
         let r = session.request
-        let playing = r?.season == ep.season && r?.episode == ep.number
+        let playing = playing(ep)
         let p = progress(ep)
         let watched = (p ?? 0) >= 0.9 && !playing
         return Button {
             haptic(.light)
             if playing { close(); return }
             var resume: Double = 0
-            if let h = history, h.season == ep.season, h.episode == ep.number, !h.upNext, h.progress > 0.02, h.progress < 0.9 {
+            if !ep.isSpecial, let h = history, h.season == ep.season, h.episode == ep.number, !h.upNext, h.progress > 0.02, h.progress < 0.9 {
                 resume = Double(h.positionMs) / 1000
             }
             close()
             guard let r else { return }
-            var next = r
-            next.season = ep.season; next.episode = ep.number; next.episodeName = ep.name; next.fromStart = resume == 0
+            var next: PlayRequest
+            if ep.isSpecial {
+                // A special is its own kind: no season, its source id, and its own saved spot (`historyStart`).
+                next = .special(title: r.title, imdbId: r.imdbId, ep)
+            } else {
+                next = r
+                next.specialId = nil
+                next.season = ep.season; next.episode = ep.number; next.episodeName = ep.name; next.fromStart = resume == 0
+            }
             session.playNext(next)
         } label: {
             HStack(alignment: .top, spacing: 16) {
@@ -526,7 +570,9 @@ private struct EpisodesSheet: View {
                 .frame(width: 136, height: 76)
                 .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
                 VStack(alignment: .leading, spacing: 6) {
-                    Text("E\(ep.number)  ·  " + (ep.name.isEmpty ? "Episode \(ep.number)" : ep.name))
+                    // A special is named by its own title: its place in air order is a view that moves.
+                    Text(ep.isSpecial ? (ep.name.isEmpty ? "Special" : ep.name)
+                                      : "E\(ep.number)  ·  " + (ep.name.isEmpty ? "Episode \(ep.number)" : ep.name))
                         .font(.system(size: 15, weight: .semibold)).lineLimit(1)
                     if !ep.overview.isEmpty {
                         Text(ep.overview).font(.system(size: 13)).opacity(0.70).lineLimit(2).lineSpacing(2)

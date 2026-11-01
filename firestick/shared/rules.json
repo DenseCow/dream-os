@@ -1,0 +1,119 @@
+{
+  "_": "The one source for every algorithm tunable, for all three builds. Edit this file, run tools/gen-rules.py, commit what it writes. Never edit a generated AlgoRules file by hand: the generator overwrites it and the self-check fails.",
+  "sections": [
+    {
+      "title": "Taste.rank: how a discovery row is scored (the parts add up to 1 before the penalties)",
+      "values": [
+        {"name": "W_ORDER", "type": "double", "value": 0.45,
+         "doc": "TMDB's own order (popularity, votes, trending): a row is re-ordered, never shuffled. Was 0.50 / 0.25 when strength hit 1.0 at six titles; under the slower curve 0.45 / 0.30 keeps a six-title viewer about as personal (harness). Acceptance rule for another split: it must lift every warm viewer in the harness while tau over the first twenty stays at or above 0.33 and obscure titles in the first six do not exceed the legacy line's. 40/35 lifts the warm viewers but its tau falls to 0.25 on two of them."},
+        {"name": "W_TASTE", "type": "double", "value": 0.30,
+         "doc": "The profile's affinity for the title, scaled by how well the taste is known."},
+        {"name": "W_QUALITY", "type": "double", "value": 0.20, "doc": "Steadied TMDB score."},
+        {"name": "W_FRESH", "type": "double", "value": 0.05, "doc": "Freshness by release date."},
+        {"name": "ART_PENALTY", "type": "double", "value": 0.06,
+         "doc": "Taken off a landscape card with no backdrop (the poster stands in): art matters, but it is not TMDB's order."},
+        {"name": "DAY_ROTATION", "type": "double", "value": 0.06,
+         "doc": "A per-title, per-day nudge in 0..DAY_ROTATION: the same all day, different tomorrow, so a row's first screen turns over a little each day without a reshuffle while anyone is looking."},
+        {"name": "DEEPER_PAGES", "type": "int", "value": 3,
+         "doc": "A row's second fetch is one of this many pages after the first, by the day."},
+        {"name": "SPREAD_GAP", "type": "int", "value": 4,
+         "doc": "Titles of one franchise stay at least this many cards apart where the row allows it."},
+        {"name": "FRESH_1Y", "type": "double", "value": 1.0},
+        {"name": "FRESH_3Y", "type": "double", "value": 0.6},
+        {"name": "FRESH_10Y", "type": "double", "value": 0.3}
+      ]
+    },
+    {
+      "title": "Taste.quality: TMDB's score steadied toward a prior by vote count, mapped to 0..1",
+      "values": [
+        {"name": "QUALITY_PRIOR", "type": "double", "value": 6.4},
+        {"name": "QUALITY_VOTES_MOVIE", "type": "double", "value": 300.0},
+        {"name": "QUALITY_VOTES_TV", "type": "double", "value": 100.0},
+        {"name": "QUALITY_UNKNOWN", "type": "double", "value": 6.0, "doc": "A title with no score at all reads as this."},
+        {"name": "QUALITY_LOW", "type": "double", "value": 5.5, "doc": "Steadied scores map linearly from QUALITY_LOW to QUALITY_LOW + QUALITY_SPAN."},
+        {"name": "QUALITY_SPAN", "type": "double", "value": 3.0}
+      ]
+    },
+    {
+      "title": "TasteProfile.affinity",
+      "values": [
+        {"name": "AFF_GENRE", "type": "double", "value": 0.7},
+        {"name": "AFF_LANG", "type": "double", "value": 0.2},
+        {"name": "AFF_ERA", "type": "double", "value": 0.1}
+      ]
+    },
+    {
+      "title": "Taste signals (STANDARDS section 5: finished titles, My List, opened pages and Trakt only)",
+      "values": [
+        {"name": "SEED_FINISHED", "type": "double", "value": 1.0, "doc": "A finished movie, or a finished episode's show."},
+        {"name": "SEED_EPISODES", "type": "double", "value": 0.9,
+         "doc": "A show the viewer finishes episodes of (an Up Next queued, or episodes in the Watched ledger)."},
+        {"name": "SEED_SAVED", "type": "double", "value": 0.5},
+        {"name": "SEED_OPENED", "type": "double", "value": 0.15},
+        {"name": "KEPT_AFTER_EPISODES", "type": "int", "value": 3,
+         "doc": "Episodes of a show the viewer must have finished before clearing its Continue Watching card stops counting as \"not for me\". The rule it bends is there to keep a quick sample out of the profile; someone this many episodes in is not sampling, they are between seasons, and losing the signal would be the bigger error."},
+        {"name": "WATCH_HALF_LIFE_DAYS", "type": "double", "value": 45.0},
+        {"name": "OPENED_HALF_LIFE_DAYS", "type": "double", "value": 14.0},
+        {"name": "OPENED_KEEP_DAYS", "type": "int", "value": 60},
+        {"name": "OPENED_MAX", "type": "int", "value": 80},
+        {"name": "HISTORY_SEEDS", "type": "int", "value": 60},
+        {"name": "STRENGTH_SCALE", "type": "double", "value": 4.0,
+         "doc": "strength = 1 - exp(-weight / STRENGTH_SCALE): about 0.22 from one fresh finished title, 0.63 from four, 0.78 from six, 0.95 from twelve. Diminishing returns, never a hard ceiling at six."},
+        {"name": "OPENED_STRENGTH_CAP", "type": "double", "value": 1.0,
+         "doc": "Opened pages shape affinities in full but count toward strength only up to this much weight (browsing isn't watching)."},
+        {"name": "SNAPSHOT_MAX_AGE_MS", "type": "long", "value": 21600000}
+      ]
+    },
+    {
+      "title": "Home's \"for you\" rows and the genre order on Movies / TV Shows",
+      "values": [
+        {"name": "FOR_YOU_MIN_STRENGTH", "type": "double", "value": 0.25},
+        {"name": "FOR_YOU_MIN_AFFINITY", "type": "double", "value": 0.35},
+        {"name": "FOR_YOU_MOMENT_BOOST", "type": "double", "value": 0.15},
+        {"name": "FOR_YOU_ROWS", "type": "int", "value": 2},
+        {"name": "GENRE_ORDER_MIN_STRENGTH", "type": "double", "value": 0.25}
+      ]
+    },
+    {
+      "title": "HomePicks.featured: the hero",
+      "values": [
+        {"name": "HERO_ORDER_POOL", "type": "double", "value": 40.0, "doc": "The chart position's worth, spread over the pool (two trending pages)."},
+        {"name": "HERO_MOMENT", "type": "double", "value": 1.0},
+        {"name": "HERO_MOMENT_FLOOR", "type": "double", "value": 0.15,
+         "doc": "The clock's terms (HERO_MOMENT, HERO_MOVIE_LEAN) are scaled by max(this, 1 - strength): a known taste leads, the clock breaks ties."},
+        {"name": "HERO_MOVIE_LEAN", "type": "double", "value": 0.6},
+        {"name": "HERO_TASTE", "type": "double", "value": 0.8},
+        {"name": "HERO_QUALITY", "type": "double", "value": 0.4},
+        {"name": "HERO_TYPE", "type": "double", "value": 0.4,
+         "doc": "Movies against shows by the profile's own share, scaled by strength: up to this much either way."},
+        {"name": "HERO_ROTATION", "type": "double", "value": 0.3}
+      ]
+    },
+    {
+      "title": "RowMix.tidy: what no discovery row shows",
+      "values": [
+        {"name": "POOR_RATING", "type": "double", "value": 5.0},
+        {"name": "POOR_VOTES", "type": "int", "value": 100},
+        {"name": "OBSCURE_VOTES_MOVIE", "type": "int", "value": 500,
+         "doc": "Below this many votes a title in a language the profile doesn't watch in counts as obscure."},
+        {"name": "OBSCURE_VOTES_TV", "type": "int", "value": 150},
+        {"name": "OWN_LANGUAGE_MIN", "type": "int", "value": 4,
+         "doc": "A list this long or longer that is at least half one language adopts that language as its own."}
+      ]
+    },
+    {
+      "title": "Row recipes (RowMix)",
+      "values": [
+        {"name": "RECENT_YEARS", "type": "int", "value": 30},
+        {"name": "ACCLAIMED_YEARS", "type": "int", "value": 25},
+        {"name": "GEM_YEARS", "type": "int", "value": 18},
+        {"name": "VARIETY_VOTES_MOVIE", "type": "int", "value": 150},
+        {"name": "VARIETY_VOTES_TV", "type": "int", "value": 60},
+        {"name": "VARIETY_FAVORITE_RATING", "type": "double", "value": 6.3},
+        {"name": "VARIETY_PAGES", "type": "int", "value": 4},
+        {"name": "GEM_RATING", "type": "double", "value": 7.0},
+        {"name": "GEM_PAGES", "type": "int", "value": 3}
+      ]
+    }
+  ]
+}

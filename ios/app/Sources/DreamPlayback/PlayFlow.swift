@@ -24,22 +24,23 @@ public enum PlayFlow {
     public static let resolveTimeoutMs: Int64 = 45_000
 
     /// The episode after [r] from TMDB season data (rolls over to the next season's first episode), or nil at the end
-    /// of the series / when the next one hasn't aired.
+    /// of the series / when the next one hasn't aired, and nil after a special: a special sits outside the show's
+    /// order, so nothing follows it and it is never Up Next (STANDARDS section 5).
     public static func nextEpisode(_ r: PlayRequest) async -> NextUp? {
-        guard r.title.kind == .tv, let season = r.season, let episode = r.episode else { return nil }
+        guard r.title.kind == .tv, !r.isSpecial, let season = r.season, let episode = r.episode else { return nil }
         let today = DreamTime.todayYmd()
         let catalog = Services.shared.catalog
         var s = season
         var next = (try? await catalog.episodes(showId: r.title.id, season: season))?.first { $0.number == episode + 1 }
         if next == nil {
-            // The next season the show lists (specials, season 0, never count).
+            // The next numbered season the show lists; specials are their own catalog and never one of them.
             guard let d = try? await catalog.details(kind: .tv, id: r.title.id),
                   let ns = d.seasons.map(\.number).filter({ $0 > season }).min() else { return nil }
             s = ns
             next = (try? await catalog.episodes(showId: r.title.id, season: ns))?.min { $0.number < $1.number }
         }
         // Out: its day has come, or it's up before it (the index found a source; `Episode.outEarly`).
-        guard let n = next, n.outEarly || (!n.airDate.isEmpty && n.airDate <= today) else { return nil }
+        guard let n = next, !n.isSpecial, n.outEarly || (!n.airDate.isEmpty && n.airDate <= today) else { return nil }
         var req = r
         req.season = s; req.episode = n.number; req.episodeName = n.name.isEmpty ? nil : n.name; req.fromStart = false
         return NextUp(request: req, stillPath: n.stillPath, overview: n.overview, runtime: n.runtime)

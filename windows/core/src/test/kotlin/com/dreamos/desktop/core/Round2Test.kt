@@ -51,8 +51,14 @@ class Round2Test {
     @Test fun listsComeFromDiskAndRevalidateBehind() {
         TmdbDisk.open(Files.createTempDirectory("tmdb-disk"))
         var calls = 0
-        Net.fake = { _, _, _ -> calls++; NetResponse(200, """{"results":[{"id":$calls}]}""", emptyMap()) }
-        val u = tmdbUrl("/trending/all/day")
+        val path = "/trending/all/day"
+        // Counted per URL, not per request: a revalidation another test left in flight lands here too, and
+        // counting it makes "refreshed behind" read as two refreshes and fail a test that did nothing wrong.
+        Net.fake = { _, url, _ ->
+            if (url.contains(path)) { calls++; NetResponse(200, """{"results":[{"id":$calls}]}""", emptyMap()) }
+            else NetResponse(404, "", emptyMap())
+        }
+        val u = tmdbUrl(path)
         assertEquals("""{"results":[{"id":1}]}""", Net.getText(u))
         TmdbDisk.flush()
         assertEquals("""{"results":[{"id":1}]}""", Net.getText(u), "fresh: from disk")

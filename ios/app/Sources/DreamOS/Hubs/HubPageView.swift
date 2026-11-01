@@ -11,8 +11,9 @@ struct HubPageView: View {
     let id: String
     @State private var model: CatalogPageModel
     @State private var hub: HubTile?
-    @State private var scrolled = false
     @State private var bar = BarGlassModel(lead: 40, fade: 40)
+    /// What the bar takes at the top of this page, as the navigation stack reserves it.
+    @State private var barRoom: CGFloat = 0
     @Environment(ShellModel.self) private var shell
 
     init(id: String) {
@@ -25,21 +26,24 @@ struct HubPageView: View {
     var body: some View {
         CinemaScrollPage(tab: nil) { _, safeTop, toTop in
             LazyVStack(alignment: .leading, spacing: Cinema.rowGap) {
+                // The masthead must open clear of the bar, not under it. Two readings of how much the bar takes are
+                // available and they do not always agree: the page ignores the top safe area and hands back what it
+                // ignored, while the navigation stack reserves its own. The larger one is the honest answer, so the
+                // masthead is below the bar whichever is right. A spacer, not padding on the masthead, because the
+                // marker that drives the glass reads the masthead's own top.
+                Color.clear.frame(height: max(safeTop, barRoom) + 20 - Cinema.rowGap)
                 HubMasthead(hub: hub)
                     .barGlassMarker(bar)
-                    .padding(.top, safeTop + 64)
                     .padding(.bottom, 2)
-                    .onGeometryChange(for: Bool.self) { $0.frame(in: .named(Cinema.scrollSpace)).maxY < safeTop + 52 } action: { scrolled = $0 }
                 rows(toTop)
             }
             .padding(.bottom, 12)
         }
+        .onGeometryChange(for: CGFloat.self) { $0.safeAreaInsets.top } action: { barRoom = $0 }
         .navigationTitle(name)
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
-            ToolbarItem(placement: .principal) {
-                Text(name).font(.headline).foregroundStyle(Palette.text).lineLimit(1).opacity(scrolled ? 1 : 0)
-            }
+            ToolbarItem(placement: .principal) { BarGlassTitle(bar: bar, text: name) }
         }
         // Dream's black glass (BarGlass): up by the time the masthead reaches Back.
         .barGlass(bar)

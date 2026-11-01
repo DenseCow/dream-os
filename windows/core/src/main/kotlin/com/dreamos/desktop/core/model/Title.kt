@@ -89,6 +89,11 @@ data class SeasonSummary(
     val posterPath: String? = null,
 )
 
+/**
+ * One episode of a season, or a special ([kind]). A special is not season 0: its [season] is the season it aired
+ * beside (0 when TVmaze doesn't say), which only its release names use, and its [number] is its place in air order,
+ * which only the torrent index numbers it by. Neither reads as a season anywhere a viewer looks.
+ */
 @Serializable
 data class Episode(
     val showId: Int,
@@ -107,8 +112,12 @@ data class Episode(
     val upcoming: Boolean = false,
     /** Up before its air day: the index already has a copy, so it plays like any aired episode ("a source decides"). */
     val outEarly: Boolean = false,
+    val kind: EpisodeKind = EpisodeKind.SERIES,
+    /** A special's identity, a source id ("tmdb:<episode id>", else "tvmaze:<episode id>"); "" for a numbered episode. */
+    val specialId: String = "",
 ) {
-    val id: String get() = "$showId:$season:$number"
+    val isSpecial: Boolean get() = kind == EpisodeKind.SPECIAL
+    val id: String get() = if (isSpecial) "$showId/sp:$specialId" else "$showId:$season:$number"
     fun still(size: String = "w300"): String? = TmdbImage.url(stillPath, size)
 }
 

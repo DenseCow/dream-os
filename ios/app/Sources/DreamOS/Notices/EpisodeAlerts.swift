@@ -126,7 +126,7 @@ final class EpisodeAlerts: NSObject, UNUserNotificationCenterDelegate {
             // Ahead: every caught-up episode with an exact time still to come (a month at most, 40 at most).
             let ahead = Array(s.upcoming.filter { i in
                 guard let at = i.at, at > Date(), at.timeIntervalSinceNow < 31 * 86_400 else { return false }
-                return !done.contains(i.key) && NewEpisodeSpot.caughtUp(history, i)
+                return !i.keys.contains(where: done.contains) && NewEpisodeSpot.caughtUp(history, i)
             }.prefix(40))
             let want = Set(ahead.map { Self.id(profile, $0) })
             // Booked before but no longer wanted (watched, moved, unfollowed): taken back.
@@ -148,11 +148,11 @@ final class EpisodeAlerts: NSObject, UNUserNotificationCenterDelegate {
                 lastBooking = signature
             }
             // Now: what a load found that no alert covered. In front, the in-app banner tells it instead.
-            for i in news where !sent.contains(i.key) && !booked.contains(i.key) && !done.contains(i.key) {
+            for i in news where !sent.contains(i.key) && !booked.contains(i.key) && !i.keys.contains(where: done.contains) {
                 sent.append(i.key)
                 if inFront { continue }
                 try? await c.add(UNNotificationRequest(identifier: Self.id(profile, i), content: Self.content(i), trigger: nil))
-                Log.app.notice("Episode alerts: sent \(i.show.name, privacy: .public) S\(i.season)E\(i.number)")
+                Log.app.notice("Episode alerts: sent \(i.show.name, privacy: .public) \(NewEpisodeSpot.code(i), privacy: .public)")
             }
             DreamStore.shared.set(Array(sent.suffix(300)), "episodeAlerts.sent", perProfile: true)
             DreamStore.shared.set(Array(booked.suffix(300)), "episodeAlerts.booked", perProfile: true)

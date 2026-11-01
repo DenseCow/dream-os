@@ -27,8 +27,8 @@ import android.widget.LinearLayout
 import java.util.Date
 
 /**
- * The idle screen, in Dream Cinema's language (Apple TV's calm full-bleed art and big thin clock, Netflix's
- * logo-meta-synopsis block, Disney+ / Hulu's "From My List" / "Tonight" kickers): titles from the user's own
+ * The idle screen, in Dream Cinema's language (calm full-bleed art and a big thin clock, a block of logo,
+ * meta and synopsis, and "From My List" / "Tonight" kickers): titles from the user's own
  * library (My List, Continue Watching) mixed with tonight's picks and what's trending, one at a time, each
  * full screen with a slow Ken Burns drift and a long crossfade. Bottom left, the title's logo (or its name),
  * "2024 · Series · Drama", one line of synopsis; top right, the time, the date and the weather; bottom right,

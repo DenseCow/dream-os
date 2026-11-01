@@ -6,7 +6,9 @@ import androidx.compose.runtime.staticCompositionLocalOf
 data class TitleRef(val tmdbId: Int, val isShow: Boolean, val name: String = "")
 
 /** What Play asks for: a title, an episode for shows, and whether to start from the beginning. */
-data class PlayRequest(val title: TitleRef, val season: Int? = null, val episode: Int? = null, val fromStart: Boolean = false, val sourceId: String? = null)
+/** [specialId]: this plays one of the show's specials (its source id), not a numbered episode. */
+data class PlayRequest(val title: TitleRef, val season: Int? = null, val episode: Int? = null, val fromStart: Boolean = false,
+                       val sourceId: String? = null, val specialId: String = "")
 
 /**
  * How the pages leave themselves: back, other pages, the player, the browser. Stand-in for win-shell's `Nav`

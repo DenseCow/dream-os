@@ -81,6 +81,6 @@ class PlayButtonTest {
         WatchHistory.remove(drama.key)
         assertEquals("Play S1 E1", WatchHistory.playLabel(drama))
         assertEquals(1 to 1, target(), "the button's words and what it plays agree")
-        assertNull(WatchHistory.caughtUpNext(drama.key), "removed is not caught up")
+        assertNull(WatchHistory.caughtUpNext(drama.id), "removed is not caught up")
     }
 }

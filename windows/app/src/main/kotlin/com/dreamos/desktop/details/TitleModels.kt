@@ -1,5 +1,6 @@
 package com.dreamos.desktop.details
 
+import com.dreamos.desktop.core.model.EpisodeKind
 import com.dreamos.desktop.settings.kit.Glyph
 import com.dreamos.desktop.settings.kit.PillKind
 import com.dreamos.desktop.settings.kit.TitleRef
@@ -23,12 +24,19 @@ data class TitleProgress(val season: Int? = null, val episode: Int? = null, val 
  * [comingWords]: an announced season's chip words ("Coming Mar 4", "Coming 2027", "Upcoming"); [comingLong]: its card and
  * blurb words ("Coming March 4, 2027", else "Date to Be Announced").
  */
-data class SeasonInfo(val number: Int, val name: String, val episodeCount: Int, val comingWords: String? = null, val comingLong: String? = null)
+data class SeasonInfo(val number: Int, val name: String, val episodeCount: Int, val comingWords: String? = null,
+                      val comingLong: String? = null,
+                      /** The show's specials rather than a season: the tab sits last and is never called a season. */
+                      val special: Boolean = false)
 
 data class EpisodeInfo(
     val season: Int,
     val number: Int,
     val name: String,
+    /** A special, outside the show's order: [season] and [number] are then its parent season and air-order place. */
+    val kind: EpisodeKind = EpisodeKind.SERIES,
+    /** A special's identity (a source id), which playing it carries; "" for a numbered episode. */
+    val specialId: String = "",
     val runtimeMin: Int? = null,
     val airDate: LocalDate? = null,
     val overview: String = "",
@@ -46,7 +54,9 @@ data class EpisodeInfo(
     val comingWords: String? = null,
     /** The exact instant an upcoming one airs (epoch ms, TVmaze), null when only [airDate] is known. */
     val airsAt: Long? = null,
-)
+) {
+    val isSpecial: Boolean get() = kind == EpisodeKind.SPECIAL
+}
 
 data class CastMember(val id: Int, val name: String, val role: String, val photoUrl: String?)
 
@@ -135,7 +145,8 @@ interface TitleSource {
      * changes nothing on screen).
      */
     fun instant(ref: TitleRef): TitleDetails? = null
-    suspend fun season(ref: TitleRef, season: Int): List<EpisodeInfo>
+    /** One season's episodes, or the show's specials ([special]), which are their own list and never a season. */
+    suspend fun season(ref: TitleRef, season: Int, special: Boolean = false): List<EpisodeInfo>
     /**
      * A season listed as still to come whose episodes are already up (out early: a source decides, not the date). One
      * quick, bounded check; the page then drops its "Coming ..." words and lets it play.
@@ -159,9 +170,15 @@ interface TitleSource {
     // ---- preloading (preload.TitleAhead): the page draws complete and follows new answers in place ----
 
     /** A season's episodes as last built, when recent (no network): the episode lane draws them in its first frame. */
-    fun seasonNow(ref: TitleRef, season: Int): List<EpisodeInfo>? = null
+    fun seasonNow(ref: TitleRef, season: Int, special: Boolean = false): List<EpisodeInfo>? = null
     /** Keys of new pill answers (availability); the page then rebuilds its pills with [livePills] / [liveEpisodePills]. */
     val pillUpdates: kotlinx.coroutines.flow.Flow<String> get() = kotlinx.coroutines.flow.emptyFlow()
+
+    /**
+     * A show (its TMDB id) whose specials have just been found, for a page that was built before the catalog
+     * answered: it builds once more and its Specials tab is there, rather than appearing only on a second visit.
+     */
+    val specialsFound: kotlinx.coroutines.flow.Flow<Int> get() = kotlinx.coroutines.flow.emptyFlow()
     /** [d] with its status, language and More Like This pills as the kept answers say now (no network). */
     suspend fun livePills(d: TitleDetails): TitleDetails = d
     /** [eps] (one show's) with their pills as the kept answers say now (no network). */

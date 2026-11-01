@@ -29,9 +29,9 @@ import android.widget.LinearLayout
 import android.widget.TextView
 
 /**
- * Dream Cinema components: cards (landscape, Hulu's big card with its details underneath, poster,
- * brand tile, Continue Watching, Top 10), Netflix-style buttons, Hulu's chips, the row that keeps
- * focus on a fixed left line (Apple TV) and the hero carousel. Sizes, type and motion come from
+ * Dream Cinema components: cards (landscape, the big card with its details underneath, poster,
+ * brand tile, Continue Watching, Top 10), the pill buttons, the category chips, the row that keeps
+ * focus on a fixed left line, and the hero carousel. Sizes, type and motion come from
  * [CinemaStyle]; colors from the user's theme. Focus is the rainbow glow ([CinemaStyle.focusGlow]),
  * never a white ring.
  *
@@ -106,7 +106,7 @@ class CinemaKit(val ctx: Context) {
     }
 
     /**
-     * Hulu's big landscape card: three across in a wide scope frame ([CinemaStyle.BIG_W]), the title and a
+     * The big landscape card: three across in a wide scope frame ([CinemaStyle.BIG_W]), the title and a
      * meta line (year, type, genres) always underneath. The row's own title says what it is, so no kicker:
      * a row of these is no taller than a standard row (two rows always fit above the bottom fade).
      */
@@ -210,7 +210,7 @@ class CinemaKit(val ctx: Context) {
     }
 
     /**
-     * Apple TV's feature module: one title across the whole page, its art full width with the logo (or name),
+     * The feature module: one title across the whole page, its art full width with the logo (or name),
      * meta and two lines of synopsis over a soft scrim on the left. A single card: OK opens it.
      */
     fun spotlight(t: Title, kick: String): CinemaCard {
@@ -288,8 +288,14 @@ class CinemaKit(val ctx: Context) {
         card.title = t
         e.images().let { card.art().source(it.firstOrNull(), it.drop(1)) }
         if (e.images().isEmpty()) card.placeholder(t.name)
-        val code = if (e.isShow && e.season > 0 && e.episode > 0) "S${e.season} · E${e.episode}" else null
-        val left = if (!e.isShow && e.durationMs > 0) ((e.durationMs - e.positionMs) / 60_000).takeIf { it > 0 }?.let { "$it min left" } else null
+        // A special says "Specials" and its own name, never a season or a number ([PlayFlow.episodeCode]).
+        val code = when {
+            e.isSpecial -> listOfNotNull(PlayFlow.episodeCode(true, null, null), e.episodeTitle?.takeIf { it.isNotBlank() })
+                .joinToString("  ·  ")
+            e.isSeries && e.episode > 0 -> PlayFlow.episodeCode(false, e.season, e.episode, " · ")
+            else -> null
+        }
+        val left = if (!e.ofShow && e.durationMs > 0) ((e.durationMs - e.positionMs) / 60_000).takeIf { it > 0 }?.let { "$it min left" } else null
         if (e.upNext) card.badge("UP NEXT")
         else if (e.progress > 0f) card.progress(e.progress)
         // Another app's titles carry its icon; Dream OS's own carry none.
@@ -321,7 +327,7 @@ class CinemaKit(val ctx: Context) {
     }
 
     /**
-     * A brand tile (Disney+): the service's name set in bold on a deep tint of its brand color, a short bar of
+     * A brand tile: the service's name set in bold on a deep tint of its brand color, a short bar of
      * the brand color under it. A way into that service's movies and shows (never its app: apps live on
      * the Apps tab), so every tile is the same family whether the app is installed or not.
      */
@@ -360,8 +366,8 @@ class CinemaKit(val ctx: Context) {
 
     /**
      * A card with its caption underneath, outside its rounded clip: an optional [kicker], the [title]
-     * and a dim [sub] line. [focusOnly]: the caption fades in only while the card has focus (Apple TV);
-     * else it always shows (Hulu). Its height is fixed either way (nothing moves when it appears), and it
+     * and a dim [sub] line. [focusOnly]: the caption fades in only while the card has focus;
+     * else it always shows. Its height is fixed either way (nothing moves when it appears), and it
      * rides down with the card's lift so the gap under the art never closes.
      */
     fun unit(card: CinemaCard, kick: String?, title: String, sub: String?, @Suppress("UNUSED_PARAMETER") focusOnly: Boolean = false, titleLines: Int = 1): LinearLayout {
@@ -411,7 +417,7 @@ class CinemaKit(val ctx: Context) {
     // ---- controls ----
 
     /**
-     * Netflix's buttons: [primary] (Play) wears the fading rainbow with ink text at all times, the others are
+     * The action buttons: [primary] (Play) wears the fading rainbow with ink text at all times, the others are
      * translucent with pearl text and turn pearl when focused; focused, any of them lifts a touch and glows in the
      * current hue.
      */
@@ -463,7 +469,7 @@ class CinemaKit(val ctx: Context) {
     }
 
     /**
-     * Hulu's category chip: an outline at rest, a soft fill when it is the current one ([View.isSelected]),
+     * A category chip: an outline at rest, a soft fill when it is the current one ([View.isSelected]),
      * pearl with ink text and a small glow while focused.
      */
     fun chip(label: String, onClick: () -> Unit) = TextView(ctx).apply {
@@ -786,7 +792,7 @@ class CinemaEndCap(kit: CinemaKit, onTop: () -> Unit) : FlatLinear(kit.ctx), Cin
 }
 
 /**
- * A row (Apple TV): its title on the page's left line and the cards underneath, which glide so the
+ * A row: its title on the page's left line and the cards underneath, which glide so the
  * focused card always sits on that same line (the end of the row stops at the right margin instead).
  * Left and Right move along it only (never into another row); the row remembers its card, so coming
  * back down or up lands where you left it. Cards left of the line fade out: nothing is ever cut by the
@@ -874,7 +880,7 @@ class CinemaRow(val kit: CinemaKit, title: String?) : FlatLinear(kit.ctx), Cinem
     }
     val cards = ArrayList<CinemaCard>()
     /**
-     * The placeholders until the cards arrive ([skeleton]): they take focus like cards (Netflix), so focus
+     * The placeholders until the cards arrive ([skeleton]): they take focus like cards, so focus
      * can rest on a row that's still loading and Down goes row by row, never past the rows not in yet.
      * [fill] hands focus from the placeholder to the card in its place.
      */
@@ -1214,7 +1220,7 @@ object HeroArt {
 }
 
 /**
- * The hero carousel (Netflix and Disney+): full-bleed backdrop, the title's logo (or its name, big), a
+ * The hero carousel: full-bleed backdrop, the title's logo (or its name, big), a
  * meta line, a two-line synopsis, Play and More Info, and page dots. One title at a time; Left on Play
  * and Right past More Info step through them, and it advances by itself ([CinemaStyle.HERO_ADVANCE_MS])
  * only while focus rests on it. Art crossfades with a slow settle; the text fades over sideways in the
@@ -1470,7 +1476,7 @@ class CinemaHero(
 
     fun current(): Title? = titles.getOrNull(index)
 
-    /** The titles to feature; [kicker] names each one ("Tonight", "Featured on Netflix"). Keeps the slide if it's still among them. */
+    /** The titles to feature; [kicker] names each one ("Tonight", "Featured on <service>"). Keeps the slide if it's still among them. */
     fun setTitles(list: List<Title>, kicker: (Title) -> String) {
         val keep = current()?.key
         titles = list.take(MAX)
@@ -1672,7 +1678,7 @@ class CinemaHero(
         set(v) { if (field == v) return; field = v; if (v) drift() else driftAt = 0L }
 
     /**
-     * Apple TV's Ken Burns: the art drifts very slowly (a touch larger, a little to the left) for as long as a
+     * The slow drift: the art moves very slowly (a touch larger, a little to the left) for as long as a
      * slide shows. It steps on the shared glow clock (every 50 ms: the hero follows it, [driftTick]), not on
      * every vsync: a step moves the art a fifth of a pixel at most, invisible as steps under the GPU's
      * filtering, and it lands in the frames the glowing focus draws anyway, so the drift adds no frames of
@@ -1802,7 +1808,7 @@ open class FreeTrack(ctx: Context) : FrameLayout(ctx) {
 }
 
 /**
- * Hulu's chip row: one category current at a time ([select]), starting on the page's left line. A line
+ * The chip row: one category current at a time ([select]), starting on the page's left line. A line
  * longer than the screen slides (translationX) to keep the focused chip between the gutters; Left and
  * Right stay in the line.
  */

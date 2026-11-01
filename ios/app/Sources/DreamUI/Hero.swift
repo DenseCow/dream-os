@@ -296,7 +296,7 @@ public struct HeroSkeleton: View {
 
 // MARK: Spotlight card
 
-/// Apple TV's feature module: one title across the page, its art full width with the logo (or name), meta and two
+/// The feature module: one title across the page, its art full width with the logo (or name), meta and two
 /// lines of synopsis over a soft scrim, bottom-left. The pill sits at the end of the meta line, never over the words.
 public struct SpotlightCard: View {
     let item: CatalogItem

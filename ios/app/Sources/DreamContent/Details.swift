@@ -224,10 +224,29 @@ enum Details {
 }
 
 /// Exact air times from TVmaze (AirTimes.kt): free, no key. Matched once per show by IMDb id (else TheTVDB id).
+/// `episodes` gives the numbered list and `specials` the specials beside it (`SpecialsCatalog`); both come out of the
+/// one call, which asks for specials too, because without `?specials=1` TVmaze leaves them out altogether.
 actor AirTimes {
     static let shared = AirTimes()
     struct Ep: Sendable { let season: Int; let number: Int; let name: String; let date: String; let at: Date? }
-    struct Info: Sendable { let prev: (Int, Int, Date)?; let next: (Int, Int, Date)?; let fetchedAt: Date }
+    /// One special from that same list: TVmaze gives specials no number, and the `season` it reports is the season the
+    /// special sits beside, kept here as `parentSeason`. [id] is TVmaze's own episode id, which names a special that
+    /// TMDB has no record of (`SpecialsCatalog`).
+    struct Special: Sendable {
+        let id: Int
+        let parentSeason: Int
+        let name: String
+        let date: String
+        let at: Date?
+        let runtime: Int
+        let summary: String
+    }
+    /// `special`: the episode TVmaze named has no number of its own, so it is a special and `number` is 0.
+    struct Info: Sendable {
+        let prev: (season: Int, number: Int, at: Date, special: Bool)?
+        let next: (season: Int, number: Int, at: Date, special: Bool)?
+        let fetchedAt: Date
+    }
 
     /// "tvmaze_ids2": "tvmaze_ids" also held lookups that never got an answer as "no such show" (2026-10-29); its
     /// matches carry over, its misses are asked again once.
@@ -239,11 +258,12 @@ actor AirTimes {
         DreamStore.shared.set(nil as [Int: Int]?, "tvmaze_ids")
         return old
     }
-    private var schedules: [Int: (Date, [Ep])] = [:]
+    private var schedules: [Int: (at: Date, eps: [Ep], specials: [Special])] = [:]
     private var infos: [Int: Info] = [:]
     private var lastCall = Date.distantPast
 
     static func episodes(_ tmdbId: Int) async -> [Ep]? { await shared.episodes(tmdbId) }
+    static func specials(_ tmdbId: Int) async -> [Special]? { await shared.specials(tmdbId) }
     static func info(_ tmdbId: Int) async -> Info? { await shared.info(tmdbId) }
 
     private func fetch(_ url: String) async -> Any? {
@@ -295,16 +315,34 @@ actor AirTimes {
         return (o["airstamp"] as? String).flatMap { stamp.date(from: $0) }
     }
 
-    func episodes(_ tmdbId: Int) async -> [Ep]? {
-        if let s = schedules[tmdbId], Date().timeIntervalSince(s.0) < 3 * 3600 { return s.1 }
-        guard let maze = await mazeId(tmdbId), let a = await fetch("https://api.tvmaze.com/shows/\(maze)/episodes") as? [[String: Any]] else { return schedules[tmdbId]?.1 }
-        let eps = a.compactMap { o -> Ep? in
-            guard let n = o["number"] as? Int, n > 0 else { return nil }
-            let d = o["airdate"] as? String ?? ""
-            return Ep(season: o["season"] as? Int ?? 0, number: n, name: o["name"] as? String ?? "", date: d.count == 10 ? d : "", at: Self.exact(o))
+    func episodes(_ tmdbId: Int) async -> [Ep]? { await schedule(tmdbId)?.eps }
+
+    /// Every special TVmaze lists for the show, in its own order (air order). Shares `episodes`' one call and cache.
+    func specials(_ tmdbId: Int) async -> [Special]? { await schedule(tmdbId)?.specials }
+
+    private func schedule(_ tmdbId: Int) async -> (at: Date, eps: [Ep], specials: [Special])? {
+        if let s = schedules[tmdbId], Date().timeIntervalSince(s.at) < 3 * 3600 { return s }
+        // `specials=1` or TVmaze leaves them out of the list altogether.
+        guard let maze = await mazeId(tmdbId),
+              let a = await fetch("https://api.tvmaze.com/shows/\(maze)/episodes?specials=1") as? [[String: Any]] else { return schedules[tmdbId] }
+        var eps: [Ep] = []
+        var specials: [Special] = []
+        for o in a {
+            let d = (o["airdate"] as? String).flatMap { $0.count == 10 ? $0 : "" } ?? ""
+            let name = o["name"] as? String ?? ""
+            // A special has no number of its own; the season TVmaze gives it is the season it sits beside.
+            if let n = o["number"] as? Int, n > 0 {
+                eps.append(Ep(season: o["season"] as? Int ?? 0, number: n, name: name, date: d, at: Self.exact(o)))
+            } else {
+                specials.append(Special(id: o["id"] as? Int ?? 0, parentSeason: o["season"] as? Int ?? 0, name: name,
+                                        date: d, at: Self.exact(o), runtime: o["runtime"] as? Int ?? 0,
+                                        summary: o["summary"] as? String ?? ""))
+            }
         }
-        schedules[tmdbId] = (Date(), eps)
-        return eps
+        let s = (Date(), eps, specials)
+        schedules[tmdbId] = s
+        if schedules.count > 24 { schedules = schedules.filter { Date().timeIntervalSince($0.value.at) < 3 * 3600 } }
+        return s
     }
 
     /// What TVmaze said last, any age, without asking.
@@ -327,9 +365,12 @@ actor AirTimes {
         guard let maze = await mazeId(tmdbId),
               let o = await fetch("https://api.tvmaze.com/shows/\(maze)?embed%5B%5D=previousepisode&embed%5B%5D=nextepisode") as? [String: Any] else { return infos[tmdbId] }
         let emb = o["_embedded"] as? [String: Any]
-        func air(_ e: Any?) -> (Int, Int, Date)? {
-            guard let e = e as? [String: Any], let at = Self.exact(e), let n = e["number"] as? Int else { return nil }
-            return (e["season"] as? Int ?? 0, n, at)
+        func air(_ e: Any?) -> (season: Int, number: Int, at: Date, special: Bool)? {
+            guard let e = e as? [String: Any], let at = Self.exact(e) else { return nil }
+            // A special comes through as the show's previous or next episode with no number: it is kept, marked, with
+            // the season it sits beside (`SpecialsCatalog` gives it its S00E`n` place).
+            guard let n = e["number"] as? Int, n > 0 else { return (e["season"] as? Int ?? 0, 0, at, true) }
+            return (e["season"] as? Int ?? 0, n, at, false)
         }
         let i = Info(prev: air(emb?["previousepisode"]), next: air(emb?["nextepisode"]), fetchedAt: Date())
         infos[tmdbId] = i

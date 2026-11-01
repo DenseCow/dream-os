@@ -1,5 +1,6 @@
 package com.dreamos.player.ui
 
+import com.dreamos.desktop.core.model.EpisodeCode
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
@@ -269,7 +270,8 @@ private fun Info(s: PlayerSession) {
     val t = s.target
     val d = s.details
     val es = s.engineState
-    val kicker = if (t.isEpisode) "${t.title}$SEP" + "S${t.season} · E${t.episode}" else listOfNotNull("Movie", (d?.year ?: t.year)?.toString()).joinToString(SEP)
+    val kicker = if (t.isEpisode) "${t.title}$SEP" + playingLine(t, d?.episodeName ?: t.episodeTitle, " · ")
+    else listOfNotNull("Movie", (d?.year ?: t.year)?.toString()).joinToString(SEP)
     SheetHeader(kicker, if (t.isEpisode) (d?.episodeName ?: t.episodeTitle ?: t.title) else t.title) { s.closeSheet() }
     SheetList {
         if (!s.trailer && t.tmdbId > 0) item {
@@ -326,17 +328,18 @@ fun pictureLine(f: com.dreamos.player.engine.StreamFacts): String? {
 private fun Episodes(s: PlayerSession) {
     val t = s.target
     SheetHeader(t.title, "Episodes") { s.closeSheet() }
-    val seasons = s.seasons.filter { it.episodeCount > 0 }.sortedBy { if (it.number == 0) Int.MAX_VALUE else it.number }.take(60)
+    // Specials last, after every season, so the list opens on a real one.
+    val seasons = s.seasons.filter { it.episodeCount > 0 }.sortedBy { if (it.special) Int.MAX_VALUE else it.number }.take(60)
     if (seasons.isNotEmpty()) {
         LazyRow(Modifier.fillMaxWidth().padding(bottom = 8.dp), contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 24.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             items(seasons) { se ->
                 val label = when {
-                    se.number == 0 -> "Specials"
+                    se.special -> com.dreamos.desktop.core.model.EpisodeCode.SPECIALS
                     !se.name.startsWith("Season") && se.name.length <= 18 && se.name.isNotBlank() -> se.name
                     else -> "Season ${se.number}"
                 }
-                val on = se.number == s.episodesSeason
-                Modifier.control(label, onClick = { s.loadEpisodes(se.number) }) { m, st ->
+                val on = se.number == s.episodesSeason && se.special == s.episodesSpecial
+                Modifier.control(label, onClick = { s.loadEpisodes(se.number, se.special) }) { m, st ->
                     Box(
                         m.height(36.dp).clip(RoundedCornerShape(18.dp)).background(if (on || st.lit) Look.Pearl else Look.Glass)
                             .litEdge(st.lit, 2.dp, RoundedCornerShape(18.dp), rest = Look.Edge).padding(horizontal = 16.dp),
@@ -359,14 +362,16 @@ private fun Episodes(s: PlayerSession) {
         return
     }
     SheetList {
-        items(eps, key = { "${it.season}:${it.number}" }) { e ->
-            val et = t.atEpisode(e.season, e.number, e.name)
+        items(eps, key = { if (it.isSpecial) it.specialId else "${it.season}:${it.number}" }) { e ->
+            val et = if (e.isSpecial) t.copy(kind = com.dreamos.desktop.core.playback.MediaKind.SPECIAL,
+                season = null, episode = null, specialId = e.specialId) else t.atEpisode(e.season, e.number, e.name)
             val playing = et.key == t.key
             val watched = if (playing) null else s.watched[et.key]
-            SheetRow("Episode ${e.number}, ${e.name}", { s.playEpisode(e) }, enabled = !e.upcoming, selected = playing, ring = playing, modifier = Modifier.fillMaxWidth()) { ink, dim ->
+            SheetRow(if (e.isSpecial) e.name.ifBlank { EpisodeCode.SPECIALS } else "Episode ${e.number}, ${e.name}", { s.playEpisode(e) }, enabled = !e.upcoming, selected = playing, ring = playing, modifier = Modifier.fillMaxWidth()) { ink, dim ->
                 Row {
                     Box(Modifier.width(150.dp).aspectRatio(16f / 9f).clip(RoundedCornerShape(8.dp)).background(Color(0xFF1A1A1D)), contentAlignment = Alignment.Center) {
-                        if (e.stillUrl == null) Text("E${e.number}", style = Look.Line, color = Look.Text3)
+                        // A special is named, never numbered: its place in air order moves as the catalog fills in.
+                        if (e.stillUrl == null) Text(if (e.isSpecial) EpisodeCode.SPECIALS else "E${e.number}", style = Look.Line, color = Look.Text3)
                         NetImage(e.stillUrl, Modifier.fillMaxSize())
                         val frac = when {
                             playing -> s.engineState.let { if (it.durationMs > 0) it.positionMs.toFloat() / it.durationMs else 0f }
@@ -385,7 +390,8 @@ private fun Episodes(s: PlayerSession) {
                     }
                     Spacer(Modifier.width(14.dp))
                     Column(Modifier.weight(1f)) {
-                        Text("${e.number}.  ${e.name.ifBlank { "Episode ${e.number}" }}", style = Look.Line, color = ink, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        Text(if (e.isSpecial) e.name.ifBlank { EpisodeCode.SPECIALS } else "${e.number}.  ${e.name.ifBlank { "Episode ${e.number}" }}",
+                            style = Look.Line, color = ink, maxLines = 1, overflow = TextOverflow.Ellipsis)
                         val meta = listOfNotNull(
                             e.runtimeMin.takeIf { it > 0 }?.let(::runtimeText),
                             e.airDate.takeIf { it.isNotEmpty() }?.let { s.services.date(it) },
@@ -408,6 +414,7 @@ private fun comingLine(s: PlayerSession, e: com.dreamos.player.api.EpisodeItem):
         ?: e.airDate.takeIf { it.length == 10 }?.let { com.dreamos.desktop.core.time.DreamTime.dayWords(it) }
         ?: e.airDate.takeIf { it.length == 4 }
         ?: "Date to Be Announced"
+    if (e.isSpecial) return "Coming:  " + listOfNotNull(title ?: EpisodeCode.SPECIALS, whenWords).joinToString(SEP)
     return "Next Episode:  " + listOfNotNull("E${e.number}", title, whenWords).joinToString(SEP)
 }
 
@@ -416,7 +423,8 @@ private fun comingLine(s: PlayerSession, e: com.dreamos.player.api.EpisodeItem):
 @Composable
 private fun Sources(s: PlayerSession) {
     val t = s.target
-    SheetHeader(if (s.sourcesLoose) "All Sources" else "Change Source", if (t.isEpisode) "${t.title}$SEP" + "S${t.season} E${t.episode}" else t.title) { s.closeSheet() }
+    SheetHeader(if (s.sourcesLoose) "All Sources" else "Change Source",
+        if (t.isEpisode) "${t.title}$SEP" + playingLine(t, t.episodeTitle) else t.title) { s.closeSheet() }
     val list = s.sources
     if (list == null) {
         Row(Modifier.padding(28.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -495,7 +503,7 @@ private fun XRay(s: PlayerSession) {
         Column(Modifier.align(Alignment.BottomStart).fillMaxWidth().padding(bottom = 48.dp)) {
             Row(Modifier.padding(start = 64.dp, end = 48.dp), verticalAlignment = Alignment.Bottom) {
                 Column(Modifier.weight(1f)) {
-                    Text(if (t.isEpisode) "${t.title}$SEP" + "S${t.season} · E${t.episode}" else t.title, style = Look.Small, color = Look.Text2)
+                    Text(if (t.isEpisode) "${t.title}$SEP" + playingLine(t, t.episodeTitle, " · ") else t.title, style = Look.Small, color = Look.Text2)
                     Text(if (t.isEpisode) "In This Episode" else "Cast", style = Look.SheetTitle, color = Look.Text)
                 }
                 RoundButton(Glyph.CLOSE, "Close Cast", onClick = { s.closeSheet() }, size = 40.dp, iconSize = 16.dp)

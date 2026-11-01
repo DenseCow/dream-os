@@ -52,43 +52,111 @@ public enum Taste {
     /// TMDB's score steadied by its vote count (a Bayesian average toward 6.4): 7.9 from 90 votes reads about 7.1,
     /// 7.6 from 10,000 stays 7.6. Below 100 votes a title is mostly its prior.
     static func quality(_ t: Title) -> Double {
-        let m = t.kind == .movie ? 300.0 : 100.0
+        let m = t.kind == .movie ? AlgoRules.qualityVotesMovie : AlgoRules.qualityVotesTv
         let v = Double(max(0, t.votes))
-        let q = t.rating > 0 && v > 0 ? (v * t.rating + m * 6.4) / (v + m) : 6.0
-        return min(1, max(0, (q - 5.5) / 3.0))
+        let q = t.rating > 0 && v > 0 ? (v * t.rating + m * AlgoRules.qualityPrior) / (v + m) : AlgoRules.qualityUnknown
+        return min(1, max(0, (q - AlgoRules.qualityLow) / AlgoRules.qualitySpan))
     }
 
     private static func recency(_ t: Title) -> Double {
         guard t.date.count == 10 else { return 0 }
-        if t.date >= DreamTime.yearsAgo(1) { return 1 }
-        if t.date >= DreamTime.yearsAgo(3) { return 0.6 }
-        if t.date >= DreamTime.yearsAgo(10) { return 0.3 }
+        if t.date >= DreamTime.yearsAgo(1) { return AlgoRules.fresh1y }
+        if t.date >= DreamTime.yearsAgo(3) { return AlgoRules.fresh3y }
+        if t.date >= DreamTime.yearsAgo(10) { return AlgoRules.fresh10y }
         return 0
+    }
+
+    /// Java's String.hashCode, which is specified and so is the same number on every build. Swift's own hashing is
+    /// salted per process, so it would give each phone a different rotation and a different day's page.
+    static func javaHash(_ s: String) -> Int32 {
+        var h: Int32 = 0
+        for u in s.utf16 { h = h &* 31 &+ Int32(u) }
+        return h
+    }
+
+    /// A title's place in the day's rotation, 0...1: fixed for `key` on `day`, unrelated to the day before. The same
+    /// all day (nothing moves while anyone looks), another order tomorrow.
+    static func rotation(_ key: String, day: Int) -> Double {
+        var h = javaHash(key) &* 31 &+ Int32(truncatingIfNeeded: day)
+        h ^= Int32(bitPattern: UInt32(bitPattern: h) >> 16); h = h &* 0x45d9f3b
+        h ^= Int32(bitPattern: UInt32(bitPattern: h) >> 16); h = h &* 0x45d9f3b
+        h ^= Int32(bitPattern: UInt32(bitPattern: h) >> 16)
+        return Double(h & 0xFFFF) / 65535.0
+    }
+
+    /// The day the rotation turns on, in the viewer's own zone. Year times 400 plus the day of the year, which is
+    /// what the Fire Stick works out: the three builds have to land on the same number or they rotate on different
+    /// days, and then "the same all day" is true on each build but of a different day's order.
+    static func dayNumber(_ now: Date = Date()) -> Int {
+        var cal = Calendar(identifier: .gregorian)
+        cal.timeZone = .current
+        let year = cal.component(.year, from: now)
+        let day = cal.ordinality(of: .day, in: .year, for: now) ?? 1
+        return year * 400 + day
+    }
+
+    /// A page from 1 to `pages` that stays the same all day for `row` and moves on tomorrow.
+    static func dailyPage(_ row: String, pages: Int, day: Int? = nil) -> Int {
+        let d = day ?? dayNumber()
+        let h = Int(javaHash(row))
+        return 1 + ((d &* 31 &+ h) %% pages)
+    }
+
+    /// The page a row fetches after its first: 2 to 1 + deeperPages, the same all day for `row` and another tomorrow,
+    /// so a row with no daily page of its own still changes day to day at no extra call.
+    static func rotatingPage(_ row: String, day: Int? = nil) -> Int {
+        1 + dailyPage(row, pages: AlgoRules.deeperPages, day: day)
     }
 
     /// [list] re-ranked for [p]: the list's own order (TMDB's intent: popularity, trending, votes) still counts for
     /// half, taste for a quarter (scaled by how well it is known), steadied quality for a fifth and freshness a
     /// little. Then franchises are spread out (one "John Wick" up front, the rest later). Stable: equal scores
     /// keep the list's order, so a cold profile sees popularity tempered by quality, never a shuffle.
-    public static func rank(_ p: TasteProfile, _ list: [Title]) -> [Title] {
-        guard list.count > 2 else { return list }
+    public static func rank(_ p: TasteProfile, _ list: [Title], artFirst: Bool = false, day: Int? = nil) -> [Title] {
+        guard list.count > 1 else { return list }
+        let d = day ?? dayNumber()
         let n = Double(max(1, list.count - 1))
         let scored = list.enumerated().map { (i, t) -> (Title, Double, Int) in
-            let order = 1 - Double(i) / n
-            let s = 0.50 * order + 0.25 * p.strength * p.affinity(t) + 0.20 * quality(t) + 0.05 * recency(t)
-            return (t, s, i)
+            (t, score(p, t, i: i, n: n, artFirst: artFirst, day: d), i)
         }.sorted { $0.1 != $1.1 ? $0.1 > $1.1 : $0.2 < $1.2 }.map(\.0)
         return spread(scored)
     }
 
-    /// Titles of one franchise apart: the first of a stem keeps its place, the rest go to the end in order.
-    static func spread(_ list: [Title]) -> [Title] {
-        var seen = Set<String>()
-        var kept: [Title] = [], later: [Title] = []
-        for t in list {
-            if seen.insert(stem(t.name)).inserted { kept.append(t) } else { later.append(t) }
+    /// One title's score in `rank`: `i` of a list whose last index is `n`.
+    static func score(_ p: TasteProfile, _ t: Title, i: Int, n: Double, artFirst: Bool, day: Int) -> Double {
+        AlgoRules.wOrder * (1 - Double(i) / n)
+            + AlgoRules.wTaste * p.strength * p.affinity(t)
+            + AlgoRules.wQuality * quality(t)
+            + AlgoRules.wFresh * recency(t)
+            + AlgoRules.dayRotation * rotation(t.key, day: day)
+            - (artFirst && (t.backdropPath ?? "").isEmpty ? AlgoRules.artPenalty : 0)
+    }
+
+    /// Titles of one franchise at least `gap` cards apart where the list allows it: each slot takes the best
+    /// remaining title whose stem was last placed `gap` or more slots ago, else the one placed longest ago (a row of
+    /// eight entries of one saga still shows every one). Titles with no shared stem keep their order; nothing is
+    /// dropped, where the old rule sent every repeat to the end of the row.
+    static func spread(_ list: [Title], gap: Int = AlgoRules.spreadGap) -> [Title] {
+        guard list.count > 2, gap > 1 else { return list }
+        let stems = list.map { stem($0.name) }
+        if Set(stems).count == stems.count { return list }
+        var out: [Title] = []
+        out.reserveCapacity(list.count)
+        var left = Array(list.indices)
+        var lastAt: [String: Int] = [:]
+        while !left.isEmpty {
+            let slot = out.count
+            var pick = -1, oldest = Int.max, oldestIdx = 0
+            for (k, i) in left.enumerated() {
+                guard let at = lastAt[stems[i]] else { pick = k; break }
+                if slot - at >= gap { pick = k; break }
+                if at < oldest { oldest = at; oldestIdx = k }
+            }
+            let i = left.remove(at: pick >= 0 ? pick : oldestIdx)
+            lastAt[stems[i]] = slot
+            out.append(list[i])
         }
-        return kept + later
+        return out
     }
 
     private static let stopWords: Set<String> = ["the", "a", "an", "of", "and", "in", "on", "to", "for", "with", "at", "from", "by", "&"]
@@ -107,7 +175,7 @@ public enum Taste {
 
     // MARK: "for you" rows
 
-    /// Evocative row names per Browse category (Netflix-style rows that say why they're there).
+    /// Evocative row names per Browse category: rows that say why they're there.
     static let rowNames: [String: String] = [
         "Action": "Action-Packed Picks for You", "Adventure": "Adventures Worth Taking", "Comedy": "Laugh-Out-Loud Comedies",
         "Drama": "Gripping Dramas for You", "Crime": "Dark Crime Stories", "Thriller": "Edge-of-Your-Seat Thrillers",
@@ -193,24 +261,34 @@ public enum Taste {
         let now = Date()
         var seeds: [(Title, Double)] = []
         var seen = Set<String>()
+        /// Weight from opened pages alone, which shapes affinities in full but barely counts toward confidence.
+        var opened = 0.0
         for e in history.sorted(by: { $0.updatedAt > $1.updatedAt }) where e.title.id > 0 && seen.insert(e.title.key).inserted {
-            // Removed from Continue Watching before finishing (a test, a mistake): no taste signal at all (owner).
-            if e.hidden && e.progress < 0.92 && !e.upNext { continue }
+            let isShow = e.title.kind == .tv
+            let finishedEpisodes = isShow ? WatchedLedger.shared.episodeCount(show: e.title.id) : 0
+            let cleared = e.hidden && e.progress < 0.92 && !e.upNext
+            // Clearing a card is "not for me" only while it could still be a sample. Past keptAfterEpisodes finished
+            // episodes it means "done with it for now", which is something the viewer liked, so the show keeps its
+            // signal (owner, 2026-10-31).
+            if cleared && !(isShow && finishedEpisodes >= AlgoRules.keptAfterEpisodes) { continue }
             let w: Double
-            if e.progress >= 0.92 || (e.hidden && e.progress >= 0.5) { w = 1.0 }
-            else if e.upNext { w = 0.9 }
-            else if e.positionMs >= 10 * 60_000 { w = 0.6 }
-            else { w = 0.25 }
+            // STANDARDS section 5: taste comes from finished titles, My List, opened pages and Trakt, never from a
+            // title started and left. A part-watched title used to seed 0.6 or 0.25 here, which is that rule broken.
+            if e.progress >= 0.92 { w = isShow ? AlgoRules.seedEpisodes : AlgoRules.seedFinished }
+            else if e.upNext || (isShow && finishedEpisodes > 0) { w = AlgoRules.seedEpisodes }
+            else { continue }
             let age = max(0, now.timeIntervalSince(e.updatedAt)) / 86_400
-            seeds.append((e.title, w * pow(0.5, age / 45)))
-            if seeds.count >= 60 { break }
+            seeds.append((e.title, w * pow(0.5, age / AlgoRules.watchHalfLifeDays)))
+            if seeds.count >= AlgoRules.historySeeds { break }
         }
-        for t in myList where t.id > 0 && seen.insert(t.key).inserted { seeds.append((t, 0.5)) }
+        for t in myList where t.id > 0 && seen.insert(t.key).inserted { seeds.append((t, AlgoRules.seedSaved)) }
         for o in DreamStore.shared.get([Opened].self, openedKey, perProfile: true) ?? [] where seen.insert(o.k).inserted {
             let p = o.k.split(separator: ":")
             guard p.count == 2, let kind = MediaKind(rawValue: String(p[0])), let id = Int(p[1]) else { continue }
             let age = max(0, now.timeIntervalSince(o.at)) / 86_400
-            seeds.append((Title(id: id, kind: kind, name: "", year: o.y, genreIds: o.g, lang: o.l), 0.15 * pow(0.5, age / 14)))
+            seeds.append((Title(id: id, kind: kind, name: "", year: o.y, genreIds: o.g, lang: o.l),
+                          AlgoRules.seedOpened * pow(0.5, age / AlgoRules.openedHalfLifeDays)))
+            opened += AlgoRules.seedOpened * pow(0.5, age / AlgoRules.openedHalfLifeDays)
         }
         // Genres for seeds that came without them (history and My List keep little), from the cached details call.
         var filled = seeds
@@ -240,9 +318,18 @@ public enum Taste {
         p.lang = lmx > 0 ? lang.mapValues { $0 / lmx } : [:]
         p.era = norm(era)
         p.shows = total > 0 ? shows / total : 0.5
-        p.strength = min(1, total / 6)
+        // Diminishing returns, never a hard ceiling at six titles: about 0.22 from one fresh finished title, 0.78
+        // from six, 0.95 from twelve. Browsing is not watching, so opened pages count toward confidence only up to
+        // openedStrengthCap, however many pages were opened.
+        let counted = max(0, total - opened) + min(opened, AlgoRules.openedStrengthCap)
+        p.strength = counted <= 0 ? 0 : 1 - exp(-counted / AlgoRules.strengthScale)
         p.signature = signature
         p.builtAt = now
         return p
     }
 }
+
+/// Java's floorMod: the remainder takes the divisor's sign, so a negative hash still lands on a real page.
+/// Swift's % keeps the dividend's sign and would ask for page 1 + a negative number.
+infix operator %%: MultiplicationPrecedence
+func %% (_ a: Int, _ n: Int) -> Int { let r = a % n; return r < 0 ? r + n : r }

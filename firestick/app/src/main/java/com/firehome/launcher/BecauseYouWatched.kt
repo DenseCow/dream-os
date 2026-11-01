@@ -1,7 +1,7 @@
 package com.firehome.launcher
 
 /**
- * Which watched titles seed the "Because You Watched" rows, Netflix style:
+ * Which watched titles seed the "Because You Watched" rows:
  *  - only titles watched in the last [MAX_AGE_DAYS] days (a meaningful while: [WatchHistory.watchedEnough]); the
  *    weight halves every [HALF_LIFE_DAYS]. No "abandoned" signal (owner): only recency weighs a seed, and a title
  *    removed from Continue Watching before it was finished seeds nothing ([removed]);
@@ -51,7 +51,7 @@ object BecauseYouWatched {
     private fun pool(ctx: android.content.Context, shows: Boolean): List<WatchHistory.Entry> {
         val now = System.currentTimeMillis()
         return WatchHistory.recent(ctx)
-            .filter { it.isShow == shows && it.title.isNotBlank() && it.tmdbId > 0 && now - it.updatedAt <= MAX_AGE_DAYS * DAY_MS }
+            .filter { it.ofShow == shows && it.title.isNotBlank() && it.tmdbId > 0 && now - it.updatedAt <= MAX_AGE_DAYS * DAY_MS }
             .filter { WatchHistory.watchedEnough(it) && !removed(it) } // a quick sample isn't a taste
             .distinctBy { it.tmdbId }
     }

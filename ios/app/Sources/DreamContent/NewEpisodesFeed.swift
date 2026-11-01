@@ -10,7 +10,8 @@ extension ContentCatalog {
         let followed = await NewEpisodes.shared.followed().map(\.id)
         func info(_ i: NewEpisodes.Item) -> NewEpisodeInfo {
             NewEpisodeInfo(show: i.show, season: i.season, number: i.number, lastNumber: i.lastNumber, name: i.name, airDate: i.airDate,
-                           at: i.at, stillPath: i.still, overview: i.overview, upcoming: i.upcoming)
+                           at: i.at, stillPath: i.still, overview: i.overview, upcoming: i.upcoming,
+                           specialId: i.specialId, specialAlias: i.specialAlias)
         }
         return NewEpisodesSnapshot(recent: snap.recent.map(info), upcoming: snap.upcoming.map(info), followedIds: followed)
     }

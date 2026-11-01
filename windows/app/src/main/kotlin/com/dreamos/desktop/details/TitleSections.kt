@@ -59,24 +59,28 @@ private sealed interface SeasonLoad {
 @Composable
 fun EpisodesSection(d: TitleDetails, source: TitleSource, gutter: Dp, onPlay: (EpisodeInfo) -> Unit, onSources: (EpisodeInfo) -> Unit, onSeasonOut: (Int) -> Unit = {},
                     onSeasonLoaded: (Int, List<EpisodeInfo>) -> Unit = { _, _ -> }) {
-    val first = d.progress?.season?.takeIf { s -> d.seasons.any { it.number == s && it.comingWords == null } } ?: d.defaultSeason ?: d.seasons.first().number
-    var season by remember(d.ref) { mutableIntStateOf(first) }
+    // The opening tab is a season, never the Specials one: it sits last so the page opens on Season 1.
+    val firstNumber = d.progress?.season?.takeIf { s -> d.seasons.any { it.number == s && it.comingWords == null && !it.special } }
+        ?: d.defaultSeason ?: d.seasons.firstOrNull { !it.special }?.number
+    val first = d.seasons.firstOrNull { !it.special && it.number == firstNumber } ?: d.seasons.first()
+    var tab by remember(d.ref) { mutableStateOf(first) }
+    val season = tab.number
     // A season readied ahead (the page's opening one, a tab the pointer rested on) draws in the first frame.
-    var load by remember(d.ref, season) { mutableStateOf<SeasonLoad>(source.seasonNow(d.ref, season)?.let { SeasonLoad.Ready(it) } ?: SeasonLoad.Loading) }
-    var attempt by remember(d.ref, season) { mutableIntStateOf(0) }
+    var load by remember(d.ref, tab) { mutableStateOf<SeasonLoad>(source.seasonNow(d.ref, season, tab.special)?.let { SeasonLoad.Ready(it) } ?: SeasonLoad.Loading) }
+    var attempt by remember(d.ref, tab) { mutableIntStateOf(0) }
     // Episode pills follow new answers in place.
-    LaunchedEffect(d.ref, season) {
+    LaunchedEffect(d.ref, tab) {
         source.pillUpdates.conflate().collect {
             (load as? SeasonLoad.Ready)?.let { r -> load = SeasonLoad.Ready(source.liveEpisodePills(d.ref, r.episodes)) }
             kotlinx.coroutines.delay(250)
         }
     }
-    LaunchedEffect(d.ref, season, attempt) {
+    LaunchedEffect(d.ref, tab, attempt) {
         // Asked again behind a readied season (an equal answer changes nothing); a failed refresh keeps what shows.
-        val fresh = runCatching { source.season(d.ref, season) }
+        val fresh = runCatching { source.season(d.ref, season, tab.special) }
         load = fresh.fold({ SeasonLoad.Ready(source.liveEpisodePills(d.ref, it)) }, { if (load is SeasonLoad.Ready) load else SeasonLoad.Failed })
         val l = load
-        if (l is SeasonLoad.Ready) onSeasonLoaded(season, l.episodes)
+        if (l is SeasonLoad.Ready && !tab.special) onSeasonLoaded(season, l.episodes)
         if (l is SeasonLoad.Ready && l.episodes.any { !it.upcoming } && d.seasons.any { it.number == season && it.comingWords != null }) onSeasonOut(season)
     }
     com.dreamos.desktop.preload.PopProbe("season", load !is SeasonLoad.Loading, season)
@@ -86,7 +90,7 @@ fun EpisodesSection(d: TitleDetails, source: TitleSource, gutter: Dp, onPlay: (E
         if (d.seasons.isNotEmpty()) {
             Spacer(Modifier.height(10.dp))
             Row(Modifier.padding(horizontal = gutter - 12.dp), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                d.seasons.forEach { s -> SeasonTab(s, s.number == season, onRest = { com.dreamos.desktop.preload.TitlePageAhead.season(source, d.ref, s.number) }) { season = s.number } }
+                d.seasons.forEach { s -> SeasonTab(s, s == tab, onRest = { com.dreamos.desktop.preload.TitlePageAhead.season(source, d.ref, s.number, s.special) }) { tab = s } }
             }
         }
         when (val l = load) {
@@ -104,10 +108,12 @@ fun EpisodesSection(d: TitleDetails, source: TitleSource, gutter: Dp, onPlay: (E
                     HoverLane(gutter) { item { SeasonComingCard(ahead, 300.dp) {} } }
                     Text("Season ${ahead.number}${TitleWords.DOT}${ahead.comingLong ?: TitleWords.TBA}", style = DreamType.Meta, modifier = Modifier.padding(horizontal = gutter))
                 } else if (eps.isEmpty()) {
-                    Text("No Episodes of Season $season to Watch Yet", style = DreamType.Body.copy(color = Dream.TextDim), modifier = Modifier.padding(horizontal = gutter, vertical = 18.dp))
+                    Text(if (tab.special) "No Specials to Watch Yet" else "No Episodes of Season $season to Watch Yet",
+                        style = DreamType.Body.copy(color = Dream.TextDim), modifier = Modifier.padding(horizontal = gutter, vertical = 18.dp))
                 } else {
                     val p = d.progress
                     val upNext = when {
+                        tab.special -> null // a special is never Up Next; its own card carries its own Resume
                         p != null && p.inProgress && p.season == season -> p.episode
                         d.upNext?.first == season -> d.upNext.second
                         else -> null
@@ -119,9 +125,9 @@ fun EpisodesSection(d: TitleDetails, source: TitleSource, gutter: Dp, onPlay: (E
                         items(eps.size) { i ->
                             val e = eps[i]
                             val tag = when {
-                                e.number != upNext -> null
-                                e.progress > 0f && e.progress < TitleProgress.FINISHED -> "Resume"
-                                else -> "Up Next"
+                                e.progress > 0f && e.progress < TitleProgress.FINISHED && (e.isSpecial || e.number == upNext) -> "Resume"
+                                e.number == upNext && !e.isSpecial -> "Up Next"
+                                else -> null
                             }
                             EpisodeCard(e, 300.dp, tag, onPlay = { onPlay(e) }, onFocusOrHover = { shown = i }, options = listOf(
                                 MenuItem("Play") { onPlay(e) },

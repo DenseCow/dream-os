@@ -31,8 +31,11 @@ public enum TitleMeta {
         10766: "Soap", 10767: "Talk", 10768: "War & Politics", 37: "Western",
     ]
 
-    /// Continue Watching's line: "Up Next · S1 · E4", "S2 · E5", "42 min left", else the subline.
+    /// Continue Watching's line: "Up Next · S1 · E4", "S2 · E5", a special's own title, "42 min left", else the
+    /// subline.
     public static func continueLine(_ e: HistoryEntry) -> String {
+        // A special has its own card, and its own title names it: it has no place in the order to show.
+        if e.kind.isSpecial, let n = EpisodeWords.name(e.kind, season: nil, episode: nil, title: e.episodeName) { return n }
         if e.title.kind == .tv, let s = e.season, let n = e.episode, s > 0, n > 0 {
             return (e.upNext ? "Up Next · " : "") + "S\(s) · E\(n)"
         }

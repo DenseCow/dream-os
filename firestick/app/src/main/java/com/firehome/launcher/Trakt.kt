@@ -548,16 +548,32 @@ object Trakt {
         try {
             if (req == null || req.trailer || req.tmdbId <= 0 || durationMs < 5 * 60_000L) return
             val ep = req.type == "episode"
-            if (ep && (req.season == null || req.episode == null)) return
+            // A special goes to Trakt as the episode TMDB knows, by id, or not at all: its place in air order is
+            // a view here, and sending that as a season-0 number would scrobble a different special ([Specials]).
+            val specialTmdb = req.specialId?.takeIf { it.startsWith("tmdb:") }?.substringAfter(':')?.toIntOrNull()
+            if (ep && req.isSpecial && specialTmdb == null) return
+            if (ep && !req.isSpecial && (req.season == null || req.episode == null)) return
             if (!signedIn(ctx)) return
-            val key = if (ep) "tv:${req.tmdbId}:${req.season}:${req.episode}" else "movie:${req.tmdbId}"
+            val key = when {
+                !ep -> "movie:${req.tmdbId}"
+                req.isSpecial -> WatchHistory.specialKey(req.tmdbId, req.specialId.orEmpty())
+                else -> "tv:${req.tmdbId}:${req.season}:${req.episode}"
+            }
             var p = play
             if (p == null || p.key != key) {
                 p?.let { close(ctx, it) }
-                val item = if (ep) JSONObject().put("show", JSONObject().put("ids", JSONObject().put("tmdb", req.tmdbId)))
-                    .put("episode", JSONObject().put("season", req.season).put("number", req.episode))
-                else JSONObject().put("movie", JSONObject().put("ids", JSONObject().put("tmdb", req.tmdbId)))
-                p = Play(key, item, if (ep) "${req.title} S${req.season}E${req.episode}" else req.title, sfx(ctx))
+                val item = when {
+                    !ep -> JSONObject().put("movie", JSONObject().put("ids", JSONObject().put("tmdb", req.tmdbId)))
+                    req.isSpecial -> JSONObject().put("episode", JSONObject().put("ids", JSONObject().put("tmdb", specialTmdb)))
+                    else -> JSONObject().put("show", JSONObject().put("ids", JSONObject().put("tmdb", req.tmdbId)))
+                        .put("episode", JSONObject().put("season", req.season).put("number", req.episode))
+                }
+                val label = when {
+                    !ep -> req.title
+                    req.isSpecial -> "${req.title} special ${req.episodeTitle.orEmpty()}".trim()
+                    else -> "${req.title} S${req.season}E${req.episode}"
+                }
+                p = Play(key, item, label, sfx(ctx))
                 play = p
             }
             if (positionMs > 0) p.progress = (positionMs * 100f / durationMs).coerceIn(0f, 100f)
@@ -991,7 +1007,9 @@ object Trakt {
             if (pct < 0.02f || at <= 0) continue
             val key = when (o.optString("type")) {
                 "movie" -> o.optJSONObject("movie")?.optJSONObject("ids")?.optInt("tmdb")?.takeIf { it > 0 }?.let { "movie:$it" }
-                "episode" -> o.optJSONObject("show")?.optJSONObject("ids")?.optInt("tmdb")?.takeIf { it > 0 }?.let { "tv:$it" }
+                // A season-0 episode on Trakt is a special: left alone here, or it would take the show's row.
+                "episode" -> o.optJSONObject("show")?.optJSONObject("ids")?.optInt("tmdb")?.takeIf { it > 0 }
+                    ?.takeIf { (o.optJSONObject("episode")?.optInt("season") ?: 0) > 0 }?.let { "tv:$it" }
                 else -> null
             } ?: continue
             if ((newest[key]?.first ?: 0) < at) newest[key] = Triple(at, o, pct)
@@ -1021,7 +1039,9 @@ object Trakt {
         var still: String? = null
         var duration = if (isShow) 0L else d.optInt("runtime") * 60_000L
         if (isShow) {
-            if (season <= 0 && episode <= 0) return null
+            // Trakt numbers specials as season 0; they come in by id or not at all ([Specials]), never as a
+            // season-0 episode, which would land in the show's own Continue Watching row.
+            if (season <= 0 || episode <= 0) return null
             WatchHistory.seasonEpisodes(app, tmdbId, season)?.firstOrNull { it.optInt("episode_number") == episode }?.let { ep ->
                 epTitle = ep.optString("name").ifEmpty { null }
                 still = ep.optString("still_path").takeIf { it.isNotEmpty() && it != "null" }

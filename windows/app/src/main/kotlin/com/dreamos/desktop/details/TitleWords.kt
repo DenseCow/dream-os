@@ -1,5 +1,6 @@
 package com.dreamos.desktop.details
 
+import com.dreamos.desktop.core.model.EpisodeCode
 import java.time.LocalDate
 import java.time.format.DateTimeFormatter
 import java.util.Locale
@@ -69,8 +70,11 @@ object TitleWords {
 
     const val EPISODE_LENGTH = "Episode Length"
 
-    /** "S2 E4" */
-    fun se(season: Int, episode: Int): String = "S$season E$episode"
+    /** "S2 E4", the one place a numbered episode's code is written here ([EpisodeCode]). */
+    fun se(season: Int, episode: Int): String = EpisodeCode.of(season, episode)
+
+    /** An episode's words: "S2 E4", or a special's own title ([EpisodeCode.label]). */
+    fun se(e: EpisodeInfo, sep: String = " "): String = EpisodeCode.label(e.kind, e.season, e.number, e.name, sep)
 
     /** Play's label (PlayFlow.playLabel): "Resume" / "Resume S2 E4" while in progress, "Play S2 E5" for a show, else "Play". */
     fun playLabel(d: TitleDetails): String {
@@ -100,8 +104,13 @@ object TitleWords {
     else listOfNotNull(e.runtimeMin?.takeIf { it > 0 }?.let { runtime(it) }, e.languageWords).joinToString(DOT)
 
     /** An episode card's title: "4. Name"; one still to come reads "S2 · E7  Name" ("S2 · Episode 7" with no name yet). */
-    fun episodeCardTitle(e: EpisodeInfo): String = if (!e.upcoming) "${e.number}. ${episodeName(e)}"
-    else e.name.takeIf { it.isNotBlank() && !it.matches(PLACEHOLDER) }?.let { "S${e.season} · E${e.number}  $it" } ?: "S${e.season} · Episode ${e.number}"
+    fun episodeCardTitle(e: EpisodeInfo): String = when {
+        // A special's number is a place in air order that moves as the catalog fills in, so its card shows its name.
+        e.isSpecial -> episodeName(e)
+        !e.upcoming -> "${e.number}. ${episodeName(e)}"
+        else -> e.name.takeIf { it.isNotBlank() && !it.matches(PLACEHOLDER) }?.let { "S${e.season} · E${e.number}  $it" }
+            ?: "S${e.season} · Episode ${e.number}"
+    }
 
     /**
      * An upcoming card's date stamp (CinemaDetails.dateStamp): weekday, "Oct 30" ("Oct 30, 2027" another year) and the
@@ -136,14 +145,14 @@ object TitleWords {
 
     /** The blurb under the episodes: "Season 2, Episode 3  ·  47 min  ·  Aired October 12, 2026". */
     fun episodeBlurb(e: EpisodeInfo, today: LocalDate = LocalDate.now()): String = listOfNotNull(
-        "Season ${e.season}, Episode ${e.number}",
+        EpisodeCode.place(e.kind, e.season, e.number),
         if (e.upcoming) e.comingWords ?: TBA else null,
         e.runtimeMin?.takeIf { it > 0 && !e.upcoming }?.let { runtime(it) },
         e.airDate?.takeIf { !e.upcoming && !it.isAfter(today) }?.let { "Aired ${long(it)}" },
         e.languageWords,
     ).joinToString(DOT)
 
-    fun episodeName(e: EpisodeInfo): String = e.name.ifBlank { "Episode ${e.number}" }
+    fun episodeName(e: EpisodeInfo): String = e.name.ifBlank { if (e.isSpecial) EpisodeCode.SPECIALS else "Episode ${e.number}" }
 
     /** The person's life line without a dash: "Born July 31, 1970  ·  Chicago" or "July 31, 1970 to January 1, 2020  ·  Chicago". */
     fun lifeLine(p: PersonDetails): String? {

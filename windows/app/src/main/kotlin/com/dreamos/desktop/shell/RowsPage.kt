@@ -159,7 +159,7 @@ class RowsModel(
     }
 
     private fun without(row: Row): SlotState {
-        val left = row.items.filter { dropped[it.title.key]?.holds(row.id) != true }
+        val left = row.items.filter { dropped[it.cardKey]?.holds(row.id) != true }
         return when {
             left.size == row.items.size -> SlotState.Shown(row)
             left.isEmpty() && row.hubs.isEmpty() -> SlotState.Hidden

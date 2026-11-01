@@ -147,7 +147,7 @@ object BecauseYouWatched {
 
     private fun pool(history: List<HistoryEntry>, shows: Boolean, now: Long): List<HistoryEntry> = history
         .sortedByDescending { it.updatedAt }
-        .filter { it.isShow == shows && it.title.name.isNotBlank() && it.title.id > 0 && now - it.updatedAt <= MAX_AGE_DAYS * DAY_MS }
+        .filter { it.ofShow == shows && it.title.name.isNotBlank() && it.title.id > 0 && now - it.updatedAt <= MAX_AGE_DAYS * DAY_MS }
         .filter { WatchHistory.watchedEnough(it) && !removed(it) }
         .distinctBy { it.title.id }
 

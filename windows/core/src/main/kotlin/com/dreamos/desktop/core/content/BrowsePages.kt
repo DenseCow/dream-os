@@ -150,7 +150,8 @@ object BrowsePages {
             titles("Bingeworthy Shows") {
                 val q = "&include_adult=false&sort_by=popularity.desc&vote_count.gte=1000&vote_average.gte=7.8&first_air_date.gte=${RowMix.yearsAgo(12)}" +
                     "&without_genres=10763,10764,10766,10767,10762"
-                RowPaging.all({ Tmdb.list("/discover/tv", q, MediaKind.TV) }, { Tmdb.list("/discover/tv", "$q&page=2", MediaKind.TV) }).flatten()
+                RowPaging.all({ Tmdb.list("/discover/tv", q, MediaKind.TV) },
+                    { Tmdb.list("/discover/tv", "$q&page=${Taste.rotatingPage("Bingeworthy Shows")}", MediaKind.TV) }).flatten()
             }
         }
         // A category in season (Halloween, Holiday) comes before the services.

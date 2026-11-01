@@ -55,11 +55,26 @@ class Playback(
                 summaryOn = hooks::accountSummaryAtStart)
             // The episode list, Up Next and Continue Watching treat an episode a source already has as aired.
             com.dreamos.desktop.core.content.WatchHistory.outEarly = { showId, season, episode -> avail.outEarly("tv:$showId:$season:$episode") }
+            // A special is asked for by its id: its availability is kept under its own key, not a season's.
+            com.dreamos.desktop.core.content.WatchHistory.specialOutEarly = { showId, specialId -> avail.outEarly("tv:$showId/sp:$specialId") }
+            com.dreamos.desktop.core.content.WatchHistory.specialEarlyRelease = { showId, specialId, airDate ->
+                kotlinx.coroutines.runBlocking { avail.earlyRelease(specialTarget(showId, specialId, airDate)) }
+            }
             // The title page's season list: an episode still ahead gets one quick look in the index first.
             com.dreamos.desktop.core.content.WatchHistory.earlyRelease = { showId, season, episode, airDate ->
                 kotlinx.coroutines.runBlocking { avail.earlyRelease(earlyTarget(showId, season, episode, airDate)) }
             }
             return Playback(core, LookAhead(core), accounts, avail, skips, expiry)
+        }
+
+        /** Dream Core's target for one special of [showId], by its source id (its place in air order is the resolver's). */
+        fun specialTarget(showId: Int, specialId: String, airDate: String): PlayTarget {
+            val sp = com.dreamos.desktop.core.content.Specials.byId(showId, specialId)
+            val d = com.dreamos.desktop.core.content.Details.cachedDetails(com.dreamos.desktop.core.model.MediaKind.TV, showId)
+            val ep = com.dreamos.desktop.core.model.Episode(showId, sp?.parentSeason ?: 0, sp?.number ?: 0, sp?.name.orEmpty(),
+                airDate = airDate, kind = com.dreamos.desktop.core.model.EpisodeKind.SPECIAL, specialId = specialId)
+            return if (d != null) com.dreamos.desktop.core.catalog.ContentPlaybackHooks.target(d.title, ep, d.imdbId)
+            else PlayTarget(MediaKind.SPECIAL, showId, "Show $showId", specialId = specialId, airDate = airDate.ifEmpty { null })
         }
 
         /** Dream Core's target for an episode of [showId] (the show's kept details give its name, IMDb id and anime flag). */

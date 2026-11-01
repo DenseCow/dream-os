@@ -47,6 +47,7 @@ import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
+import org.json.JSONObject
 import java.util.Date
 import kotlin.math.abs
 import kotlin.math.sign
@@ -1385,11 +1386,9 @@ class MainActivity : Activity() {
             if (!AppWatch.resume(this, e)) Toast.makeText(this, "Couldn't open that app", Toast.LENGTH_SHORT).show()
             return
         }
-        val tv = e.isShow && e.season > 0 && e.episode > 0
         // Dream Player resumes at the saved spot.
         val at = if (!e.upNext && e.progress > 0f && e.progress < WatchHistory.FINISHED) e.positionMs else 0L
-        PlayFlow.play(this, PlayFlow.request(tv, e.tmdbId, e.title, e.year, e.imdb, if (tv) e.season else 0, if (tv) e.episode else 0,
-            startMs = at, backdropPath = e.backdropPath, posterPath = e.posterPath, episodeTitle = if (tv) e.episodeTitle else null))
+        PlayFlow.play(this, PlayFlow.from(e, at))
     }
 
     // ---- New Episodes (data and "New" tracking live in NewEpisodes.kt) ----
@@ -1399,7 +1398,8 @@ class MainActivity : Activity() {
         val show = item.show
         val installed = apps.map { it.pkg }.toSet()
         val options = ArrayList<Pair<String, () -> Unit>>()
-        options += "Play S${item.ep.season} E${item.ep.number}" to { playNewEpisode(item) }
+        val what = if (item.ep.specialId != null) "the Special" else PlayFlow.episodeCode(false, item.ep.season, item.ep.number)
+        options += "Play $what" to { playNewEpisode(item) }
         for (svc in NewEpisodes.services(show, installed)) options += "Open in ${svc.name}" to { openOnService(svc, show.title()) }
         options += "" to {}
         options += "Show Details" to { openDetails(show.title()) }
@@ -1408,9 +1408,9 @@ class MainActivity : Activity() {
 
     private fun playNewEpisode(item: NewEpisodes.Item) {
         val show = item.show
+        // The banner's own factory, so a special's fields come from the item rather than being listed again.
         Net.background({ NewEpisodes.imdb(this, show) }) { imdb ->
-            PlayFlow.play(this, PlayFlow.request(true, show.id, show.name, show.year, imdb, item.ep.season, item.ep.number,
-                backdropPath = show.backdrop, posterPath = show.poster, episodeTitle = item.ep.name.ifBlank { null }))
+            PlayFlow.play(this, NewEpisodeSpot.request(item).copy(imdb = imdb ?: show.imdb))
         }
     }
 
@@ -1469,7 +1469,7 @@ class MainActivity : Activity() {
     /** The show's in-progress or "Up next" episode from the watch history, if there is one. */
     private fun nextEpisode(t: Title): WatchHistory.Entry? =
         if (t.type != "tv") null
-        else WatchHistory.entries(this).firstOrNull { it.key == t.key && it.isShow && it.season > 0 && it.episode > 0 }
+        else WatchHistory.seriesOnRow(this, t.id)?.takeIf { it.season > 0 && it.episode > 0 }
 
     /** Movie: plays it. Show: the episode from the watch history, or (always with [pick]) a season/episode chooser. */
     private fun watch(t: Title, pick: Boolean = false) {
@@ -1491,7 +1491,7 @@ class MainActivity : Activity() {
         val next = nextEpisode(t)
         if (next != null) return done(req(true, next.year, next.imdb, next.season, next.episode))
         Net.background({
-            WatchHistory.caughtUpNext(this, t.key)?.let { it.season to it.episode } ?: airedSeasons(t.id).firstOrNull()?.first?.let { it to 1 }
+            WatchHistory.caughtUpNext(this, t.id)?.let { it.season to it.episode } ?: airedSeasons(t.id).firstOrNull()?.first?.let { it to 1 }
         }) { ep ->
             done(ep?.let { (s, e) -> req(true, year, null, s, e) })
         }
@@ -1544,11 +1544,18 @@ class MainActivity : Activity() {
         PlayFlow.play(this, PlayFlow.request(t.type == "tv", t.id, t.name, year, imdb, season, episode, backdropPath = t.backdropPath, posterPath = t.posterPath))
     }
 
+    /** Plays a special ([Specials]): its own kind, built from the catalog entry ([PlayFlow.special]). */
+    private fun playSpecial(t: Title, special: JSONObject) {
+        val req = PlayFlow.special(special, t.id, t.name, t.year.take(4).toIntOrNull(),
+            backdropPath = t.backdropPath, posterPath = t.posterPath) ?: return
+        PlayFlow.play(this, req)
+    }
+
     /** Menu-sheet chooser: a ready-to-play first row (next episode, or S1 E1), then the aired seasons. */
     private fun chooseEpisode(t: Title) {
         val owner = details
         val inRow = nextEpisode(t)
-        Net.background({ (inRow ?: WatchHistory.caughtUpNext(this, t.key)) to airedSeasons(t.id) }) { found ->
+        Net.background({ (inRow ?: WatchHistory.caughtUpNext(this, t.id)) to airedSeasons(t.id) }) { found ->
             if (details !== owner || menuOverlay != null) return@background
             val next = found?.first ?: inRow
             val seasons = found?.second
@@ -2127,7 +2134,7 @@ class MainActivity : Activity() {
                 (if (e.upNext || e.progress <= 0f) "Play" else "Resume") to { resumeWatching(e) },
                 "Details" to { this@MainActivity.openDetails(t) },
                 "Remove from Continue Watching" to {
-                    WatchHistory.remove(this@MainActivity, e.key)
+                    WatchHistory.remove(this@MainActivity, e)
                     shell?.continueRemoved()
                 },
             ))
@@ -2227,6 +2234,7 @@ class MainActivity : Activity() {
         override fun nextEpisode(t: Title) = this@MainActivity.nextEpisode(t)
         override fun watch(t: Title, pick: Boolean) = this@MainActivity.watch(t, pick)
         override fun playEpisode(t: Title, season: Int, episode: Int) = this@MainActivity.playEpisode(t, season, episode)
+        override fun playSpecial(t: Title, special: JSONObject) = this@MainActivity.playSpecial(t, special)
         override fun resume(e: WatchHistory.Entry) = resumeWatching(e)
         override fun openOnService(svc: Tmdb.Service, t: Title) = this@MainActivity.openOnService(svc, t)
         override fun playTrailer(t: Title, startMs: Long, videoKey: String?) = this@MainActivity.playTrailerFor(t, startMs, videoKey)

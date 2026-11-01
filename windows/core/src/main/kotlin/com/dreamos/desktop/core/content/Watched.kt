@@ -1,5 +1,6 @@
 package com.dreamos.desktop.core.content
 
+import com.dreamos.desktop.core.model.EntryKind
 import com.dreamos.desktop.core.model.HistoryEntry
 import com.dreamos.desktop.core.model.MediaKind
 import com.dreamos.desktop.core.model.ShowAirState
@@ -20,6 +21,8 @@ import java.util.concurrent.Executors
  * title started again keeps its pill.
  *  - A movie: finished once (92 %, or Trakt's history).
  *  - An episode: only one the viewer actually finished ("S:E"; nothing is inferred from a later one).
+ *  - A special: kept by source id in a set of its own, so it never counts as progress through the series and never
+ *    toward the show being watched (STANDARDS §5).
  *  - A show: every aired episode finished and nothing newer has aired. The air state is TMDB's, asked again every
  *    6 h and once the announced day passes; a show with a new episode loses Watched.
  * Worst case: a few thousand episode keys per profile (~50 KB).
@@ -31,6 +34,11 @@ object Watched {
     @Serializable
     private data class Show(
         val eps: MutableSet<String> = HashSet(),
+        /**
+         * Specials the viewer finished, by source id. Their own set, so [furthest] and [show] cannot see them at all:
+         * a special is no part of the series and never counts as progress through it (STANDARDS §5).
+         */
+        val sp: MutableSet<String> = HashSet(),
         var ls: Int = 0, var le: Int = 0, var cn: List<Int> = emptyList(), var n: String = "", var c: Long = 0L,
     )
 
@@ -67,17 +75,28 @@ object Watched {
         return b
     }
 
-    /** Only what was really finished: finished movies and episodes, and the episode before an Up Next one. */
+    /** Only what was really finished: finished movies, specials and episodes, and the episode before an Up Next one. */
     private fun seedFrom(b: Book, e: HistoryEntry) {
-        if (!e.isShow) { if (e.progress >= HistoryEntry.FINISHED) b.m.add(e.title.id); return }
-        if (e.season <= 0 || e.episode <= 0) return
-        if (e.upNext) { if (e.episode > 1) add(b, e.title.id, e.season, e.episode - 1) }
-        else if (e.progress >= HistoryEntry.FINISHED) add(b, e.title.id, e.season, e.episode)
+        val done = e.progress >= HistoryEntry.FINISHED
+        when (e.kind) {
+            EntryKind.MOVIE -> if (done) b.m.add(e.title.id)
+            EntryKind.SPECIAL -> if (done) addSpecial(b, e.title.id, e.specialId)
+            EntryKind.SERIES -> {
+                if (e.season <= 0 || e.episode <= 0) return
+                if (e.upNext) { if (e.episode > 1) add(b, e.title.id, e.season, e.episode - 1) }
+                else if (done) add(b, e.title.id, e.season, e.episode)
+            }
+        }
     }
 
     private fun add(b: Book, show: Int, season: Int, episode: Int): Boolean {
         if (show <= 0 || season <= 0 || episode <= 0) return false
         return b.s.getOrPut(show) { Show() }.eps.add("$season:$episode")
+    }
+
+    private fun addSpecial(b: Book, show: Int, specialId: String): Boolean {
+        if (show <= 0 || specialId.isEmpty()) return false
+        return b.s.getOrPut(show) { Show() }.sp.add(specialId)
     }
 
     private fun edit(f: (Book) -> Boolean) {
@@ -96,13 +115,22 @@ object Watched {
 
     // ---- writing ----
 
-    /** The viewer finished [e] (a movie, or that one episode; a show's air state is asked when due). */
+    /** The viewer finished [e] (a movie, a special, or that one episode; a show's air state is asked when due). */
     fun finished(e: HistoryEntry) {
-        if (!e.isShow) { edit { it.m.add(e.title.id) }; return }
-        if (e.season <= 0 || e.episode <= 0) return
-        edit { add(it, e.title.id, e.season, e.episode) }
-        checkShow(e.title.id)
+        when (e.kind) {
+            EntryKind.MOVIE -> edit { it.m.add(e.title.id) }
+            // A finished special is kept on its own and never counts toward the show being watched.
+            EntryKind.SPECIAL -> edit { addSpecial(it, e.title.id, e.specialId) }
+            EntryKind.SERIES -> {
+                if (e.season <= 0 || e.episode <= 0) return
+                edit { add(it, e.title.id, e.season, e.episode) }
+                checkShow(e.title.id)
+            }
+        }
     }
+
+    /** Tests and a future Trakt pull: [specialId] of [show] counts as finished. */
+    fun fromSpecial(show: Int, specialId: String) = edit { addSpecial(it, show, specialId) }
 
     /** Trakt's history: every movie and every episode ([episodes]: show id to its season / episode pairs). */
     fun fromTrakt(movies: Collection<Int>, episodes: Map<Int, Collection<Pair<Int, Int>>>) {
@@ -149,6 +177,22 @@ object Watched {
 
     /** The viewer actually finished this episode. */
     fun episode(show: Int, season: Int, episode: Int): Boolean = read { b -> b.s[show]?.eps?.contains("$season:$episode") ?: false }
+
+    /**
+     * The viewer actually finished this special of [show] ([specialId] its source id). Every id the special has been
+     * known by counts ([Specials.idsFor]): a mark written while only TVmaze listed it still reads as watched once TMDB
+     * adds the same special. Local and instant.
+     */
+    fun special(show: Int, specialId: String): Boolean = read { b ->
+        val set = b.s[show]?.sp ?: return@read false
+        Specials.idsFor(show, specialId).any { it in set }
+    }
+
+    /**
+     * How many episodes of [show] the viewer has finished. Specials keep their own set, so one never counts as
+     * progress through the series ([Taste.build] reads this for the cleared-card rule).
+     */
+    fun episodeCount(show: Int): Int = read { b -> b.s[show]?.eps?.size ?: 0 }
 
     /** The latest episode of [show] the viewer finished (season to episode), null when none ([NewEpisodes.caughtUp]). */
     fun furthest(show: Int): Pair<Int, Int>? = read { b ->

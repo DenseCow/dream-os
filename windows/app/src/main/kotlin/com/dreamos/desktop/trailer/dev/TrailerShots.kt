@@ -21,8 +21,11 @@ import androidx.compose.ui.unit.sp
 import com.dreamos.desktop.core.content.Tmdb
 import com.dreamos.desktop.core.store.DreamStore
 import com.dreamos.desktop.core.trailer.TrailerRef
+import com.dreamos.desktop.trailer.FullTrailer
+import com.dreamos.desktop.trailer.FullTrailerHost
 import com.dreamos.desktop.trailer.TrailerBackdrop
 import com.dreamos.desktop.trailer.TrailerBackdropState
+import com.dreamos.desktop.trailer.rememberFullTrailer
 import com.dreamos.desktop.trailer.rememberTrailerBackdropState
 import com.dreamos.desktop.trailer.trailerUi
 import com.dreamos.desktop.trailer.trailerWatch
@@ -36,7 +39,9 @@ import javax.swing.SwingUtilities
 /**
  * The hero trailer without a window, a sound or the pointer (the owner's PC rule): a title-page-like hero rendered with
  * ImageComposeScene on the UI thread, the real lookup and a real libmpv drawing with no audio device. Shots: before the
- * trailer, playing (UI faded), after a pointer move (UI back), 5 s later (faded again), after stopNow.
+ * trailer, playing (UI faded), after a pointer move (UI back), 5 s later (faded again), the Trailer button promoting
+ * that playing trailer to full screen (the same libmpv: the position in the log carries on), its controls after a
+ * pointer move, the page back after Close, and after stopNow.
  * `./gradlew :app:trailerShots -Pshots=<dir> [-Pmovie=<tmdb id>]`. Uses a temporary settings store, never the viewer's.
  */
 @OptIn(ExperimentalComposeUiApi::class)
@@ -57,6 +62,7 @@ fun main() {
     val ref = TrailerRef(movie, isShow = false, name = "Movie $movie")
     lateinit var scene: ImageComposeScene
     lateinit var state: TrailerBackdropState
+    lateinit var full: FullTrailerHost
     fun ui(block: () -> Unit) = SwingUtilities.invokeAndWait(block)
     val t0 = System.nanoTime()
     fun ms() = (System.nanoTime() - t0) / 1_000_000
@@ -66,7 +72,7 @@ fun main() {
             val img = scene.render(System.nanoTime())
             File(out, "$name.png").writeBytes(img.encodeToData(EncodedImageFormat.PNG)!!.bytes)
         }
-        println("SHOT $name at ${ms()} ms: playing=${state.playing} immersive=${state.immersive}")
+        println("SHOT $name at ${ms()} ms: playing=${state.playing} immersive=${state.immersive} fullScreen=${full.showing}")
     }
     fun runFor(msLong: Long, until: () -> Boolean = { false }) {
         val end = System.currentTimeMillis() + msLong
@@ -76,6 +82,7 @@ fun main() {
     ui {
         scene = ImageComposeScene(w, h, Density(1f), coroutineContext = Dispatchers.Main) {
             state = rememberTrailerBackdropState()
+            full = rememberFullTrailer()
             LaunchedEffect(Unit) { state.update(ref, resting = true, visible = true) }
             Box(Modifier.fillMaxSize().background(Color(0xFF0B0B0D)).trailerWatch(state)) {
                 // Stand-in for the backdrop picture (the trailer dissolves in over it).
@@ -88,6 +95,8 @@ fun main() {
                         Text("Play   Trailer   My List", color = Color(0xFFD0D0D6), fontSize = 18.sp)
                     }
                 }
+                // The promoted trailer, as the title page hosts it.
+                FullTrailer(full, "Movie $movie")
             }
         }
     }
@@ -102,9 +111,20 @@ fun main() {
     shot("3-after-mouse-move")
     runFor(5200)
     shot("4-idle-again")
+    // The Trailer button while that trailer plays: the live libmpv becomes the full-screen picture, nothing reloads.
+    val atPromote = state.playing
+    ui { println("PROMOTE: took the playing trailer = ${full.take(state, ref)} (hero was playing=$atPromote)") }
+    runFor(900)
+    shot("5-full-screen")
+    ui { scene.sendPointerEvent(PointerEventType.Move, Offset(w / 2f, h * 0.8f)) }
+    runFor(700)
+    shot("6-full-screen-controls")
+    ui { full.live?.close() }
+    runFor(700)
+    shot("7-page-back")
     ui { state.stopNow() }
     runFor(600)
-    shot("5-after-stop")
+    shot("8-after-stop")
     ui { scene.close() }
     println("DONE in ${ms()} ms; shots in ${out.absolutePath}")
     Thread.sleep(1500) // the decoder is let go on its own thread

@@ -1,8 +1,14 @@
 package com.dreamos.desktop.trailer
 
+import androidx.compose.runtime.BroadcastFrameClock
 import androidx.compose.ui.graphics.asSkiaBitmap
+import com.dreamos.desktop.core.trailer.TrailerRef
 import com.dreamos.player.engine.LibMpv
 import com.dreamos.player.engine.PlayerLog
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 import java.io.File
 import java.util.Random
 import java.util.concurrent.CountDownLatch
@@ -12,6 +18,9 @@ import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicReference
 import javax.swing.SwingUtilities
 import kotlin.test.Test
+import kotlin.test.assertEquals
+import kotlin.test.assertFalse
+import kotlin.test.assertTrue
 import kotlin.test.fail
 
 /**
@@ -51,6 +60,74 @@ class TrailerCloseLoopTest {
             else { System.err.println("TrailerCloseLoopTest: round $n ${way.name} FAILED: $problem"); problems += "round $n ${way.name}: $problem" }
         }
         println("TrailerCloseLoopTest: ${rounds - problems.size} of $rounds rounds passed")
+        if (problems.isNotEmpty()) fail(problems.joinToString("\n"))
+    }
+
+    /**
+     * The Trailer button's promotion with the real decoder (owner, 2026-10-31): a playing libmpv is handed from the
+     * hero to the full-screen surface and back again, and must keep drawing the same stream throughout (no reload in
+     * either direction: the position carries on and new frames keep coming, going in and coming out). One decoder
+     * from beginning to end, let go of exactly once when the page is done with it, with no thread and no render
+     * context left behind. [PROMOTE_ROUNDS] rounds. Headless, silent, no window.
+     */
+    @Test fun promotesToFullScreenAndComesBack() {
+        if (!live) { println("TrailerCloseLoopTest: live tests off (-Pdream.live=true), skipped"); return }
+        if (LibMpv.dirs().none { File(it, "libmpv-2.dll").isFile }) { println("TrailerCloseLoopTest: no libmpv-2.dll (tools/fetch-mpv.sh), skipped"); return }
+        check(BackdropVideo.SILENT) { "run with -Ddream.trailer.silent=true (the app's test task sets it)" }
+        val ref = TrailerRef(603, false, "Close Loop")
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default + BroadcastFrameClock())
+        val problems = ArrayList<String>()
+        try {
+            for (n in 1..PROMOTE_ROUNDS) {
+                val firstFrame = CountDownLatch(1)
+                val v = BackdropVideo(muted = true, onFrame = { firstFrame.countDown() }, onEvent = {})
+                v.size(1280, 720)
+                v.load(url)
+                if (!firstFrame.await(FIRST_FRAME_LIMIT_S, TimeUnit.SECONDS)) {
+                    v.destroy(); v.awaitReleased(RELEASE_LIMIT_MS)
+                    problems += "round $n: no first frame"
+                    continue
+                }
+                val hero = TrailerBackdropState(scope)
+                hero.playingForChecks(ref, "live", v)
+                val host = FullTrailerHost(scope)
+                var uiMs = 0L
+                SwingUtilities.invokeAndWait {
+                    val t0 = System.nanoTime()
+                    assertTrue(host.take(hero, ref), "the playing trailer was not handed over")
+                    uiMs = (System.nanoTime() - t0) / 1_000_000
+                }
+                val full = host.live
+                if (full == null) { problems += "round $n: nothing went full screen"; continue }
+                assertFalse(hero.holdsVideoForChecks, "the hero still holds the decoder")
+                if (uiMs > UI_LIMIT_MS) problems += "round $n: the hand-over held the UI thread for $uiMs ms"
+                // The same instance plays on: its picture keeps arriving and its position moves.
+                full.sizeChanged(androidx.compose.ui.unit.IntSize(1920, 1080))
+                val framesAt = full.frameTick
+                val posAt = v.positionMs
+                Thread.sleep(1_500)
+                if (full.frameTick <= framesAt) problems += "round $n: no new frames after the hand-over"
+                if (v.positionMs <= posAt) problems += "round $n: the picture did not carry on (${posAt} -> ${v.positionMs} ms)"
+                SwingUtilities.invokeAndWait { full.close() }
+                full.close()
+                assertEquals(null, host.live, "the page did not come back")
+                assertTrue(hero.holdsVideoForChecks, "the hero did not take the trailer back")
+                // Behind the page it plays on: the picture must not stop dead when full screen closes.
+                val backAt = v.positionMs
+                Thread.sleep(1_200)
+                if (v.positionMs <= backAt) problems += "round $n: the picture stopped when full screen closed (${backAt} ms)"
+                // The hero is the only owner now, and lets go of it once.
+                SwingUtilities.invokeAndWait { hero.stopNow() }
+                if (!v.awaitReleased(RELEASE_LIMIT_MS)) {
+                    System.err.println("TrailerCloseLoopTest: not let go after $RELEASE_LIMIT_MS ms\n${PlayerLog.threadDump()}")
+                    problems += "round $n: libmpv not let go within $RELEASE_LIMIT_MS ms"
+                }
+                val end = System.currentTimeMillis() + 5_000
+                while (System.currentTimeMillis() < end && leftThreads().isNotEmpty()) Thread.sleep(25)
+                leftThreads().takeIf { it.isNotEmpty() }?.let { problems += "round $n: threads left behind: $it" }
+                println("TrailerCloseLoopTest: promotion round $n ok (${v.positionMs} ms played, hand-over on the UI thread $uiMs ms)")
+            }
+        } finally { scope.cancel() }
         if (problems.isNotEmpty()) fail(problems.joinToString("\n"))
     }
 
@@ -159,5 +236,7 @@ class TrailerCloseLoopTest {
         const val UI_LIMIT_MS = 100L
         const val RELEASE_LIMIT_MS = 15_000L
         const val FIRST_FRAME_LIMIT_S = 40L
+        /** Rounds of the promotion check (each one streams a few seconds). */
+        const val PROMOTE_ROUNDS = 3
     }
 }

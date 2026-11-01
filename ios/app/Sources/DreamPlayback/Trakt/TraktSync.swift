@@ -108,7 +108,10 @@ extension Trakt {
             guard sid > 0, at > 0 else { continue }
             if at > (shows["\(sid)"] ?? 0) { shows["\(sid)"] = at }
             let ep = TJ.obj(o, "episode")
-            if TJ.int(ep, "number") > 0 { watched.append(.episode(show: sid, season: TJ.int(ep, "season"), episode: TJ.int(ep, "number"))) }
+            // Trakt numbers a show's specials its own way under season 0, so one has to be matched to ours by episode
+            // id before it can be believed. Until then it is left out, never written as a numbered episode.
+            guard TJ.int(ep, "season") > 0, TJ.int(ep, "number") > 0 else { continue }
+            watched.append(.episode(show: sid, season: TJ.int(ep, "season"), episode: TJ.int(ep, "number")))
             if (latestPerShow[sid]?.0 ?? 0) < at { latestPerShow[sid] = (at, TJ.int(ep, "season"), TJ.int(ep, "number")) }
         }
         for (sid, v) in latestPerShow.sorted(by: { $0.value.0 > $1.value.0 }).prefix(15) where v.0 >= cutoff {
@@ -155,7 +158,10 @@ extension Trakt {
             pb[key] = TJ.int64(t.1, "id")
             guard let id = Int(key.split(separator: ":").last ?? "") else { continue }
             if key.hasPrefix("movie:") { asks.append((.movie, id, 0, 0, t.2, t.0)) }
-            else if let ep = TJ.obj(t.1, "episode") { asks.append((.tv, id, TJ.int(ep, "season"), TJ.int(ep, "number"), t.2, t.0)) }
+            // Season 0 is Trakt's own numbering of the specials: left out here too, for the same reason.
+            else if let ep = TJ.obj(t.1, "episode"), TJ.int(ep, "season") > 0 {
+                asks.append((.tv, id, TJ.int(ep, "season"), TJ.int(ep, "number"), t.2, t.0))
+            }
         }
         st.pb = pb
         return await merge(p, await entries(asks))

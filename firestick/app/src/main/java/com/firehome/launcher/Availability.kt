@@ -203,7 +203,22 @@ object Availability {
         "tv:$showId:$season:$number",
         PlaybackRequest(title = show, type = "episode", tmdbId = showId, imdb = imdb, season = season, episode = number), at, date)
 
-    fun episode(i: NewEpisodes.Item) = episode(i.show.id, i.show.name, i.show.imdb, i.ep.season, i.ep.number, i.ep.at, i.ep.airDate)
+    /**
+     * A special's target ([Specials]): keyed on the id that identifies it, never on a season or a position
+     * (STANDARDS section 5). The request it carries is the special's own.
+     */
+    fun special(showId: Int, show: String, imdb: String?, o: JSONObject): Target? {
+        val req = PlayFlow.special(o, showId, show, imdb = imdb) ?: return null
+        // The entry's own instant, so a special still to come says when, not just which day.
+        return Target(specialKey(showId, req.specialId.orEmpty()), req, o.optLong(Specials.AT), Upcoming.date(o))
+    }
+
+    /** Where a special's availability is kept ([special]). */
+    fun specialKey(showId: Int, specialId: String) = "tv:$showId:sp:$specialId"
+
+    fun episode(i: NewEpisodes.Item) = i.ep.specialId
+        ?.let { Target(specialKey(i.show.id, it), NewEpisodeSpot.request(i), i.ep.at, i.ep.airDate) }
+        ?: episode(i.show.id, i.show.name, i.show.imdb, i.ep.season, i.ep.number, i.ep.at, i.ep.airDate)
 
     /** A row card's title worth a pill: a movie out in the last [RECENT_DAYS] days or still to come. Cheap. */
     fun cardTarget(t: Title): Target? {
@@ -506,7 +521,7 @@ object Availability {
         failedAt[t.key]?.let { if (now - it < FAILED_TTL) return }
         // Not out yet: its "Coming ..." pill at once (checked at 0: a stand-in, never fresh), then the lookup like any
         // other title: a source can be up before the listed day.
-        if (ahead(t.releaseAt, t.date, now) && cache[t.key] == null) {
+        if (ahead(t.releaseAt, t.date, now, t.request.isSpecial) && cache[t.key] == null) {
             val note = "Coming " + if (t.releaseAt > 0) AirTimes.label(t.releaseAt) else dateWords(t.date)
             record(app, t.key, Entry(Status.NONE, null, note, 0L, if (t.releaseAt > 0) t.releaseAt else midnight(t.date), exact = t.releaseAt > 0),
                 t.request.title, quiet = true)
@@ -633,7 +648,7 @@ object Availability {
             }
         }
         var exact = false
-        if (status != Status.AVAILABLE && r.type == "episode" && ahead(t.releaseAt, t.date)) {
+        if (status != Status.AVAILABLE && r.type == "episode" && ahead(t.releaseAt, t.date, special = r.isSpecial)) {
             // Not due yet and not up early: still says when it comes.
             releaseAt = if (t.releaseAt > 0) t.releaseAt else midnight(t.date)
             note = "Coming " + if (t.releaseAt > 0) AirTimes.label(t.releaseAt) else dateWords(t.date)
@@ -796,7 +811,7 @@ object Availability {
     private fun holds(p: ShowPick, now: Long): Boolean {
         val t = p.target ?: return false
         return if (p.upcoming) (if (t.releaseAt > 0) t.releaseAt > now else t.date.length == 10 && t.date > day(0))
-            else recentEpisode(t.releaseAt, t.date, now)
+            else recentEpisode(t.releaseAt, t.date, now, t.request.isSpecial)
     }
 
     /** A show card's pick: [target] the episode its pill follows (null: none), [upcoming] answered here (no lookup). */
@@ -809,15 +824,17 @@ object Availability {
     const val EPISODE_DAYS = 21
 
     /** An episode aired in the last [EPISODE_DAYS] days ([at]: its instant, else its day [date]). */
-    fun recentEpisode(at: Long, date: String, now: Long = System.currentTimeMillis()): Boolean = when {
-        at > 0 -> at <= now && now - at <= EPISODE_DAYS * 86_400_000L
+    fun recentEpisode(at: Long, date: String, now: Long = System.currentTimeMillis(), special: Boolean = false): Boolean = when {
+        // [special]: a special's day is enough and its airstamp never decides, or a 9 PM stamp would hide one
+        // that has been streaming since the morning. The instant still writes the words.
+        at > 0 && !special -> at <= now && now - at <= EPISODE_DAYS * 86_400_000L
         date.length == 10 -> date <= day(0) && date >= day(-EPISODE_DAYS)
         else -> false
     }
 
     /**
      * A source decides, not the date (owner, 2026-10-30: "available as soon as there's a source"): streaming services
-     * often put a title up before the day TMDB lists (Paramount+ posts Showtime's Sunday episodes on Friday). So a
+     * often put a title up before the day TMDB lists (a Sunday episode can appear on the Friday before). So a
      * title still ahead is asked about like any other; nothing found, it keeps its "Coming ..." note.
      * Episodes still ahead whose index answer is real, not a local "Coming ..." (key -> when asked); at most [KEEP_EARLY].
      */
@@ -825,23 +842,37 @@ object Availability {
     private const val KEEP_EARLY = 200
 
     /** Its release ([at]: the instant, else the day [date]) is still ahead. */
-    private fun ahead(at: Long, date: String, now: Long = System.currentTimeMillis()) =
-        if (at > 0) at > now else date.length == 10 && date > day(0)
+    private fun ahead(at: Long, date: String, now: Long = System.currentTimeMillis(), special: Boolean = false) =
+        // A special's day decides, as in [recentEpisode]: out today is out, whatever hour its stamp names.
+        if (at > 0 && !special) at > now else date.length == 10 && date > day(0)
 
     /** The index's last answer for this episode found a source (Available Now, or CAM Only). Cheap: no lookup. */
-    fun outEarly(ctx: Context, showId: Int, season: Int, number: Int): Boolean =
-        peek(ctx, "tv:$showId:$season:$number")?.status.let { it == Status.AVAILABLE || it == Status.CAM }
+    fun outEarly(ctx: Context, showId: Int, season: Int, number: Int): Boolean = outEarly(ctx, "tv:$showId:$season:$number")
+
+    /** Special [specialId] of [showId] is up early ([outEarly] for a special, which has no season). */
+    fun outEarlySpecial(ctx: Context, showId: Int, specialId: String): Boolean = outEarly(ctx, specialKey(showId, specialId))
+
+    private fun outEarly(ctx: Context, key: String): Boolean =
+        peek(ctx, key)?.status.let { it == Status.AVAILABLE || it == Status.CAM }
 
     /**
      * An episode not due yet (or undated) that the index already has a source for (a real release, else a CAM):
      * out early, so it plays. Asks the index (the quick check, index only) unless it did in the last [HOT_TTL].
      * False when nothing is found. Blocking.
      */
-    fun earlyRelease(ctx: Context, showId: Int, show: String, season: Int, number: Int, at: Long, date: String): Boolean {
+    fun earlyRelease(ctx: Context, showId: Int, show: String, season: Int, number: Int, at: Long, date: String): Boolean =
+        earlyRelease(ctx, episode(showId, show, null, season, number, at, date))
+
+    /** [earlyRelease] for a special, from its catalog entry ([Specials]), which has no season. Blocking. */
+    fun earlyReleaseSpecial(ctx: Context, showId: Int, show: String, o: JSONObject): Boolean {
+        val t = special(showId, show, null, o) ?: return false
+        return earlyRelease(ctx, t)
+    }
+
+    private fun earlyRelease(ctx: Context, t: Target): Boolean {
         val app = ctx.applicationContext
         if (!Tmdb.hasKey(app)) return false
-        val t = episode(showId, show, null, season, number, at, date)
-        if (outEarly(app, showId, season, number)) return true
+        if (outEarly(app, t.key)) return true
         val now = System.currentTimeMillis()
         if (earlyAsked[t.key]?.let { now - it < HOT_TTL } == true) return false
         if (failedAt[t.key]?.let { now - it < FAILED_TTL } == true) return false
@@ -849,7 +880,7 @@ object Availability {
         val mine = CountDownLatch(1)
         earlyAsking.putIfAbsent(t.key, mine)?.let { asking ->
             asking.await(EARLY_WAIT_MS, TimeUnit.MILLISECONDS)
-            return outEarly(app, showId, season, number)
+            return outEarly(app, t.key)
         }
         try {
             synchronized(targets) { targets[t.key] = t }
@@ -858,8 +889,9 @@ object Availability {
             earlyAsking.remove(t.key, mine)
             mine.countDown()
         }
-        val out = outEarly(app, showId, season, number)
-        if (out) Log.w(TAG, "Avail: $show S${season}E$number is out early (due ${if (at > 0) AirTimes.stamp(at) else date.ifEmpty { "date unknown" }})")
+        val out = outEarly(app, t.key)
+        val due = if (t.releaseAt > 0) AirTimes.stamp(t.releaseAt) else t.date.ifEmpty { "date unknown" }
+        if (out) Log.w(TAG, "Avail: ${t.request.title} ${t.key} is out early (due $due)")
         return out
     }
 
@@ -1197,7 +1229,7 @@ object Availability {
 
         override fun onSizeChanged(w: Int, h: Int, ow: Int, oh: Int) {
             super.onSizeChanged(w, h, ow, oh)
-            // Glass: a touch lighter at the top, like Apple TV's badges.
+            // Glass: a touch lighter at the top, so it reads as lit from above.
             glass.shader = LinearGradient(0f, 0f, 0f, h.toFloat(), Color.argb(226, 36, 36, 40), Color.argb(226, 12, 12, 14), Shader.TileMode.CLAMP)
             pivotX = 0f
             pivotY = h / 2f

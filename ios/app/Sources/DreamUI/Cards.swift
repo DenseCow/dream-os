@@ -255,7 +255,7 @@ public struct LandscapeCard: View {
     }
 }
 
-/// Hulu's big landscape card: the art large, an optional kicker, the title and the meta line (year, type, genres).
+/// The big landscape card: the art large, an optional kicker, the title and the meta line (year, type, genres).
 public struct BigCard: View {
     let item: CatalogItem
     let width: CGFloat
@@ -345,13 +345,11 @@ public struct ContinueCard: View {
     let width: CGFloat
     public init(_ item: CatalogItem, width: CGFloat) { self.item = item; self.width = width }
 
-    /// A history entry as a Continue Watching item.
+    /// A history entry as a Continue Watching item. A special keeps its own kind (`HistoryEntry.asEpisode`): dropped,
+    /// the card's Play would ask for the show instead of the special.
     public static func item(_ e: HistoryEntry) -> CatalogItem {
-        let ep = (e.season != nil && e.episode != nil)
-            ? Episode(showId: e.title.id, season: e.season ?? 0, number: e.episode ?? 0, name: e.episodeName ?? "", stillPath: e.stillPath)
-            : nil
-        return CatalogItem(title: e.title, episode: ep, progress: e.upNext ? nil : (e.progress > 0 ? e.progress : nil),
-                           subtitle: TitleMeta.continueLine(e), badge: e.upNext ? "Up Next" : nil)
+        CatalogItem(title: e.title, episode: e.asEpisode, progress: e.upNext ? nil : (e.progress > 0 ? e.progress : nil),
+                    subtitle: TitleMeta.continueLine(e), badge: e.upNext ? "Up Next" : nil)
     }
 
     public var body: some View { LandscapeCard(item, width: width) }
@@ -369,7 +367,7 @@ public enum BrandTint {
     public static func hex(for name: String) -> UInt32 { table[name] ?? 0x8E8E93 }
 }
 
-/// A service tile (Disney+): the name in bold on a deep tint of the brand color, a short bar of the color under it.
+/// A service tile: the name in bold on a deep tint of the brand color, a short bar of the color under it.
 public struct BrandCard: View {
     let name: String
     let width: CGFloat

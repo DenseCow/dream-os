@@ -50,15 +50,9 @@ struct TitleDetailsView: View {
                         .padding(.horizontal, gutter)
                         .frame(maxWidth: .infinity)
                         .padding(.bottom, 48)
-                        // The trailer has the screen (Fire Stick HeroTrailer): the page fades out, a touch wakes it.
-                        .opacity(heroTrailer.immersive ? 0 : 1)
-                        .allowsHitTesting(!heroTrailer.immersive)
-                        .animation(.easeInOut(duration: heroTrailer.immersive ? 0.9 : 0.32), value: heroTrailer.immersive)
                     }
                 }
                 .scrollIndicators(.hidden)
-                .simultaneousGesture(TapGesture().onEnded { heroTrailer.wake() })
-                .simultaneousGesture(DragGesture(minimumDistance: 8).onChanged { _ in heroTrailer.wake() })
                 .ignoresSafeArea(edges: .top)
             }
         }
@@ -99,18 +93,13 @@ struct TitleDetailsView: View {
                 .init(color: .black.opacity(0.55), location: 0.7),
                 .init(color: Palette.page, location: 1),
             ], startPoint: .top, endPoint: .bottom)
-            .opacity(heroTrailer.immersive ? 0 : 1)
             logo
                 .padding(.horizontal, width > 600 ? 32 : 20)
                 .padding(.bottom, 6)
-                .opacity(heroTrailer.immersive ? 0 : 1)
             HeroTrailerSound(trailer: heroTrailer)
                 .frame(maxWidth: .infinity, alignment: .trailing)
                 .padding(.trailing, width > 600 ? 24 : 12)
-                .opacity(heroTrailer.immersive ? 0 : 1)
-                .allowsHitTesting(!heroTrailer.immersive)
         }
-        .animation(.easeInOut(duration: heroTrailer.immersive ? 0.9 : 0.32), value: heroTrailer.immersive)
         .frame(width: width, height: h)
     }
 
@@ -226,9 +215,9 @@ struct TitleDetailsView: View {
                     Task { await model.toggleMyList() }
                 }
                 if let key = model.details?.trailerKey, let playTrailer = PagesServices.playTrailer {
-                    ActionIcon(symbol: "film", label: "Trailer") { HeroTrailerLayer.openFull(model.shown, key: key, fallback: playTrailer) }
+                    ActionIcon(symbol: "film", label: "Trailer") { heroTrailer.openFull(model.shown, key: key, fallback: playTrailer) }
                 }
-                if model.isShow && !model.allSeasons.isEmpty {
+                if model.isShow && !model.tabs.isEmpty {
                     ActionIcon(symbol: "list.bullet", label: "Episodes") {
                         withAnimation(.easeInOut(duration: 0.4)) { proxy.scrollTo("episodes", anchor: .top) }
                     }
@@ -285,17 +274,17 @@ struct TitleDetailsView: View {
     // MARK: Episodes
 
     private func episodes(gutter: CGFloat, cardW: CGFloat) -> some View {
-        let seasons = model.allSeasons.uniqued()
+        let tabs = model.tabs
         return Group {
-            if !seasons.isEmpty {
+            if !tabs.isEmpty, let on = model.tab {
                 VStack(alignment: .leading, spacing: 0) {
                     DetailsHeading(text: "Episodes")
-                    SeasonPicker(seasons: seasons, selected: model.season, ahead: model.seasonsAhead,
-                                 loaded: model.episodes[model.season]?.count) { n in
-                        model.pick(season: n)
+                    SeasonPicker(tabs: tabs, selected: on, ahead: model.aheadTabs,
+                                 loaded: model.episodes[on]?.count) { t in
+                        model.pick(t)
                     }
                     .padding(.top, 14)
-                    episodeList(gutter: gutter, cardW: cardW)
+                    episodeList(on, gutter: gutter, cardW: cardW)
                         .padding(.top, 18)
                 }
                 .padding(.top, 30)
@@ -303,14 +292,11 @@ struct TitleDetailsView: View {
         }
     }
 
-    @ViewBuilder private func episodeList(gutter: CGFloat, cardW: CGFloat) -> some View {
-        let n = model.season
-        if let eps = model.episodes[n] {
+    @ViewBuilder private func episodeList(_ t: EpisodeTab, gutter: CGFloat, cardW: CGFloat) -> some View {
+        if let eps = model.episodes[t] {
             let shown = eps.uniqued().sorted { $0.number < $1.number }
             if shown.isEmpty {
-                let ahead = model.seasonsAhead.first { $0.number == n }
-                Text(ahead.map { s in "Season \(s.number)  ·  " + (PageTime.shortDate(s.airDate).map { "Coming \($0)" } ?? "Coming Soon") }
-                     ?? "No episodes of Season \(n) to watch yet.")
+                Text(emptyEpisodes(t))
                     .font(.system(size: 15)).foregroundStyle(Palette.textSecondary)
                     .padding(.vertical, 12)
             } else {
@@ -322,25 +308,38 @@ struct TitleDetailsView: View {
                                 progress: model.progress(for: ep),
                                 upNext: model.isUpNext(ep),
                                 pill: model.progress(for: ep) == nil ? model.episodePills[ep.id] : nil,
-                                watched: model.progress(for: ep) == nil && !ep.upcoming
-                                    && WatchedState.shared.episode(show: model.title.id, season: ep.season, episode: ep.number),
-                                fallback: [model.shown.backdrop("w1280")] + model.episodeFallbackArt(season: n),
+                                watched: model.progress(for: ep) == nil && !ep.upcoming && watchedMark(ep),
+                                fallback: [model.shown.backdrop("w1280")] + model.episodeFallbackArt(for: ep),
                                 language: model.languageWords(for: ep)) {
                         play(model.request(for: ep))
                     }
                 }
-                .id("season-\(n)")
+                .id("episodes-\(t.id)")
                 .transition(.opacity)
             }
-        } else if model.seasonFailed.contains(n) {
+        } else if model.seasonFailed.contains(t) {
             HStack(spacing: 14) {
-                Text("Couldn't load this season.").font(.system(size: 15)).foregroundStyle(Palette.textSecondary)
-                Button("Try Again") { Task { await model.loadSeason(n) } }.buttonStyle(PearlButtonStyle())
+                Text(t.isSpecials ? "Couldn't load the specials." : "Couldn't load this season.")
+                    .font(.system(size: 15)).foregroundStyle(Palette.textSecondary)
+                Button("Try Again") { Task { await model.loadEpisodes(t) } }.buttonStyle(PearlButtonStyle())
             }
             .padding(.vertical, 8)
         } else {
             EpisodeRailSkeleton(cardW: cardW, gutter: gutter)
         }
+    }
+
+    /// Nothing to show in this group yet: an announced season says when it starts.
+    private func emptyEpisodes(_ t: EpisodeTab) -> String {
+        guard let n = t.seasonNumber else { return "No specials to watch yet." }
+        guard let s = model.seasonsAhead.first(where: { $0.number == n }) else { return "No episodes of Season \(n) to watch yet." }
+        return "Season \(n)  ·  " + (PageTime.shortDate(s.airDate).map { "Coming \($0)" } ?? "Coming Soon")
+    }
+
+    /// The Watched mark on a card: a special is remembered by its source id, a numbered episode by its place.
+    private func watchedMark(_ ep: Episode) -> Bool {
+        ep.isSpecial ? model.specialWatched(ep)
+            : WatchedState.shared.episode(show: model.title.id, season: ep.season, episode: ep.number)
     }
 
     // MARK: More Like This, Cast
@@ -463,7 +462,7 @@ struct ProgressTrack: View {
     }
 }
 
-/// An icon over a label (My List, Trailer, Episodes), Netflix style. The label keeps the wider word's width.
+/// An icon over a label (My List, Trailer, Episodes). The label keeps the wider word's width.
 struct ActionIcon: View {
     var symbol: String
     var label: String
@@ -515,65 +514,49 @@ private struct ActionIconStyle: ButtonStyle {
 
 // MARK: Seasons
 
-/// The season picker: one glass button naming the season on show with a chevron, opening Dream's own season menu
-/// (`DreamMenu`); the season's episode count on the right. A show with one season shows its name alone.
+/// The episode picker: one glass button naming the group on show with a chevron, opening Dream's own menu
+/// (`DreamMenu`); its episode count on the right. A show with one season shows its name alone. The rows are the
+/// seasons, then the specials last (`EpisodeTabItem`).
 struct SeasonPicker: View {
-    var seasons: [SeasonSummary]
-    var selected: Int
-    var ahead: [SeasonSummary]
-    /// Episodes loaded for the season on show (nil: not loaded yet, TMDB's count is used).
+    var tabs: [EpisodeTabItem]
+    var selected: EpisodeTab
+    /// The seasons still to come, which say when they start instead of a count.
+    var ahead: Set<EpisodeTab>
+    /// Episodes loaded for the group on show (nil: not loaded yet, the source's own count is used).
     var loaded: Int?
-    var onPick: (Int) -> Void
+    var onPick: (EpisodeTab) -> Void
 
     var body: some View {
-        let current = seasons.first { $0.number == selected } ?? seasons[0]
+        let current = tabs.first { $0.tab == selected } ?? tabs[0]
         HStack(alignment: .center, spacing: 14) {
-            if seasons.count > 1 {
-                DreamPickerButton(heading: "Seasons", items: menuItems, selected: "\(selected)",
-                                  label: Self.name(current), accessibilityHint: "Chooses a season") { id in
-                    if let n = Int(id) { onPick(n) }
+            if tabs.count > 1 {
+                DreamPickerButton(heading: "Seasons", items: menuItems, selected: selected.id,
+                                  label: current.label, accessibilityHint: "Chooses a season") { id in
+                    if let t = EpisodeTab(id: id) { onPick(t) }
                 }
             } else {
-                Text(Self.name(current))
+                Text(current.label)
                     .font(.system(size: 16, weight: .semibold)).foregroundStyle(Palette.text).lineLimit(1)
             }
             Spacer(minLength: 8)
-            Text(Self.count(current, ahead: ahead, loaded: loaded))
+            Text(current.detail(ahead: ahead.contains(current.tab), loaded: loaded))
                 .font(.system(size: 13, weight: .medium)).foregroundStyle(Palette.textSecondary)
                 .lineLimit(1)
         }
     }
 
-    /// Dream's season menu (DreamMenu): every season with its episode count; announced ones say when they come.
+    /// Dream's season menu (DreamMenu): every group with its count; announced seasons say when they come.
     private var menuItems: [DreamMenuItem] {
-        seasons.uniqued().map { s in
-            DreamMenuItem(id: "\(s.number)", label: Self.name(s),
-                          detail: Self.count(s, ahead: ahead, loaded: s.number == selected ? loaded : nil))
+        tabs.map { t in
+            DreamMenuItem(id: t.id, label: t.label,
+                          detail: t.detail(ahead: ahead.contains(t.tab), loaded: t.tab == selected ? loaded : nil))
         }
-    }
-
-    /// "Season 2", or the season's own name when it has a short one ("Limited Series").
-    static func name(_ s: SeasonSummary) -> String {
-        let n = s.name
-        return (!n.isEmpty && !n.hasPrefix("Season") && n.count <= 22) ? n : "Season \(s.number)"
-    }
-
-    static func coming(_ s: SeasonSummary) -> String {
-        PageTime.shortDate(s.airDate).map { "Coming \($0)" } ?? "Coming Soon"
-    }
-
-    /// "10 Episodes", or "Coming Mar 4" for an announced season with nothing listed yet. `loaded` is the season on
-    /// show's real count (nil for the others: TMDB's).
-    static func count(_ s: SeasonSummary, ahead: [SeasonSummary], loaded: Int?) -> String {
-        if ahead.contains(s) && (loaded ?? 0) == 0 { return coming(s) }
-        let n = loaded ?? s.episodeCount
-        return n == 1 ? "1 Episode" : "\(n) Episodes"
     }
 }
 
 // MARK: Episodes
 
-/// A season's episodes as a side-scroll (Netflix / Apple TV): cards snap to the page's left line, the next card peeks
+/// A season's episodes as a side-scroll: cards snap to the page's left line, the next card peeks
 /// in at the right, the page gutter at both ends. Opens on the Up Next / Resume episode.
 struct EpisodeRail<Card: View>: View {
     let episodes: [Episode]
@@ -660,7 +643,8 @@ struct EpisodeCard: View {
             VStack(alignment: .leading, spacing: 0) {
                 CardFrame(width: width, height: stillH) {
                     RemoteImage([episode.still(Self.stillSize), episode.still("w300")] + fallback) {
-                        Text("E\(episode.number)")
+                        // No number for a special: its air-order place is a view that moves.
+                        Text(episode.isSpecial ? EpisodeWords.specials : "E\(episode.number)")
                             .font(.system(size: 15, weight: .semibold))
                             .foregroundStyle(Palette.textSecondary)
                     }
@@ -672,7 +656,9 @@ struct EpisodeCard: View {
                         }
                     }
                 }
-                Text("\(episode.number). \(episode.name.isEmpty ? "Episode \(episode.number)" : episode.name)")
+                // A special is named by its own title alone; a numbered episode keeps its place in front.
+                Text(episode.isSpecial ? (episode.name.isEmpty ? "Special" : episode.name)
+                                       : "\(episode.number). \(episode.name.isEmpty ? "Episode \(episode.number)" : episode.name)")
                     .font(.system(size: 15, weight: .semibold))
                     .foregroundStyle(Palette.text.opacity(upcoming ? 0.74 : 1))
                     .lineLimit(2)

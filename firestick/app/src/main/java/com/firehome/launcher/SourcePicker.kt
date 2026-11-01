@@ -109,7 +109,7 @@ object SourcePicker {
 
     /**
      * A release name as people read it: no extension, dots and underscores between words as spaces
-     * (kept inside numbers: 5.1, H.264), e.g. "Breaking Bad S01E01 1080p BluRay x264-ROVERS".
+     * (kept inside numbers: 5.1, H.264), e.g. "A Series S01E01 1080p BluRay x264-ROVERS".
      */
     fun prettyName(name: String): String {
         val base = if (DebridFiles.isVideo(name)) name.substringBeforeLast('.') else name

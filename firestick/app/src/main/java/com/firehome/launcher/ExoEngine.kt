@@ -73,6 +73,8 @@ class ExoEngine(context: Context) : PlayerEngine {
     )
 
     private val main = Handler(Looper.getMainLooper())
+    /** The underrun logger put on a player this engine took over ([adopt]), so [detach] can take it off again. */
+    private var underruns: AnalyticsListener? = null
     private val listeners = CopyOnWriteArrayList<PlayerEngine.Listener>()
 
     var player: ExoPlayer? = null
@@ -127,6 +129,72 @@ class ExoEngine(context: Context) : PlayerEngine {
         savedPosition = startMs
         releaseExo()
         prepare(startMs, playWhenReady)
+    }
+
+    /**
+     * Takes a player that is already playing (the hero's trailer) instead of building one: no media item, no
+     * prepare, no seek, so the stream is never fetched again and the position never moves. The picture comes
+     * back as soon as this screen's surface is ready, the one decoder restart the move costs. [src] is what is
+     * playing, so a retry, or a return from the screensaver, prepares it again like any other stream.
+     */
+    fun adopt(p: ExoPlayer, src: Source) {
+        releaseExo()
+        loadedAt = SystemClock.elapsedRealtime()
+        source = src
+        streamUrl = src.url
+        headers = src.headers
+        subs.clear()
+        subs.addAll(src.subtitles)
+        forceHls = false
+        retries = 0
+        audioErrorShown = false
+        videoErrorShown = false
+        lastError = null
+        player = p
+        savedPosition = p.currentPosition
+        p.addListener(exoListener)
+        // Held, unlike the one a built player gets: a taken player outlives this engine, so [detach] has to take it off
+        // again or a trailer promoted and returned a few times carries one logger per trip.
+        underruns = BtAudio.underrunLogger(ctx).also { p.addAnalyticsListener(it) }
+        p.addAnalyticsListener(audioWatch)
+        // Behind the hero it plays at the Background Trailers volume, muted by default; a watch that was asked for is heard.
+        p.volume = 1f
+        // The hero never takes audio focus (it starts by itself); a real watch pauses for whatever interrupts it.
+        p.setAudioAttributes(AudioAttributes.Builder().setUsage(C.USAGE_MEDIA).setContentType(C.AUDIO_CONTENT_TYPE_MOVIE).build(), true)
+        p.setPlaybackParameters(PlaybackParameters(speed))
+        p.setVideoSurfaceView(surfaceView)
+        // No listener is ever replayed, so the frame to letterbox is read straight off the player.
+        p.videoSize.let { if (it.width > 0 && it.height > 0) onVideoSize?.invoke(it.width, it.height, if (it.pixelWidthHeightRatio > 0f) it.pixelWidthHeightRatio else 1f) }
+        p.play()
+        logCapabilities()
+        boostMb = PlayerPrefs.boostMb(ctx)
+        if (boostMb > 0) main.post(boostRun)
+        scheduleTick()
+        Log.w(TAG, "dream player: took the trailer already playing, at ${p.currentPosition} ms")
+    }
+
+    /**
+     * Gives the player away while it plays on (a trailer going back behind a hero): this engine's listeners,
+     * its surface and its loudness come off, and it holds nothing afterwards. The caller owns the player from
+     * here, releasing it included. Null when there is nothing playing to give.
+     */
+    fun detach(): ExoPlayer? {
+        val p = player ?: return null
+        main.removeCallbacks(tick)
+        main.removeCallbacks(retryRun)
+        main.removeCallbacks(boostRun)
+        releaseBoost()
+        passthrough = 0
+        savedPosition = p.currentPosition
+        p.removeListener(exoListener)
+        p.removeAnalyticsListener(audioWatch)
+        underruns?.let { p.removeAnalyticsListener(it); underruns = null }
+        p.setVideoSurfaceView(null)
+        player = null
+        source = null
+        streamUrl = ""
+        lastError = null
+        return p
     }
 
     /** Recreates the player after [releasePlayer], at the saved position. */

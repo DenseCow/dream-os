@@ -579,7 +579,7 @@ object Scrapers {
      */
     internal fun info(ctx: Context, req: PlaybackRequest, imdb: String, waitMs: Long = 900): JSONObject {
         val ep = req.type == "episode"
-        val key = if (ep) "tv:${req.tmdbId}:${req.season}:${req.episode}" else "movie:${req.tmdbId}:$imdb"
+        val key = if (ep) AnimeDubs.key(req) else "movie:${req.tmdbId}:$imdb"
         infos[key]?.takeIf { SystemClock.elapsedRealtime() - it.at < 6 * 3_600_000L }?.let { return it.json }
         val app = ctx.applicationContext
         val type = if (ep) "tv" else "movie"
@@ -587,7 +587,12 @@ object Scrapers {
         val t0 = SystemClock.elapsedRealtime()
         fun <T> later(work: () -> T?): FutureTask<T?> = FutureTask { try { work() } catch (e: Exception) { null } }.also { Thread(it, "scrapers-info").start() }
         val alt = if (id > 0) later { WatchHistory.tmdb(app, "/$type/$id/alternative_titles") } else null
-        val epi = if (ep && id > 0) later { WatchHistory.seasonEpisodes(app, id, req.season ?: 1)?.firstOrNull { it.optInt("episode_number") == req.episode } } else null
+        // A special's name and air date come from the catalog, which TMDB usually can't give ([Specials]).
+        // The name matters here: a special's own title is a query term for the scrapers.
+        val epi = if (!ep || id <= 0) null else later {
+            req.specialId?.let { Specials.byId(app, id, it) }
+                ?: WatchHistory.seasonEpisodes(app, id, req.season ?: 1)?.firstOrNull { it.optInt("episode_number") == req.episode }
+        }
         val d = if (id > 0) try { WatchHistory.details(app, type, id) } catch (e: Exception) { null } else null
         fun <T> FutureTask<T?>?.take(): T? = try { this?.get((waitMs - (SystemClock.elapsedRealtime() - t0)).coerceAtLeast(1), TimeUnit.MILLISECONDS) } catch (e: Exception) { null }
         val o = JSONObject().put("imdb", imdb).put("tmdb", if (id > 0) id.toString() else "")
@@ -609,7 +614,9 @@ object Scrapers {
         if (ep) {
             val e = epi.take()
             o.put("tvshowtitle", title).put("title", req.episodeTitle ?: e?.optString("name")?.ifEmpty { null } ?: "Episode ${req.episode}")
-                .put("localtitle", title).put("season", req.season.toString()).put("episode", req.episode.toString())
+                // The scrapers' episode form is the wire one: a special is season 0 and its place in air order.
+                .put("localtitle", title).put("season", (if (req.isSpecial) 0 else req.season).toString())
+                .put("episode", (req.episode ?: e?.optInt("episode_number") ?: 1).toString())
                 .put("premiered", e?.optString("air_date").orEmpty())
                 .put("tvdb", d?.optJSONObject("external_ids")?.optInt("tvdb_id")?.takeIf { it > 0 }?.toString() ?: "")
             d?.optInt("number_of_seasons")?.takeIf { it > 0 }?.let { o.put("total_seasons", it) }

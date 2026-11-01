@@ -110,6 +110,7 @@ final class ScraperSources: SourceService, @unchecked Sendable {
     }
 
     private static func key(_ r: PlayRequest) -> String {
+        if let id = r.specialId { return "tv:\(r.title.id)/sp:\(id)" }
         if r.title.kind == .tv, let s = r.season, let e = r.episode { return "tv:\(r.title.id):\(s):\(e)" }
         return "movie:\(r.title.id)"
     }
@@ -132,7 +133,8 @@ final class ScraperSources: SourceService, @unchecked Sendable {
         let k = Self.key(request) + (light ? "#quick" : "")
         if let j = lock.withLock({ usable(gathers[k], urgent: urgent) }) { if urgent { j.promote() }; return j }
         let episode = request.title.kind == .tv
-        if episode && (request.season == nil || request.episode == nil) { return nil }
+        // A special carries no season and no number, only its source id; its wire form is worked out below.
+        if episode && !request.isSpecial && (request.season == nil || request.episode == nil) { return nil }
         // Alternative titles / the episode's air date: a Play waits at most a moment for them.
         let t0 = Date()
         let info = await ScraperInfo.json(for: request, wait: play ? 1.2 : 2.5)
@@ -150,7 +152,7 @@ final class ScraperSources: SourceService, @unchecked Sendable {
     }
 
     private static func label(_ r: PlayRequest) -> String {
-        if let s = r.season, let e = r.episode { return "\(r.title.name) S\(s)E\(e)" }
+        if let n = EpisodeWords.name(r.kind, season: r.season, episode: r.episode, title: r.episodeName) { return "\(r.title.name) \(n)" }
         return r.title.name
     }
 
@@ -197,14 +199,21 @@ enum ScraperInfo {
 
     static func json(for r: PlayRequest, wait: TimeInterval) async -> String? {
         let ep = r.title.kind == .tv
-        let key = ep ? "tv:\(r.title.id):\(r.season ?? 0):\(r.episode ?? 0)" : "movie:\(r.title.id)"
+        let key = r.specialId.map { "tv:\(r.title.id)/sp:\($0)" }
+            ?? (ep ? "tv:\(r.title.id):\(r.season ?? 0):\(r.episode ?? 0)" : "movie:\(r.title.id)")
         if let hit = cache.lock.withLock({ cache.map[key] }), Date().timeIntervalSince(hit.at) < 6 * 3600 { return hit.json }
         let type = ep ? "tv" : "movie"
         let id = r.title.id
         async let detailsTask = tmdb("/\(type)/\(id)", ["append_to_response": "external_ids,alternative_titles"], timeout: wait)
-        async let episodeTask: Data? = ep ? tmdb("/tv/\(id)/season/\(r.season ?? 1)/episode/\(r.episode ?? 1)", [:], timeout: wait) : nil
+        // A special's name, air day and air-order number come from the specials catalog: TMDB has no episode to ask
+        // for (its season 0 is usually a 404), and the name matters here because it is a query term for the scrapers.
+        let specialIds = r.specialIds
+        async let specialTask: Episode? = specialIds.isEmpty ? nil
+            : await Services.shared.catalog.specials(showId: id).first { ep in ep.specialIds.contains { specialIds.contains($0) } }
+        async let episodeTask: Data? = ep && !r.isSpecial ? tmdb("/tv/\(id)/season/\(r.season ?? 1)/episode/\(r.episode ?? 1)", [:], timeout: wait) : nil
         let d = object(await detailsTask)
         let e = object(await episodeTask)
+        let special = await specialTask
         let ext = d?["external_ids"] as? [String: Any]
         guard let imdb = r.imdbId ?? (d?["imdb_id"] as? String) ?? (ext?["imdb_id"] as? String), !imdb.isEmpty else {
             PythonRuntime.log.notice("Scrapers: no IMDb id for \(r.title.name, privacy: .public)")
@@ -232,13 +241,16 @@ enum ScraperInfo {
         o["year"] = year
         o["aliases"] = aliases
         if ep {
-            let epName = r.episodeName ?? (e?["name"] as? String).flatMap { $0.isEmpty ? nil : $0 } ?? "Episode \(r.episode ?? 0)"
+            let epName = r.episodeName ?? (e?["name"] as? String).flatMap { $0.isEmpty ? nil : $0 }
+                ?? special.flatMap { $0.name.isEmpty ? nil : $0.name } ?? "Episode \(r.episode ?? special?.number ?? 0)"
             o["tvshowtitle"] = title
             o["title"] = epName
             o["localtitle"] = title
-            o["season"] = String(r.season ?? 0)
-            o["episode"] = String(r.episode ?? 0)
-            o["premiered"] = e?["air_date"] as? String ?? ""
+            // The wire form: a special is asked for as season 0 with its air-order place, which is what the index
+            // answers (the resolver asks for the parent-season form in a scrape of its own).
+            o["season"] = r.isSpecial ? "0" : String(r.season ?? 0)
+            o["episode"] = String(r.isSpecial ? (special?.number ?? 0) : (r.episode ?? 0))
+            o["premiered"] = (r.isSpecial ? special?.airDate : e?["air_date"] as? String) ?? ""
             o["tvdb"] = (ext?["tvdb_id"] as? NSNumber).flatMap { $0.intValue > 0 ? String($0.intValue) : nil } ?? ""
             if let n = (d?["number_of_seasons"] as? NSNumber)?.intValue, n > 0 { o["total_seasons"] = n }
         } else {
@@ -246,7 +258,7 @@ enum ScraperInfo {
             o["localtitle"] = title
         }
         let text = ScraperEngine.json(o)
-        if d != nil && (!ep || e != nil) {
+        if d != nil && (!ep || e != nil || special != nil) {
             cache.lock.withLock {
                 cache.map[key] = (Date(), text)
                 if cache.map.count > 60 { cache.map = cache.map.filter { Date().timeIntervalSince($0.value.at) < 3600 } }

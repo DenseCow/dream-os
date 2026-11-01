@@ -15,6 +15,9 @@ public final class DreamPlayerPresenter {
 
     /// Opens a title page (X-Ray's Known For, More Like This shows). Set by the app; the player closes first.
     public var openTitle: ((Title) -> Void)?
+    /// Gives a live trailer back to the title page it came from when full screen closes (`AVTrailerEngine.handBack`).
+    /// Set by the hero that handed it over; true = a page took it, false or unset = nobody did and it is released.
+    public static var handBackTrailer: ((LiveTrailer) -> Bool)?
     /// Opens Settings at the accounts / scrapers page from the curtain's error (optional).
     public var openSettings: (() -> Void)?
 
@@ -24,6 +27,8 @@ public final class DreamPlayerPresenter {
     private var parked: PlayerHostController?
     /// Held while the player is minimized into the mini player above the tab bar (PlayerPresentation).
     private var minimized: PlayerHostController?
+    /// This close is on the way to another title (`open`), so a live trailer is released rather than handed back.
+    private var openingAnother = false
 
     /// The player is up full screen (not minimized).
     public var isShowing: Bool { controller != nil && minimized == nil }
@@ -44,10 +49,31 @@ public final class DreamPlayerPresenter {
         present().playTrailer(of: title, keys: keys, start: start)
     }
 
+    /// The trailer a title page already has playing behind its hero, shown full screen as it is: the same player and
+    /// the same layer move into the player's screen, so there is no second player, no look-up and no re-buffer
+    /// (owner, 2026-10-31). Its sound comes up on the way in, even when the page was playing it muted.
+    /// With a player already open (which the hero's own rules prevent), the live trailer goes and the normal
+    /// full-screen trailer plays from the same spot instead.
+    public func playLive(_ live: LiveTrailer, of title: Title, keys: [String]) {
+        if controller != nil || minimized != nil || parked != nil {
+            let at = live.position
+            Log.player.info("Player: a player is already up, so the page's trailer restarts full screen instead")
+            live.drop()
+            playTrailer(of: title, keys: keys, start: at)
+            return
+        }
+        let engine = AVTrailerEngine(live: live)
+        let s = present(engine: engine)
+        s.adoptPlayingTrailer(of: title, keys: keys)
+        // After the session has its audio session (playback / movie), so the sound is never heard as ambient.
+        engine.bringUpSound()
+    }
+
     /// Closes the player (saves the spot).
     public func dismiss() { session?.close() }
 
-    private func present() -> PlayerSession {
+    /// `engine`: a ready-made engine for this session (the page's trailer moving to full screen); nil = the usual one.
+    private func present(engine: PlayerEngine? = nil) -> PlayerSession {
         if let s = session, controller != nil {
             // Something new from the app while a title floats: the player comes back, the window closes.
             if parked != nil { unpark {}; s.pip.stop() }
@@ -58,7 +84,7 @@ public final class DreamPlayerPresenter {
         // A session whose screen is gone without a close (its presentation was refused): ended before a new one,
         // or its mpv keeps playing unseen.
         if session != nil { finish() }
-        let s = PlayerSession()
+        let s = engine.map { PlayerSession(engine: $0) } ?? PlayerSession()
         session = s
         VideoDock.shared.spot = .full
         PlayerPresentation.shared.attach(s)
@@ -83,6 +109,12 @@ public final class DreamPlayerPresenter {
     }
 
     private func finish() {
+        // A page's trailer that came in live goes back out live (`AVTrailerEngine.handBack`): taken out before the
+        // shutdown, handed over only after this player has let go of everything. While `isShowing` is still true the
+        // hero counts itself blocked and would stop the very trailer it has just been given.
+        let live = openingAnother ? nil : (session?.engine as? AVTrailerEngine)?.handBack()
+        if self.session?.engine is AVTrailerEngine { Log.player.notice("Player closing: a live trailer to give back \(live != nil)") }
+        openingAnother = false
         session?.shutdown()
         session = nil
         controller = nil
@@ -95,6 +127,12 @@ public final class DreamPlayerPresenter {
         VideoDock.shared.spot = .full
         PlayerPresentation.shared.detach()
         PlayerHostController.unlock()
+        // Nobody left to take it (the page was closed, or it moved to another title): the player goes, as before.
+        if let live {
+            let taken = Self.handBackTrailer?(live) == true
+            Log.player.notice("Player closing: the page took the trailer back \(taken)")
+            if !taken { live.drop() }
+        }
     }
 
     /// The pull-down / chevron (PlayerMinimize): the player steps aside into the mini player, still playing, and the
@@ -177,6 +215,9 @@ public final class DreamPlayerPresenter {
 
     /// Hands a title to the app's page (closing the player first).
     func open(_ t: Title) {
+        // Closing to go somewhere else: a live trailer must not go back to the page behind this one, which is about
+        // to be covered by the title being opened. It would play on under the new page, beside that page's own.
+        openingAnother = true
         session?.close()
         let f = openTitle
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { f?(t) }

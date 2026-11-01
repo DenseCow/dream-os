@@ -88,8 +88,8 @@ final class NewEpisodeSpot {
         let first = get([String: Int64].self, "first") ?? [:]
         let now = wallNow()
         func offered(_ i: NewEpisodeInfo) -> Bool {
-            guard !i.upcoming, !done.contains(i.key), let d = DreamTime.daysFromToday(i.airDate), (-Self.bannerDays...0).contains(d) else { return false }
-            return (first[i.key] ?? now) > now - Self.retireMs && Self.caughtUp(history, i)
+            guard !i.upcoming, !i.keys.contains(where: done.contains), let d = DreamTime.daysFromToday(i.airDate), (-Self.bannerDays...0).contains(d) else { return false }
+            return (i.keys.compactMap { first[$0] }.min() ?? now) > now - Self.retireMs && Self.caughtUp(history, i)
         }
         let list = s.recent.filter(offered)
         // Found since the last load: one notice (it shows over Dream OS only, never over playback).
@@ -109,8 +109,10 @@ final class NewEpisodeSpot {
         let firstRun = get([String].self, "known") == nil
         let known = Set(get([String].self, "known") ?? [])
         let oldShows = Set(get([Int].self, "shows") ?? [])
-        let out = firstRun ? [] : s.recent.filter { !known.contains($0.key) && oldShows.contains($0.show.id) }
-        put(s.recent.map(\.key), "known")
+        // Every key an item answers to is checked, so a special already seen under the other source's id is not
+        // announced a second time when its preferred id changes (`NewEpisodeInfo.keys`).
+        let out = firstRun ? [] : s.recent.filter { !$0.keys.contains(where: known.contains) && oldShows.contains($0.show.id) }
+        put(s.recent.flatMap(\.keys), "known")
         put(s.followedIds, "shows")
         return out
     }
@@ -118,7 +120,11 @@ final class NewEpisodeSpot {
     /// Whether the viewer is caught up with [i]'s show: not in the history (followed from My List) yes; else [i] is the
     /// Up Next episode, or the one right after the last one finished (a new season's first after the last season).
     static func caughtUp(_ history: [HistoryEntry], _ i: NewEpisodeInfo) -> Bool {
-        guard let e = history.first(where: { $0.title.kind == .tv && $0.title.id == i.show.id }) else { return true }
+        // A special sits outside the show's order: where the viewer is in the seasons says nothing about it, and
+        // whether they have seen it is `NewEpisodes.caughtUpSpecial`'s answer, which filtered this snapshot.
+        if i.kind.isSpecial { return true }
+        // The show's own row, never a special's: picking a special's here would hide a real new episode.
+        guard let e = history.series(i.show.id) else { return true }
         let s = i.season, n = i.number
         let es = e.season ?? 0, en = e.episode ?? 0
         if e.upNext { return es == s && en == n }
@@ -147,7 +153,7 @@ final class NewEpisodeSpot {
 
     /// Keeps the per-profile marks to episodes still in the window.
     private func prune(_ s: NewEpisodesSnapshot, done: Set<String>, first: [String: Int64]) {
-        let keep = Set(s.recent.map(\.key))
+        let keep = Set(s.recent.flatMap(\.keys))
         let d = done.intersection(keep)
         if d.count != done.count { put(Array(d), "done") }
         let f = first.filter { keep.contains($0.key) }
@@ -173,16 +179,20 @@ final class NewEpisodeSpot {
     /// Played or dismissed: never offered again (this profile).
     func done(_ i: NewEpisodeInfo, why: String) {
         var set = Set(get([String].self, "done") ?? [])
-        if set.insert(i.key).inserted { put(Array(set), "done") }
+        // Under every key it answers to, so a change of preferred id can't bring it back (`NewEpisodeInfo.keys`).
+        if set.union(i.keys).count != set.count { set.formUnion(i.keys); put(Array(set), "done") }
         if current?.key == i.key { current = nil; availability = nil }
         NewEpisodeBadges.shared.remove(i.show.id)
         Task { await Services.shared.catalog.markEpisodeSeen(CatalogItem(title: i.show, episode: i.episode)) }
-        Log.app.notice("NewEp: \(i.show.name, privacy: .public) S\(i.season)E\(i.number) \(why, privacy: .public)")
+        Log.app.notice("NewEp: \(i.show.name, privacy: .public) \(Self.code(i), privacy: .public) \(why, privacy: .public)")
     }
 
-    /// "S3 · E7" ("S1 · E1–8" for a batch).
+    /// "S3 · E7" ("S1 · E1–8" for a batch); a special's own title, since it has no place in the order.
     static func code(_ i: NewEpisodeInfo) -> String {
-        "S\(i.season) · E\(i.number)" + (i.lastNumber > i.number ? "–\(i.lastNumber)" : "")
+        if let n = EpisodeWords.name(i.kind, season: i.season, episode: i.number, title: i.name, separator: " · ") {
+            return n + (i.kind.isSeries && i.lastNumber > i.number ? "–\(i.lastNumber)" : "")
+        }
+        return i.show.name
     }
 
     /// Next to the pill until the checker has answered: "Out Tonight at 9:00 PM", "Out Today", "Out Now".

@@ -300,10 +300,11 @@ object Tmdb {
      * Popular titles available on one service (US, subscription): rated by enough people to mean
      * something, and from the last [RowMix.RECENT_YEARS] years (the service's archive lives in Browse).
      */
-    fun onService(ctx: Context, providerId: Int, type: String) = list(
+    fun onService(ctx: Context, providerId: Int, type: String, page: Int = 1) = list(
         ctx, "/discover/$type",
         "&with_watch_providers=$providerId&watch_region=US&with_watch_monetization_types=flatrate&sort_by=popularity.desc" +
-            "&include_adult=false&vote_count.gte=${if (type == "movie") 150 else 60}&${RowMix.dateKey(type)}.gte=${RowMix.yearsAgo(RowMix.RECENT_YEARS)}",
+            "&include_adult=false&vote_count.gte=${if (type == "movie") 150 else 60}&${RowMix.dateKey(type)}.gte=${RowMix.yearsAgo(RowMix.RECENT_YEARS)}" +
+            (if (page > 1) "&page=$page" else ""),
         type,
     )
 

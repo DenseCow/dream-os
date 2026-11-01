@@ -36,11 +36,11 @@ import java.util.Locale
  * Dream Cinema title page, full screen over everything: TMDB details, seasons, cast, recommendations,
  * the background trailer, My List and Continue Watching, through [TitlePage.Host]:
  *
- * - **Stage** (Apple TV / Netflix): the full-bleed backdrop under a scrim that fades from the theme's
+ * - **Stage**: the full-bleed backdrop under a scrim that fades from the theme's
  *   near-black at the left and bottom into its purple; the title logo (or the title), one clean meta
  *   line, a three-line synopsis, then the actions: Play / Resume (with a progress line under it),
  *   Episodes, the user's streaming apps, Trailer, My List.
- * - **Sheet** (Disney+ / Netflix): a tab bar peeks at the bottom (Episodes, More Like This, Details).
+ * - **Sheet**: a tab bar peeks at the bottom (Episodes, More Like This, Details).
  *   Down slides the sheet up over the backdrop (one translation; the stage copy fades, the backdrop
  *   dims under a purple veil). Each tab is a lane of cards with a description of the focused item
  *   under it, so the cards stay small and the page never relayouts on a focus move.
@@ -96,8 +96,9 @@ class CinemaDetails(private val ctx: Context, private val t: Title, private val 
         override fun dispatchKeyEvent(e: KeyEvent): Boolean {
             if (closing) return true
             // Something is about to play or open: the trailer lets go of the decoder before the click lands.
-            // (Not on a title still to come: OK there opens nothing.)
-            if (e.action == KeyEvent.ACTION_DOWN && e.keyCode in SELECT_KEYS && findFocus()?.tag != COMING) trailer.stopNow()
+            // Not where OK opens nothing (a title still to come) or where it promotes the playing trailer (Trailer).
+            val focused = findFocus()?.tag
+            if (e.action == KeyEvent.ACTION_DOWN && e.keyCode in SELECT_KEYS && focused != COMING && focused != TRAILER) trailer.stopNow()
             if (e.action == KeyEvent.ACTION_DOWN && navigate(e.keyCode)) return true
             return super.dispatchKeyEvent(e)
         }
@@ -198,6 +199,7 @@ class CinemaDetails(private val ctx: Context, private val t: Title, private val 
 
     private val chips = ArrayList<TextView>()
     private val chipFills = ArrayList<GradientDrawable>()
+    /** The row on show: a season number, [Specials.ROW], or 0 until the first one is picked. */
     private var season = 0
     private var pendingSeason = 0
     private var seasonQueued = false
@@ -318,10 +320,25 @@ class CinemaDetails(private val ctx: Context, private val t: Title, private val 
     private fun findNewEpisode() {
         if (!isShow || next != null) return
         val app = ctx.applicationContext
-        Net.background({ WatchHistory.caughtUpNext(app, t.key) }) { e ->
+        Net.background({ WatchHistory.caughtUpNext(app, t.id) }) { e ->
             if (released || closing || e == null || next != null) return@background
             next = e
             if (playSig() != playSig) buildButtons(details)
+        }
+    }
+
+    /**
+     * The Specials chip for a show TMDB lists no season 0 for, added last once the catalog answers
+     * ([Specials], which asks TVmaze). Never added empty: no specials, no chip.
+     */
+    private fun findSpecials() {
+        val app = ctx.applicationContext
+        Net.background({ Specials.of(app, t.id).size }) { n ->
+            if (released || closing || n == null || n <= 0) return@background
+            val lane = chipsLane ?: return@background
+            if (chips.any { it.tag == Specials.ROW }) return@background
+            lane.inner.addView(seasonChip(Season(Specials.ROW, SPECIALS, n, "")))
+            Log.w(TAG, "Details: ${t.name} has $n specials (tvmaze); Specials chip added")
         }
     }
 
@@ -460,7 +477,7 @@ class CinemaDetails(private val ctx: Context, private val t: Title, private val 
 
     /**
      * Out early (docs/bugs/out-early-2026-10-30.md): a season premiering in the next [EARLY_DAYS] days may already be
-     * up (Paramount+ posts Sunday's episode on Friday). Its first episode is asked about now, as the page opens, not
+     * up (a service can post a Sunday episode on the Friday before). Its first episode is asked about now, as the page opens, not
      * when the viewer reaches the season; whichever answer comes first (this one, the season list's, a sweep's) redoes
      * the page in place ([seasonOutEarly]). An answer already cached was used by the first build.
      */
@@ -689,10 +706,19 @@ class CinemaDetails(private val ctx: Context, private val t: Title, private val 
             addEpisodes()
         }
         d?.trailerKey?.let {
-            buttons.addView(button("trailer", "Trailer", R.drawable.ic_movie, null, primary = !primaryTaken) {
-                // Full screen in Dream Player, continuing the background trailer from where it stopped.
-                val from = trailer.handoff()
-                host.playTrailer(t, from?.second ?: 0L, from?.first)
+            buttons.addView(button(TRAILER, "Trailer", R.drawable.ic_movie, null, primary = !primaryTaken) {
+                // Playing behind the artwork: the running player itself goes to the full screen, so nothing is
+                // looked up or buffered again. The spot and the video travel inside it, not on the intent.
+                val moved = trailer.handOver(t) { host.playTrailer(t, 0L, null) }
+                // A second press while the last one is still moving would start the trailer over: it does nothing.
+                if (!moved && !HeroTrailer.handoverWaiting) {
+                    // Nothing playing: Dream Player looks the trailer up, from where the last one stopped
+                    // (the decoder goes back first, so the player has it).
+                    trailer.stopNow()
+                    val from = trailer.handoff()
+                    Log.w(TAG, "trailer: ${t.key} opens in Dream Player${from?.let { f -> " from ${f.second} ms (${f.first})" } ?: ""}")
+                    host.playTrailer(t, from?.second ?: 0L, from?.first)
+                }
             })
             primaryTaken = true
             addEpisodes()
@@ -742,7 +768,7 @@ class CinemaDetails(private val ctx: Context, private val t: Title, private val 
         }.start()
     }
 
-    /** Under the actions: a short bar in the glow hue and "S2 E4 · 12 Min Left" (Netflix-style). */
+    /** Under the actions: a short bar in the glow hue and "S2 E4 · 12 Min Left". */
     private fun showProgress(e: WatchHistory.Entry) {
         progressLine.removeAllViews()
         val track = FrameLayout(ctx).apply { background = Ui.rounded(ctx, Ui.alpha(fg, 0.22f), 2) }
@@ -751,7 +777,8 @@ class CinemaDetails(private val ctx: Context, private val t: Title, private val 
         track.addView(fill, FrameLayout.LayoutParams((PROGRESS_W * e.progress.coerceIn(0.03f, 1f)).toInt().dp, MATCH_PARENT))
         progressLine.addView(track, LinearLayout.LayoutParams(PROGRESS_W.dp, 4.dp))
         val left = if (e.durationMs > 0) ((e.durationMs - e.positionMs) / 60_000).takeIf { it > 0 }?.let { "$it Min Left" } else null
-        val what = listOfNotNull(if (e.isShow) "S${e.season} E${e.episode}" else null, e.episodeTitle?.takeIf { e.isShow && it.isNotBlank() }, left)
+        val what = listOfNotNull(if (e.ofShow) PlayFlow.episodeCode(e.isSpecial, e.season, e.episode) else null,
+            e.episodeTitle?.takeIf { e.ofShow && it.isNotBlank() }, left)
         progressLine.addView(label(what.joinToString("  ·  "), 13f, dim, medium, 1),
             LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT).apply { marginStart = 14.dp })
         progressLine.visibility = View.VISIBLE
@@ -857,8 +884,13 @@ class CinemaDetails(private val ctx: Context, private val t: Title, private val 
             val ahead = d.seasons.filter { it.number > last && Upcoming.seasonAhead(it, today) }.sortedBy { it.number }.take(2)
             comingSeasons.clear()
             for (s in ahead) comingSeasons[s.number] = s
-            val seasons = (out + ahead).sortedBy { it.number }
+            // Specials last, after the seasons out and the ones still to come, so the chosen season stays Season 1.
+            // TMDB lists them as its season 0; here they are a row of their own ([Specials.ROW]), not a season.
+            val specials = d.seasons.firstOrNull { it.number == 0 && it.episodes > 0 }
+                ?.let { Season(Specials.ROW, SPECIALS, it.episodes, "") }
+            val seasons = (out + ahead).sortedBy { it.number } + listOfNotNull(specials)
             if (seasons.isNotEmpty()) addTab(EPISODES, episodesPanel(seasons, out.sortedBy { it.number }), listOfNotNull(chipsLane, epLane)) {}
+            if (specials == null) findSpecials()
         }
         if (d.recommendations.isNotEmpty()) {
             val p = morePanel(d.recommendations)
@@ -866,7 +898,7 @@ class CinemaDetails(private val ctx: Context, private val t: Title, private val 
         }
         val info = detailsPanel(d)
         addTab("About", info, listOfNotNull(castLane)) { fillCast(d.cast) }
-        // Apple TV-style Information: the whole grid on screen at once, so the tab needs no focus stops of its own.
+        // Information: the whole grid on screen at once, so the tab needs no focus stops of its own.
         d.info?.let { ti -> informationPanel(ti)?.let { addTab("Information", it, emptyList()) {} } }
         // The names fade in when the details land (their own alpha: the row's belongs to [applySheet]).
         for (x in tabs) { x.view.alpha = 0f; x.view.animate().alpha(1f).setDuration(260).setInterpolator(Ui.EASE).start() }
@@ -1148,7 +1180,10 @@ class CinemaDetails(private val ctx: Context, private val t: Title, private val 
     private fun loadSeason(lane: Lane, n: Int, refresh: Boolean = false) {
         val gen = ++seasonGen
         if (!refresh) seasonLoading = true
-        Net.background({ WatchHistory.seasonEpisodes(ctx, t.id, n)?.let { Upcoming.split(ctx, t.id, t.name, n, it) } }) { split ->
+        val season = n.takeIf { it != Specials.ROW }
+        Net.background({
+            Specials.list(ctx, t.id, n == Specials.ROW, season)?.let { Upcoming.split(ctx, t.id, t.name, season, it) }
+        }) { split ->
             if (released) return@background
             // Information's Episode Length: the real median of this (the default) season, written in place.
             if (epMinutes == 0) TitleInfo.episodeMinutes(split?.aired).takeIf { it > 0 }?.let { m ->
@@ -1191,7 +1226,8 @@ class CinemaDetails(private val ctx: Context, private val t: Title, private val 
             describeSeasonComing(ahead, animate = false)
             lane.scrollTo(0, 0)
         } else if (eps.isEmpty() && coming.isEmpty()) {
-            inner.addView(label("No Episodes of Season $n to Watch Yet", 15f, dim, font, 1), LinearLayout.LayoutParams(WRAP_CONTENT, CinemaStyle.CARD_H.dp))
+            inner.addView(label("No ${if (n == Specials.ROW) SPECIALS else "Episodes of Season $n"} to Watch Yet", 15f, dim, font, 1),
+                LinearLayout.LayoutParams(WRAP_CONTENT, CinemaStyle.CARD_H.dp))
             epBlurb?.set("", "", "")
         } else {
             val next = next
@@ -1230,9 +1266,14 @@ class CinemaDetails(private val ctx: Context, private val t: Title, private val 
     private fun episodeCard(n: Int, ep: JSONObject, rank: Int): View {
         val num = ep.optInt("episode_number")
         val name = ep.optString("name").takeIf { it.isNotBlank() && it != "null" } ?: "Episode $num"
-        val next = next
-        val upNext = next != null && next.season == n && next.episode == num
-        val resume = upNext && next!!.progress > 0f && !next.upNext
+        val specialId = Specials.idOf(ep).takeIf { n == Specials.ROW && it.isNotEmpty() }
+        // The Continue Watching row this very card is: a special's own ([startedSpecial]), else the show's
+        // position when it is on this episode. A special never reads the show's row, or playing one would look
+        // like progress through the season.
+        val mine = if (specialId != null) startedSpecial(specialId)
+            else next?.takeIf { it.season == n && it.episode == num }
+        val upNext = mine != null
+        val resume = upNext && mine!!.progress > 0f && !mine.upNext
         val card = artCard(CinemaStyle.CARD_W, CinemaStyle.CARD_H)
         val still = ep.optString("still_path").takeIf { it.isNotEmpty() && it != "null" }
         // Never a blank tile: TMDB has no still for many new episodes (and a still can fail), so the show's backdrop,
@@ -1241,41 +1282,62 @@ class CinemaDetails(private val ctx: Context, private val t: Title, private val 
         when {
             still != null -> art(card.art, Tmdb.IMG + "w300" + still, rank, showArt)
             showArt.isNotEmpty() -> art(card.art, showArt[0], rank, showArt.drop(1))
-            else -> placeholder(card.art, "E$num")
+            else -> placeholder(card.art, if (specialId != null) SPECIALS else "E$num")
         }
         if (upNext) card.art.addView(tag(if (resume) "Resume" else "Up Next"),
             FrameLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT, Gravity.TOP or Gravity.START).apply { setMargins(10.dp, 10.dp, 0, 0) })
-        if (resume) progressBar(card.art, CinemaStyle.CARD_W, next!!.progress)
-        card.setOnClickListener { if (resume) host.resume(next!!) else host.playEpisode(t, n, num) }
+        if (resume) progressBar(card.art, CinemaStyle.CARD_W, mine!!.progress)
+        card.setOnClickListener {
+            if (resume) host.resume(mine!!)
+            else if (specialId != null) host.playSpecial(t, ep)
+            else host.playEpisode(t, n, num)
+        }
         if (upNext) nextCard = card
         // Aired in the last three weeks: its real status pill (Available Now · 4K / CAM Only / Not Available Yet). Older ones never get one.
         // Watched (Watched.kt: the viewer finished this very episode): the gold Watched pill instead, no check.
         val airDate = ep.optString("air_date").takeIf { it.length == 10 }.orEmpty()
-        val watched = !resume && Watched.episode(ctx, t.id, n, num)
+        val watched = !resume &&
+            if (specialId != null) Watched.special(ctx, t.id, specialId) else Watched.episode(ctx, t.id, n, num)
         if (watched) Availability.attachWatched(card.art)
         // Up early (Upcoming.split found a real release before its air day): the same pill, already green.
-        val pillFocus = if (!resume && !watched && (Availability.recentEpisode(0L, airDate) || Availability.outEarly(ctx, t.id, n, num)))
-            Availability.attachTarget(card.art, Availability.episode(t.id, t.name, null, n, num, 0L, airDate)) else null
-        val sub = listOfNotNull(epRuntime(ep).ifEmpty { null }, epLang(n, num)).joinToString("  ·  ")
-        return captioned(card, "$num.  $name", sub) { has -> if (has) describeEpisode(n, ep); pillFocus?.invoke(has) }
+        val out = if (specialId != null) Availability.outEarlySpecial(ctx, t.id, specialId)
+            else Availability.outEarly(ctx, t.id, n, num)
+        val target = if (specialId != null) Availability.special(t.id, t.name, null, ep)
+            else Availability.episode(t.id, t.name, null, n, num, 0L, airDate)
+        val pillFocus = if (target != null && !resume && !watched &&
+            (Availability.recentEpisode(0L, airDate, special = specialId != null) || out))
+            Availability.attachTarget(card.art, target) else null
+        val sub = listOfNotNull(epRuntime(ep).ifEmpty { null }, epLang(ep, n, num)).joinToString("  ·  ")
+        // A special's caption is its name: the number is its place in air order, which moves ([Specials]).
+        val caption = if (specialId != null) name else "$num.  $name"
+        return captioned(card, caption, sub) { has -> if (has) describeEpisode(n, ep); pillFocus?.invoke(has) }
     }
 
+    /** The special's own Continue Watching row, part way through it ([WatchHistory.specialEntry]). */
+    private fun startedSpecial(specialId: String): WatchHistory.Entry? =
+        WatchHistory.specialEntry(WatchHistory.entries(ctx), t.id, specialId)
+            ?.takeIf { !it.upNext && it.progress > 0f && it.progress < WatchHistory.FINISHED }
+
     /** "English Dub" / "Japanese Audio" once Dream Core has read this episode's copies, for a title in another language (LangPills.kt). */
-    private fun epLang(n: Int, num: Int): String? =
-        LangPills.episodeWords(ctx, PlaybackRequest(title = t.name, type = "episode", tmdbId = t.id, season = n, episode = num), originalLang())
+    private fun epLang(ep: JSONObject, n: Int, num: Int): String? {
+        val req = if (n == Specials.ROW) PlayFlow.special(ep, t.id, t.name) ?: return null
+            else PlaybackRequest(title = t.name, type = "episode", tmdbId = t.id, season = n, episode = num)
+        return LangPills.episodeWords(ctx, req, originalLang())
+    }
 
     private fun describeEpisode(n: Int, ep: JSONObject, animate: Boolean = true) {
         val num = ep.optInt("episode_number")
         val name = ep.optString("name").takeIf { it.isNotBlank() && it != "null" } ?: "Episode $num"
         if (ep.has(Upcoming.AT)) {
             // Still to come: when, instead of the air date and runtime.
-            val sub = "Season $n, Episode $num  ·  " + Upcoming.coming(ep.optLong(Upcoming.AT), Upcoming.date(ep))
+            val sub = "${place(n, num)}  ·  " + Upcoming.coming(ep.optLong(Upcoming.AT), Upcoming.date(ep))
             epBlurb?.set(Upcoming.title(ep) ?: name, sub, ep.optString("overview").takeIf { it != "null" }.orEmpty(), animate)
             return
         }
         // Up early (its air day still ahead): no "Aired" date from the future.
         val date = ep.optString("air_date").takeIf { aired(it) }?.let { TitleInfo.longDate(ctx, it) }?.let { "Aired $it" }
-        val sub = listOfNotNull("Season $n, Episode $num", epRuntime(ep).ifEmpty { null }, date, epLang(n, num)).joinToString("  ·  ")
+        val sub = listOfNotNull(place(n, num), epRuntime(ep).ifEmpty { null }, date,
+            epLang(ep, n, num)).joinToString("  ·  ")
         epBlurb?.set(name, sub, ep.optString("overview").takeIf { it != "null" }.orEmpty(), animate)
     }
 
@@ -1305,7 +1367,9 @@ class CinemaDetails(private val ctx: Context, private val t: Title, private val 
             FrameLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT, Gravity.BOTTOM or Gravity.START).apply { setMargins(10.dp, 0, 10.dp, 10.dp) })
         card.tag = COMING
         card.setOnClickListener { describeEpisode(n, ep, animate = false) }
-        val title = Upcoming.title(ep)?.let { "S$n · E$num  $it" } ?: "S$n · Episode $num"
+        // A special says its own name, never a number: its place in air order moves ([Specials]).
+        val title = if (n == Specials.ROW) Upcoming.title(ep)?.let { "$SPECIALS  ·  $it" } ?: SPECIALS
+            else Upcoming.title(ep)?.let { "S$n · E$num  $it" } ?: "S$n · Episode $num"
         card.onFocus = { has -> if (has) describeEpisode(n, ep) }
         return cardColumn(card, title to Upcoming.coming(at, date), muted = true)
     }
@@ -1366,7 +1430,7 @@ class CinemaDetails(private val ctx: Context, private val t: Title, private val 
         val card = artCard(CinemaStyle.CARD_W, CinemaStyle.CARD_H)
         placeholder(card.art, "All $total Episodes")
         card.setOnClickListener { host.watch(t, true) }
-        return captioned(card, "All Episodes", "Pick Any Episode") { has -> if (has) epBlurb?.set("All $total Episodes", "Season $season", "") }
+        return captioned(card, "All Episodes", "Pick Any Episode") { has -> if (has) epBlurb?.set("All $total Episodes", seasonWords(season), "") }
     }
 
     /** "47 min", "1 hr 5 min": the Information grid's wording ([TitleInfo.runtimeWords]). */
@@ -1454,7 +1518,7 @@ class CinemaDetails(private val ctx: Context, private val t: Title, private val 
     // ---- Information ----
 
     /**
-     * Apple TV-style Information (TitleInfo.kt): every fact TMDB has, label over value in four columns, built
+     * Information (TitleInfo.kt): every fact TMDB has, label over value in four columns, built
      * once here and static after (the ratings and the next episode's exact time rewrite one value in place).
      * Null when there's nothing to show.
      */
@@ -1710,7 +1774,7 @@ class CinemaDetails(private val ctx: Context, private val t: Title, private val 
     // ---- lanes ----
 
     /**
-     * A horizontal lane that keeps the focused item at the gutter (Netflix), gliding there itself rather
+     * A horizontal lane that keeps the focused item at the gutter, gliding there itself rather
      * than letting the scroll view jump; vertical padding is room for the lift and the glow.
      */
     private inner class Lane(padV: Int, startDp: Int = CinemaStyle.GUTTER) : HorizontalScrollView(ctx) {
@@ -1861,12 +1925,24 @@ class CinemaDetails(private val ctx: Context, private val t: Title, private val 
 
     // ---- helpers ----
 
+    /**
+     * The entry Continue Watching shows for this title, part way through it: what Play resumes and names
+     * (STANDARDS section 5, one rule). A special is never this: it has a Continue Watching row of its own and
+     * resumes from its own card, so playing one never moves the show off where the viewer really is.
+     */
     private fun resumeEntry(): WatchHistory.Entry? = WatchHistory.entries(ctx).firstOrNull {
         it.key == t.key && !it.upNext && it.progress > 0f && it.progress < WatchHistory.FINISHED &&
-            (!it.isShow || (it.season > 0 && it.episode > 0))
+            (!it.isSeries || (it.season > 0 && it.episode > 0))
     }
 
-    private fun resumeLabel(e: WatchHistory.Entry): String = if (e.isShow) "Resume S${e.season} E${e.episode}" else "Resume"
+    private fun resumeLabel(e: WatchHistory.Entry): String =
+        if (e.isSeries) "Resume S${e.season} E${e.episode}" else "Resume"
+
+    /** "Season 2", or "Specials" for the specials row ([Specials.ROW]; the player's list says the same). */
+    private fun seasonWords(n: Int) = if (n == Specials.ROW) SPECIALS else "Season $n"
+
+    /** Where an episode sits: "Season 2, Episode 5"; a special has no place in the order, so just "Specials". */
+    private fun place(n: Int, num: Int) = if (n == Specials.ROW) SPECIALS else "Season $n, Episode $num"
 
     private fun aired(date: String) = date.isNotEmpty() && date != "null" && date <= today
 
@@ -1906,6 +1982,8 @@ class CinemaDetails(private val ctx: Context, private val t: Title, private val 
         private const val SYN_PAD = 14
         private const val TAG = "FireHome"
         private const val EPISODES = "Episodes"
+        /** Season 0's name everywhere on the page, the word the player's episode list uses too ([Specials]). */
+        private const val SPECIALS = "Specials"
         /** How much of the sheet (its tab bar) peeks under the stage (dp). */
         private const val PEEK = 64
         /** Where the sheet's top settles once it has slid up (dp). */
@@ -1933,6 +2011,8 @@ class CinemaDetails(private val ctx: Context, private val t: Title, private val 
         private const val MAX_COMING = 12
         /** Tag of a card still to come (OK there opens nothing). */
         private const val COMING = "coming"
+        /** Tag of the Trailer action: pressing it promotes a playing trailer instead of starting one. */
+        private const val TRAILER = "trailer"
         /** A season premiering within this many days has its first episode asked about early as the page opens ([watchEarly]). */
         private const val EARLY_DAYS = 10
         private const val SHEET_MS = 440L

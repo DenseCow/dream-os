@@ -10,7 +10,7 @@ import android.util.Log
 import java.util.TreeMap
 
 /**
- * Netflix-style preview frames for scrubbing, made on the device: our streams are plain MKV / MP4 over
+ * Preview frames for scrubbing, made on the device: our streams are plain MKV / MP4 over
  * HTTPS with no trickplay track, so a [MediaMetadataRetriever] on the same URL and headers pulls the
  * keyframe nearest a time (OPTION_CLOSEST_SYNC: no decoding up to an exact frame), scaled small.
  *
@@ -19,7 +19,7 @@ import java.util.TreeMap
  * [healthy] says the player's buffer is comfortable. A scrub's own request ([want]) jumps the queue.
  * Frames are RGB_565, ~115 KB each, at most [MAX] kept (the farthest from the playhead go first).
  *
- * OFF ([ENABLED]) on the Fire TV Stick: measured 2026-10-25 on a Breaking Bad 1080p MKV, the retriever
+ * OFF ([ENABLED]) on the Fire TV Stick: measured 2026-10-25 on a 1080p MKV episode, the retriever
  * opens in ~0.45 s but its first frame takes 25–31 s (it reads through the file to index it, competing
  * with playback for the network) and each later keyframe ~2.0–2.2 s; worse, every frame comes back with
  * scrambled rows (getScaledFrameAtTime and getFrameAtTime alike: the platform's frame conversion on Fire

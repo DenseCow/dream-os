@@ -11,10 +11,12 @@ import java.util.concurrent.ConcurrentHashMap
 /**
  * The Watched pill's memory: what the viewer has finished, kept per profile, read instantly (no network) by every
  * card. [WatchHistory] keeps one entry per title and forgets a finished one once it's started again, so this ledger
- * is separate and never shrinks: a finished title the viewer starts again keeps its Watched pill (as on Netflix).
+ * is separate and never shrinks: a finished title the viewer starts again keeps its Watched pill.
  *  - A movie: finished once ([WatchHistory.FINISHED], or Trakt's history).
  *  - An episode: only one the viewer actually finished (kept one by one as "S:E"; nothing is inferred from a later
  *    one, so starting a show at S3E5 marks nothing else).
+ *  - A special ([Specials]): kept in a set of its own, by the id that identifies it. It is no part of the
+ *    linear order: it never counts toward a show being watched, and finishing a season never marks one.
  *  - A show: every aired episode is in that set (TMDB's seasons up to its latest aired episode) and nothing newer has
  *    aired. The air state is TMDB's, asked again every 6 h and once the announced day passes ([checkShow]); a show
  *    with a new episode loses Watched (the New Episode badge or pill takes over).
@@ -30,14 +32,16 @@ object Watched {
      * [episodes]: finished ones, "S:E". Air state (TMDB): the latest aired episode, the episode counts of the
      * seasons before it ([counts], index 0 = Season 1: all aired), the next air day ("" none), when it was asked.
      */
-    private class Show(val episodes: HashSet<String> = HashSet(), var lastSeason: Int = 0, var lastEpisode: Int = 0,
+    private class Show(val episodes: HashSet<String> = HashSet(), val specials: HashSet<String> = HashSet(),
+                       var lastSeason: Int = 0, var lastEpisode: Int = 0,
                        var counts: List<Int> = emptyList(), var nextAir: String = "", var checked: Long = 0L)
 
     private class Book(val movies: HashSet<Int> = HashSet(), val shows: HashMap<Int, Show> = HashMap(), var seeded: Boolean = false) {
         fun toJson(): JSONObject {
             val s = JSONObject()
             for ((id, v) in shows) s.put("$id", JSONObject().put("eps", JSONArray(v.episodes.toList())).put("ls", v.lastSeason)
-                .put("le", v.lastEpisode).put("cn", JSONArray(v.counts)).put("n", v.nextAir).put("c", v.checked))
+                .put("le", v.lastEpisode).put("cn", JSONArray(v.counts)).put("n", v.nextAir).put("c", v.checked)
+                .put("sp", JSONArray(v.specials.toList())))
             return JSONObject().put("m", JSONArray(movies.toList())).put("s", s).put("seeded", seeded)
         }
 
@@ -51,8 +55,10 @@ object Watched {
                         val v = s.optJSONObject(k) ?: continue
                         val eps = HashSet<String>()
                         v.optJSONArray("eps")?.let { a -> for (i in 0 until a.length()) a.optString(i).takeIf { it.contains(':') }?.let(eps::add) }
+                        val sp = HashSet<String>()
+                        v.optJSONArray("sp")?.let { a -> for (i in 0 until a.length()) a.optString(i).takeIf { it.isNotEmpty() }?.let(sp::add) }
                         val cn = v.optJSONArray("cn")?.let { a -> (0 until a.length()).map { a.optInt(it) } }.orEmpty()
-                        b.shows[id] = Show(eps, v.optInt("ls"), v.optInt("le"), cn, v.optString("n"), v.optLong("c"))
+                        b.shows[id] = Show(eps, sp, v.optInt("ls"), v.optInt("le"), cn, v.optString("n"), v.optLong("c"))
                     }
                 }
                 return b
@@ -89,17 +95,29 @@ object Watched {
         return b
     }
 
-    /** Only what was really finished: finished movies and episodes, and the episode right before an Up Next one in the same season. */
+    /** Only what was really finished: finished movies, specials and episodes, and the episode right before an Up Next one. */
     private fun seedFrom(b: Book, e: WatchHistory.Entry) {
-        if (!e.isShow) { if (e.progress >= WatchHistory.FINISHED) b.movies.add(e.tmdbId); return }
-        if (e.season <= 0 || e.episode <= 0) return
-        if (e.upNext) { if (e.episode > 1) add(b, e.tmdbId, e.season, e.episode - 1) }
-        else if (e.progress >= WatchHistory.FINISHED) add(b, e.tmdbId, e.season, e.episode)
+        val done = e.progress >= WatchHistory.FINISHED
+        when (e.kind) {
+            WatchHistory.Kind.MOVIE -> if (done) b.movies.add(e.tmdbId)
+            WatchHistory.Kind.SPECIAL -> if (done) e.specialId?.let { addSpecial(b, e.tmdbId, it) }
+            WatchHistory.Kind.EPISODE -> {
+                if (e.season <= 0 || e.episode <= 0) return
+                if (e.upNext) { if (e.episode > 1) add(b, e.tmdbId, e.season, e.episode - 1) }
+                else if (done) add(b, e.tmdbId, e.season, e.episode)
+            }
+        }
     }
 
     private fun add(b: Book, show: Int, season: Int, episode: Int): Boolean {
         if (show <= 0 || season <= 0 || episode <= 0) return false
         return b.shows.getOrPut(show) { Show() }.episodes.add("$season:$episode")
+    }
+
+    /** A special goes in its own set, so the episode counts and [furthest] cannot see it ([Specials]). */
+    private fun addSpecial(b: Book, show: Int, specialId: String): Boolean {
+        if (show <= 0 || specialId.isEmpty()) return false
+        return b.shows.getOrPut(show) { Show() }.specials.add(specialId)
     }
 
     private fun edit(ctx: Context, f: (Book) -> Boolean) {
@@ -119,10 +137,15 @@ object Watched {
 
     /** [WatchHistory]: the viewer finished [e] (a movie, or that one episode; a show's air state is asked when due). */
     internal fun finished(ctx: Context, e: WatchHistory.Entry) {
-        if (!e.isShow) { edit(ctx) { it.movies.add(e.tmdbId) }; return }
-        if (e.season <= 0 || e.episode <= 0) return
-        edit(ctx) { add(it, e.tmdbId, e.season, e.episode) }
-        checkShow(ctx, e.tmdbId)
+        when (e.kind) {
+            WatchHistory.Kind.MOVIE -> edit(ctx) { it.movies.add(e.tmdbId) }
+            WatchHistory.Kind.SPECIAL -> e.specialId?.let { id -> edit(ctx) { addSpecial(it, e.tmdbId, id) } }
+            WatchHistory.Kind.EPISODE -> {
+                if (e.season <= 0 || e.episode <= 0) return
+                edit(ctx) { add(it, e.tmdbId, e.season, e.episode) }
+                checkShow(ctx, e.tmdbId)
+            }
+        }
     }
 
     /** Trakt's history: every movie and every episode ([episodes]: show id to its season / episode pairs) it lists as watched. */
@@ -175,7 +198,23 @@ object Watched {
     fun episode(ctx: Context, show: Int, season: Int, episode: Int): Boolean =
         read(ctx) { b -> b.shows[show]?.episodes?.contains("$season:$episode") ?: false }
 
-    /** The latest episode of [show] the viewer finished (season to episode), null when none ([NewEpisodes.caughtUp]). */
+    /** [Specials]: a finished special keeps its mark when TMDB gives it a better id. */
+    internal fun adoptSpecialId(ctx: Context, show: Int, from: String, to: String) = edit(ctx) { b ->
+        val s = b.shows[show] ?: return@edit false
+        if (!s.specials.remove(from)) return@edit false
+        s.specials.add(to)
+        true
+    }
+
+    /** The viewer actually finished this special ([Specials.ID]). */
+    fun special(ctx: Context, show: Int, specialId: String): Boolean =
+        read(ctx) { b -> b.shows[show]?.specials?.contains(specialId) ?: false }
+
+    /**
+     * The latest episode of [show] the viewer finished (season to episode), null when none
+     * ([NewEpisodes.caughtUp]). Specials are kept in their own set, so a finished special can never be read
+     * here as progress through the show.
+     */
     fun furthest(ctx: Context, show: Int): Pair<Int, Int>? = read(ctx) { b ->
         b.shows[show]?.episodes?.mapNotNull { k ->
             val s = k.substringBefore(':').toIntOrNull()
@@ -183,6 +222,12 @@ object Watched {
             if (s != null && e != null) s to e else null
         }?.maxWithOrNull(compareBy<Pair<Int, Int>>({ it.first }, { it.second }))
     }
+
+    /**
+     * How many episodes of [show] the viewer has finished. Specials have their own set, so one never counts as
+     * progress through the series.
+     */
+    fun episodeCount(ctx: Context, show: Int): Int = read(ctx) { b -> b.shows[show]?.episodes?.size ?: 0 }
 
     /** Every aired episode finished, and nothing newer has aired since TMDB was asked. */
     fun show(ctx: Context, id: Int): Boolean = read(ctx) { b ->

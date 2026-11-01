@@ -206,16 +206,20 @@ class ShellState(val catalog: Catalog, val scope: CoroutineScope, start: Tab = T
     /** "Exit Dream OS?" is showing ([ExitPrompt]): Esc at the very root asks it. */
     var askExit by mutableStateOf(false)
 
-    override fun play(t: Title, from: CardItem?) = playAt(t, from?.season, from?.episode, null, fromStart = false)
+    override fun play(t: Title, from: CardItem?) =
+        playAt(t, from?.season, from?.episode, null, fromStart = false, specialId = from?.specialId.orEmpty())
 
-    /** Plays [t] (an episode when [season] and [episode] are given; a show's next episode otherwise). */
-    fun playAt(t: Title, season: Int?, episode: Int?, episodeName: String?, fromStart: Boolean) {
+    /**
+     * Plays [t] (an episode when [season] and [episode] are given; a show's next episode otherwise). [specialId]: one
+     * of the show's specials, which plays like an episode but is never the show's next one.
+     */
+    fun playAt(t: Title, season: Int?, episode: Int?, episodeName: String?, fromStart: Boolean, specialId: String = "") {
         if (AppServices.playback == null) {
             notice = Notice("Playback Isn't Ready", "Dream Core didn't start. Restart Dream OS and try again.")
             return
         }
         scope.launch {
-            val target = Targets.of(t, season, episode, episodeName)
+            val target = Targets.of(t, season, episode, episodeName, specialId)
             launcher.play(target, if (fromStart) 1 else 0)
         }
     }
@@ -271,17 +275,24 @@ class ShellState(val catalog: Catalog, val scope: CoroutineScope, start: Tab = T
      */
     private fun openEpisode(item: CardItem) {
         val t = item.title
-        val s = item.season ?: return
-        val e = item.episode ?: return
+        val special = item.specialId
+        val s = item.season ?: 0
+        val e = item.episode ?: 0
+        if (special == null && (item.season == null || item.episode == null)) return
         scope.launch {
             runCatching {
-                com.dreamos.desktop.core.service.Services.newEpisodes.markSeen(
-                    com.dreamos.desktop.core.model.CatalogItem(t, episode = com.dreamos.desktop.core.model.Episode(t.id, s, e, "")))
+                com.dreamos.desktop.core.service.Services.newEpisodes.markSeen(com.dreamos.desktop.core.model.CatalogItem(t,
+                    episode = com.dreamos.desktop.core.model.Episode(t.id, s, e, item.episodeName.orEmpty(),
+                        kind = if (special != null) com.dreamos.desktop.core.model.EpisodeKind.SPECIAL
+                        else com.dreamos.desktop.core.model.EpisodeKind.SERIES, specialId = special.orEmpty())))
             }
         }
         if (item.upcoming) return openTitle(t)
-        menu.show(MenuSpec("${t.name}  ·  S${s}E$e", listOf(
-            "Play S$s E$e" to { playAt(t, s, e, null, fromStart = false) },
+        // A special is named, never numbered: its place in air order moves as the catalog fills in.
+        val code = if (special != null) com.dreamos.desktop.core.model.EpisodeCode.specialWords(item.episodeName)
+        else com.dreamos.desktop.core.model.EpisodeCode.of(s, e)
+        menu.show(MenuSpec("${t.name}  ·  $code", listOf(
+            "Play $code" to { playAt(t, item.season, item.episode, item.episodeName, fromStart = false, specialId = special.orEmpty()) },
             "Show Details" to { openTitle(t) },
         ), null))
     }
@@ -298,7 +309,7 @@ class ShellState(val catalog: Catalog, val scope: CoroutineScope, start: Tab = T
                 if (onContinue) listOf(
                     (if (item.upNext || (item.progress ?: 0f) <= 0f) "Play" else "Resume") to { play(t, item) },
                     "Details" to { openTitle(t) },
-                    "Remove from Continue Watching" to { catalog.removeContinue(t) },
+                    "Remove from Continue Watching" to { catalog.removeContinue(t, item.specialId.orEmpty()) },
                 ) else listOf(
                     "Details" to { openTitle(t) },
                     (if (saved) "Remove from My List" else "Add to My List") to { catalog.toggleMyList(t) },

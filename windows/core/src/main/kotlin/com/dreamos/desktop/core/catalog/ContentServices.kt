@@ -86,8 +86,8 @@ object ContentServices {
         }
         NewEpisodes.airInfo = { id, imdb, tvdb ->
             AirTimes.info(id, imdb, tvdb)?.let { i ->
-                NewEpisodes.AirInfo(i.prev?.let { NewEpisodes.AirEp(it.season, it.number, it.at) },
-                    i.next?.let { NewEpisodes.AirEp(it.season, it.number, it.at) })
+                NewEpisodes.AirInfo(i.prev?.let { NewEpisodes.AirEp(it.season, it.number, it.at, it.special) },
+                    i.next?.let { NewEpisodes.AirEp(it.season, it.number, it.at, it.special) })
             }
         }
         Services.catalog = catalog

@@ -85,7 +85,9 @@ public struct SeasonSummary: Codable, Sendable, Hashable, Identifiable {
 
 public struct Episode: Codable, Sendable, Hashable, Identifiable {
     public var showId: Int
+    /// A special's: the season it aired beside, 0 when that isn't known. Read it with `isSpecial` in hand.
     public var season: Int
+    /// A special's: its 1-based place in air order, which is the form the index answers. Not its identity.
     public var number: Int
     public var name: String
     public var overview: String
@@ -101,7 +103,22 @@ public struct Episode: Codable, Sendable, Hashable, Identifiable {
     /// Up before its air day (DreamContent's split): the index already has a source for it, so it plays like any aired
     /// episode, with its status pill and no air date from the future. `upcoming` is false.
     public var outEarly: Bool = false
-    public var id: String { "\(showId):\(season):\(number)" }
+    /// A special: its own kind, outside the show's numbered order, behaving like a movie that belongs to the show
+    /// (docs/port/specials.md). `season` is then the season it aired beside and `number` its place in air order,
+    /// which only the three wire forms ever use.
+    public var isSpecial: Bool = false
+    /// A special only: the number TMDB gives it under season 0, when air order gave it a different one. 0 otherwise.
+    public var tmdbNumber: Int = 0
+    /// A special only: its source id, `"tmdb:<episode id>"` or `"tvmaze:<episode id>"`. This is what names a special
+    /// everywhere it is remembered. Never its air-order place, which moves when a source backfills an earlier one.
+    public var specialId: String = ""
+    /// A special only: the other source's id for the same special, when both list it. A TVmaze-only special that TMDB
+    /// later adds changes its preferred id, which would orphan what the viewer had remembered under the old one, so
+    /// every lookup accepts either form and only new writes use the preferred one.
+    public var specialAlias: String = ""
+    /// Every id this special answers to, preferred first.
+    public var specialIds: [String] { [specialId, specialAlias].filter { !$0.isEmpty } }
+    public var id: String { isSpecial ? "\(showId)/sp:\(specialId)" : "\(showId):\(season):\(number)" }
     public init(showId: Int, season: Int, number: Int, name: String, overview: String = "", stillPath: String? = nil,
                 airDate: String = "", runtime: Int = 0, airsAt: Date? = nil, upcoming: Bool = false) {
         self.showId = showId; self.season = season; self.number = number; self.name = name; self.overview = overview
@@ -229,7 +246,11 @@ public struct CatalogItem: Codable, Sendable, Hashable, Identifiable {
     /// Key art: TMDB's English backdrop with the title's name on it (DreamContent KeyArt). Landscape and big cards
     /// show it before the textless backdrop; nil = none known (episode cards keep their still).
     public var keyArtPath: String? = nil
-    public var id: String { title.key + (episode.map { ":\($0.season):\($0.number)" } ?? "") }
+    /// A special is identified by its source id, not its place: two specials of one show both sit at season 0 with no
+    /// number, and two cards sharing an id crash a row.
+    public var id: String {
+        title.key + (episode.map { $0.isSpecial ? "/sp:\($0.specialId)" : ":\($0.season):\($0.number)" } ?? "")
+    }
     public func keyArt(_ size: String = "w780") -> URL? { TMDBImage.url(keyArtPath, size) }
     public init(title: Title, episode: Episode? = nil, progress: Double? = nil, availability: Availability? = nil, kicker: String? = nil,
                 subtitle: String? = nil, badge: String? = nil) {
@@ -245,7 +266,7 @@ public struct CatalogRow: Codable, Sendable, Hashable, Identifiable {
     public var items: [CatalogItem]
     /// More pages can be fetched with `CatalogService.more(row:)`.
     public var hasMore: Bool
-    /// Apple TV's Spotlight: one title across the page (style `.big`, one item; its `kicker` is the module's
+    /// The Spotlight: one title across the page (style `.big`, one item; its `kicker` is the module's
     /// line: "Spotlight", "Coming Soon", "Tonight's Pick  ·  Night 26 of 31"). The row has no heading.
     public var isSpotlight: Bool = false
     /// Seasonal hub tiles shown before the items (Home's hub row: one tile, then Tonight's Pick marked
@@ -285,7 +306,7 @@ public struct HubTile: Codable, Sendable, Hashable, Identifiable {
     }
 }
 
-/// A streaming service page (Netflix, Hulu, Crunchyroll...), CinemaPages.kt `ServiceSpec`.
+/// One streaming service's page, CinemaPages.kt `ServiceSpec`.
 public struct ServiceSpec: Codable, Sendable, Hashable, Identifiable {
     public var id: String
     public var name: String
@@ -372,13 +393,24 @@ public struct HistoryEntry: Codable, Sendable, Hashable, Identifiable {
     /// Off Continue Watching: finished, or removed by the viewer (WatchHistory.kt `hidden`). Still counts for
     /// Because You Watched / Top Picks and for leaving finished titles out of rows.
     public var hidden: Bool = false
-    public var id: String { title.key }
+    /// Movie, numbered episode, or special. Three-valued on purpose: a special must never fall into a movie's or an
+    /// episode's branch by default (docs/port/specials.md).
+    public var kind: WatchKind = .movie
+    /// A special only: the source id this row was written under (`Episode.specialId`). `season` and `episode` are nil
+    /// for a special; nothing may read a position off one.
+    public var specialId: String?
+    /// What the history stores this row under: the series' own key for a movie or a numbered episode, its own for a
+    /// special, so a special never takes the show's place on Continue Watching.
+    public var key: String { WatchKind.historyKey(title: title, kind: kind, specialId: specialId) }
+    public var id: String { key }
     public var progress: Double { durationMs > 0 ? min(1, Double(positionMs) / Double(durationMs)) : 0 }
     public init(title: Title, season: Int? = nil, episode: Int? = nil, episodeName: String? = nil, stillPath: String? = nil,
-                positionMs: Int64 = 0, durationMs: Int64 = 0, upNext: Bool = false, updatedAt: Date = Date(), hidden: Bool = false) {
+                positionMs: Int64 = 0, durationMs: Int64 = 0, upNext: Bool = false, updatedAt: Date = Date(), hidden: Bool = false,
+                kind: WatchKind? = nil, specialId: String? = nil) {
         self.title = title; self.season = season; self.episode = episode; self.episodeName = episodeName
         self.stillPath = stillPath; self.positionMs = positionMs; self.durationMs = durationMs; self.upNext = upNext
-        self.updatedAt = updatedAt; self.hidden = hidden
+        self.updatedAt = updatedAt; self.hidden = hidden; self.specialId = specialId
+        self.kind = kind ?? (specialId != nil ? .special : title.kind == .tv ? .episode : .movie)
     }
 }
 
@@ -388,14 +420,46 @@ public struct HistoryEntry: Codable, Sendable, Hashable, Identifiable {
 public struct PlayRequest: Codable, Sendable, Hashable {
     public var title: Title
     public var imdbId: String?
+    /// Nil for a movie, and nil for a special: a special has no season, so nothing can read one off it by accident.
     public var season: Int?
+    /// A special's: its 1-based place in air order, the number the index answers for.
     public var episode: Int?
     public var episodeName: String?
     /// The viewer picked "Start Over" / "From the Beginning".
     public var fromStart: Bool
+    /// A special's source id (`Episode.specialId`). It is the only thing that marks a request as a special, and what
+    /// the three wire forms are derived from: the air-order number and the parent season are looked up from it at
+    /// request time, never carried here, because the number is a view that moves. `season` and `episode` stay nil for
+    /// a special, so no code can read a position off one.
+    public var specialId: String?
+    /// A special's other source id, so a row remembered under it is still found (`Episode.specialAlias`).
+    public var specialAlias: String?
+    /// Every id this special answers to, preferred first.
+    public var specialIds: [String] { [specialId, specialAlias].compactMap { $0 }.filter { !$0.isEmpty } }
+    /// A special: its own kind, outside the show's numbered order (docs/port/specials.md).
+    public var isSpecial: Bool { specialId != nil }
+    /// Movie, numbered episode, or special.
+    public var kind: WatchKind {
+        if isSpecial { return .special }
+        return title.kind == .tv ? .episode : .movie
+    }
     public init(title: Title, imdbId: String? = nil, season: Int? = nil, episode: Int? = nil, episodeName: String? = nil, fromStart: Bool = false) {
         self.title = title; self.imdbId = imdbId; self.season = season; self.episode = episode
         self.episodeName = episodeName; self.fromStart = fromStart
+    }
+
+    /// A special to play: no season and no number, only its source ids and its own title.
+    public static func special(title: Title, imdbId: String? = nil, specialId: String, alias: String? = nil,
+                               name: String? = nil, fromStart: Bool = false) -> PlayRequest {
+        var r = PlayRequest(title: title, imdbId: imdbId, episodeName: name.flatMap { $0.isEmpty ? nil : $0 }, fromStart: fromStart)
+        r.specialId = specialId
+        r.specialAlias = alias.flatMap { $0.isEmpty ? nil : $0 }
+        return r
+    }
+
+    public static func special(title: Title, imdbId: String? = nil, _ episode: Episode, fromStart: Bool = false) -> PlayRequest {
+        special(title: title, imdbId: imdbId, specialId: episode.specialId, alias: episode.specialAlias,
+                name: episode.name, fromStart: fromStart)
     }
 }
 

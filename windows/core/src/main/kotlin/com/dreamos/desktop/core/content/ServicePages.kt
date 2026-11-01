@@ -66,11 +66,14 @@ object ServicePages {
 
     fun heroKicker(spec: ServiceSpec) = "On ${spec.name}"
 
-    private fun popular(spec: ServiceSpec) = RowPaging.all({ mixed(spec) }, { mixed(spec, "&page=2") }).flatten()
+    /** The first page, then the day's deeper one behind it (Taste.rotatingPage): a service's row changes day to day. */
+    private fun popular(spec: ServiceSpec) =
+        RowPaging.all({ mixed(spec) }, { mixed(spec, "&page=${Taste.rotatingPage("Popular on ${spec.name}")}") }).flatten()
 
     private fun originals(spec: ServiceSpec): List<Title> {
         val q = "&include_adult=false&sort_by=popularity.desc&with_networks=${spec.networkIds.joinToString("|")}"
-        return RowPaging.all({ Tmdb.list("/discover/tv", q, MediaKind.TV) }, { Tmdb.list("/discover/tv", "$q&page=2", MediaKind.TV) }).flatten()
+        return RowPaging.all({ Tmdb.list("/discover/tv", q, MediaKind.TV) },
+            { Tmdb.list("/discover/tv", "$q&page=${Taste.rotatingPage("${spec.name} Originals")}", MediaKind.TV) }).flatten()
     }
 
     /** Recent digital releases, new series and new seasons on the service (NewReleases), not the newest-dated (often unreleased) titles. */

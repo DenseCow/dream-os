@@ -37,7 +37,8 @@ object TitlePageAhead {
 
     /** The season the episode lane opens on (EpisodesSection's rule). */
     fun openingSeason(d: TitleDetails): Int? = if (!d.ref.isShow || d.seasons.isEmpty()) null else
-        d.progress?.season?.takeIf { s -> d.seasons.any { it.number == s && it.comingWords == null } } ?: d.defaultSeason ?: d.seasons.first().number
+        d.progress?.season?.takeIf { s -> d.seasons.any { it.number == s && it.comingWords == null && !it.special } }
+            ?: d.defaultSeason ?: d.seasons.firstOrNull { !it.special }?.number
 
     suspend fun ready(source: TitleSource, d: TitleDetails) {
         val s = openingSeason(d)
@@ -60,13 +61,14 @@ object TitlePageAhead {
         openingSeason(d)?.let { s -> season(source, d.ref, s) }
     }
 
-    /** A season tab under the pointer: its episodes and first stills, behind the viewer. */
-    fun season(source: TitleSource, ref: TitleRef, season: Int) {
-        if (source.seasonNow(ref, season) == null) ahead { seasonAndStills(source, ref, season) }
+    /** A season tab under the pointer ([special]: the Specials one): its episodes and first stills, behind the viewer. */
+    fun season(source: TitleSource, ref: TitleRef, season: Int, special: Boolean = false) {
+        if (source.seasonNow(ref, season, special) == null) ahead { seasonAndStills(source, ref, season, special) }
     }
 
-    private suspend fun seasonAndStills(source: TitleSource, ref: TitleRef, season: Int) {
-        val eps = source.seasonNow(ref, season) ?: runCatching { source.season(ref, season) }.getOrNull() ?: return
+    private suspend fun seasonAndStills(source: TitleSource, ref: TitleRef, season: Int, special: Boolean) {
+        val eps = source.seasonNow(ref, season, special)
+            ?: runCatching { source.season(ref, season, special) }.getOrNull() ?: return
         Images.prefetch(eps.take(STILLS).map { it.stillUrl })
     }
 }

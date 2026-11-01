@@ -26,7 +26,7 @@ import org.json.JSONArray
 import org.json.JSONObject
 
 /**
- * X-Ray data (Prime Video style): who is in what's playing, and one person's facts and best-known titles.
+ * X-Ray data: who is in what's playing, and one person's facts and best-known titles.
  * TMDB through [WatchHistory.tmdb]'s bounded cache, plus small LRUs of the parsed results. Blocking: call
  * off the main thread ([Net.background]).
  */
@@ -162,7 +162,7 @@ object XRayData {
 }
 
 /**
- * X-Ray in Dream Player (Prime Video style): the Cast & Characters button, or Up (from the timeline, or while
+ * X-Ray in Dream Player: the Cast & Characters button, or Up (from the timeline, or while
  * paused), brings in a strip of who's in this episode or movie along the bottom of the picture, which keeps
  * playing under a light dim: round headshots, the actor's name and the character's. Selecting a face opens that
  * person's card in place (facts, a few lines of biography, a row of their best-known titles) and pauses; a title
@@ -389,7 +389,8 @@ class PlayerXRay(
         strip.visibility = View.VISIBLE
         strip.alpha = 1f
         val head = LinearLayout(ctx).apply { orientation = LinearLayout.VERTICAL; setPadding(padH, 0, padH, 0) }
-        val context = if (r.type == "episode" && r.season != null && r.episode != null) "${r.title}  ·  S${r.season} · E${r.episode}" else r.title
+        val context = PlayFlow.episodeCode(r.isSpecial, r.season, r.episode, " · ")
+            ?.let { "${r.title}  ·  $it" } ?: r.title
         head.addView(kicker(context))
         head.addView(kit.label(if (r.type == "episode") "In This Episode" else "Cast", Ui.T_HEADLINE, fg, kit.semibold, Ui.TRACK_TITLE),
             LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT).apply { topMargin = 8.dp })
@@ -594,7 +595,7 @@ class PlayerXRay(
         frame.addView(art, FrameLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT))
         Net.image(ctx, art, t.poster("w185"), rank = i)
         images += art
-        // Two lines before an ellipsis ("John Wick: Chapter 4" whole).
+        // Two lines before an ellipsis (a long film title stays whole).
         val caption = kit.label(t.name, Ui.T_CAPTION, Ui.alpha(fg, 0.66f), kit.medium, lines = 2).apply { gravity = Gravity.CENTER_HORIZONTAL }
         return FlatLinear(ctx).apply {
             orientation = LinearLayout.VERTICAL

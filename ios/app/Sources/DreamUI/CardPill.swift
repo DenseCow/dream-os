@@ -77,6 +77,12 @@ public final class WatchedState {
         _ = version
         return WatchedLedger.shared.episodeWatched(show: show, season: season, episode: episode)
     }
+
+    /// A special the viewer actually finished, by any id it answers to (`Episode.specialIds`).
+    public func special(show: Int, anyOf ids: [String]) -> Bool {
+        _ = version
+        return WatchedLedger.shared.specialWatched(show: show, anyOf: ids)
+    }
 }
 
 public struct CardPill: View {

@@ -69,9 +69,8 @@ private struct UpNextCard: View {
     }
 
     private func line(_ n: PlayRequest?, _ ep: Episode?) -> String {
-        guard let n, let s = n.season, let e = n.episode else { return "" }
-        let name = n.episodeName ?? ep?.name
-        return ["S\(s) E\(e)", name].compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: "  ·  ")
+        guard let n else { return "" }
+        return EpisodeWords.playing(n.kind, season: n.season, episode: n.episode, title: n.episodeName ?? ep?.name) ?? ""
     }
 }
 
@@ -130,8 +129,9 @@ private struct StillWatching: View {
                 Text(session.request?.title.name ?? "").font(.system(size: 13, weight: .bold))
                     .foregroundStyle(.white.opacity(0.62)).lineLimit(1)
                 Text("Are You Still Watching?").font(.system(size: 34, weight: .bold)).foregroundStyle(.white)
-                if let r = session.request, let s = r.season, let e = r.episode {
-                    Text(["S\(s) E\(e)", r.episodeName ?? session.episodeInfo?.name].compactMap { $0 }.joined(separator: "  ·  "))
+                if let r = session.request, let line = EpisodeWords.playing(r.kind, season: r.season, episode: r.episode,
+                                                                            title: r.episodeName ?? session.episodeInfo?.name) {
+                    Text(line)
                         .font(.system(size: 17, weight: .medium)).foregroundStyle(.white.opacity(0.84))
                 }
                 HStack(spacing: 12) {

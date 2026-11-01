@@ -438,8 +438,12 @@ object NativeResolver {
         AnimeDubs.record(ctx, key(req), all.filter { !it.cam && allowed(it, f, ep) }.map { it.c.torrentName to it.c.hash }, want)
     }
 
-    private fun label(r: PlaybackRequest) =
-        if (r.type == "episode") "${r.title} S${r.season}E${r.episode}" else r.title + (r.year?.let { " ($it)" } ?: "")
+    private fun label(r: PlaybackRequest) = when {
+        r.type != "episode" -> r.title + (r.year?.let { " ($it)" } ?: "")
+        // A special is logged in the wire form, the way Cinemeta and Torrentio number it.
+        r.isSpecial -> "${r.title} " + (specials[key(r)]?.let { "S00E${it.number}" } ?: "special ${r.specialId}")
+        else -> "${r.title} S${r.season}E${r.episode}"
+    }
 
     private fun now() = SystemClock.elapsedRealtime()
 
@@ -456,8 +460,8 @@ object NativeResolver {
         known = acc?.any == true; checkedAt = now()
         if (acc == null || !acc.any) return none("no debrid account linked")
         val ep = req.type == "episode"
-        val s = req.season; val e = req.episode
-        if (ep && (s == null || e == null)) return none("no season/episode")
+        if (ep && !req.isSpecial && (req.season == null || req.episode == null)) return none("no season/episode")
+        if (req.isSpecial && wire(ctx, req) == null) return none("that special isn't listed any more")
         val imdb = imdbFor(ctx, req) ?: return none("no IMDb id")
         if (l.purpose != DebridPurpose.BROWSE) DreamSubtitles.prefetch(ctx, req, imdb) // alongside the scrape and the service: ready when the stream is
         // The user's installed scrapers are Dream Core's sources.
@@ -523,6 +527,42 @@ object NativeResolver {
     }
 
     /**
+     * What a special needs beside its own numbering: [alt] the same episode asked for the other way round
+     * (a scrape of its own), [forms] the other ways a release name may number it ([Candidate.altForms]).
+     *
+     * Dream OS asks for a special as S00E[n], the way Cinemeta and Torrentio number it (a stream request for
+     * series/{imdb}:0:1 is what answers with a copy of it). Scene and P2P names put it in the parent season
+     * instead ("<show> S01E00 <special title> 1080p ..."), and an index that searches by name only finds
+     * those when it is asked for that form, so both are asked for and accepted.
+     * Null for anything but a special. Blocking ([Specials], cached).
+     */
+    private class SpecialForms(val number: Int, val alt: PlaybackRequest?, val forms: List<Pair<Int, Int>>)
+
+    /** A special's wire form, worked out once per lookup and kept (the number is a view, so it is never stored). */
+    private val specials = ConcurrentHashMap<String, SpecialForms>()
+
+    private fun wire(ctx: Context, req: PlaybackRequest): SpecialForms? {
+        if (!req.isSpecial) return null
+        val k = key(req)
+        specials[k]?.let { return it }
+        val id = req.specialId ?: return null
+        val o = Specials.byId(ctx, req.tmdbId, id) ?: return null
+        val n = o.optInt("episode_number").takeIf { it > 0 } ?: return null
+        val parent = o.optInt(Specials.PARENT)
+        // TMDB's own season-0 number, when the air order gave this special a different one.
+        val tmdbNumber = o.optInt(Specials.TMDB_NUMBER)
+        val forms = listOfNotNull((parent to 0).takeIf { parent > 0 }, (0 to tmdbNumber).takeIf { tmdbNumber > 0 })
+        val title = req.episodeTitle ?: o.optString("name").takeIf { it.isNotBlank() && it != "null" }
+        // The alternate is the scene form itself: an ordinary-looking S[parent]E00 request, for the scrape only.
+        val alt = if (parent <= 0) null else
+            req.copy(specialId = null, season = parent, episode = 0, episodeTitle = title)
+        val sp = SpecialForms(n, alt, forms)
+        if (specials.size > 64) specials.clear()
+        specials[k] = sp
+        return sp
+    }
+
+    /**
      * The scrape for [req]: one already running or done in the last [INDEX_TTL] (an empty one is redone
      * after two minutes), else a new one. [play]: a user is waiting (its own thread lane); [light]: the
      * quick check (two fast providers, short limits, no season packs).
@@ -553,22 +593,27 @@ object NativeResolver {
      * [job]'s torrents as the ranking reads them (hosters need a hoster unlock Dream Core doesn't do yet). Junk
      * ([JUNK_WORDS]) never gets this far, so it can't be played, listed or counted as Available.
      */
-    private fun parsedOf(job: ScraperEngine.Job, season: Int?, episode: Int?): List<Parsed> {
+    private fun parsedOf(job: ScraperEngine.Job, season: Int?, episode: Int?,
+                         alts: List<Pair<Int, Int>> = emptyList()): List<Parsed> {
         if (parsedMemo.size > MAX_PARSED) parsedMemo.clear()
+        val a = alts.joinToString(",") { "${it.first}x${it.second}" }
         return job.items().mapNotNull { it ->
             val h = it.hash ?: return@mapNotNull null
-            parsedMemo.getOrPut("$h|$season|$episode|${it.provider}") { scraped(it, h, season, episode) }
+            parsedMemo.getOrPut("$h|$season|$episode|$a|${it.provider}") { scraped(it, h, season, episode, alts) }
         }.filterNot { has(it.text, *JUNK_WORDS) }
     }
 
-    private fun merged(job: ScraperEngine.Job, quick: ScraperEngine.Job?, season: Int?, episode: Int?): List<Parsed> {
-        val a = parsedOf(job, season, episode)
-        if (quick == null || quick === job) return a
+    /** [job]'s sources with [extras]' (the quick check's, a special's second scrape's), each torrent once. */
+    private fun merged(job: ScraperEngine.Job, extras: List<ScraperEngine.Job?>, season: Int?, episode: Int?,
+                       alts: List<Pair<Int, Int>> = emptyList()): List<Parsed> {
+        val a = parsedOf(job, season, episode, alts)
+        val more = extras.filterNotNull().filter { it !== job }
+        if (more.isEmpty()) return a
         val seen = a.mapTo(HashSet()) { it.c.hash }
-        return a + parsedOf(quick, season, episode).filter { seen.add(it.c.hash) }
+        return a + more.flatMap { parsedOf(it, season, episode, alts) }.filter { seen.add(it.c.hash) }
     }
 
-    private fun scraped(i: ScraperEngine.Item, hash: String, season: Int?, episode: Int?): Parsed {
+    private fun scraped(i: ScraperEngine.Item, hash: String, season: Int?, episode: Int?, alts: List<Pair<Int, Int>>): Parsed {
         val text = i.name.uppercase(java.util.Locale.US)
         var cam = false
         val quality = when (i.quality.uppercase(java.util.Locale.US)) {
@@ -581,7 +626,7 @@ object NativeResolver {
         cam = cam || has(text, *CAM_WORDS)
         // A season pack's size is the whole season's: unknown per episode (size limits and the Wi-Fi-friendly rank skip it).
         val bytes = if (i.pack) 0L else i.bytes
-        val c = Candidate(hash, i.name, null, null, bytes, quality, i.seeders, season, episode)
+        val c = Candidate(hash, i.name, null, null, bytes, quality, i.seeders, season, episode, alts)
         val dubbed = CYRILLIC.containsMatchIn(i.name) || has(text, "DUB", "DUBBED", "DUBLADO", "MULTI", "DUAL", "TRUEFRENCH", "FRENCH", "ITA", "LATINO")
         return Parsed(c, text, cam, dubbed, pack = i.pack, provider = i.provider)
     }
@@ -621,13 +666,20 @@ object NativeResolver {
         // Only a real Play sets the user's filters aside when nothing passes them (never a pre-resolve: no speculative CAM unlocks).
         fun relaxOk() = l.purpose == DebridPurpose.PLAY
         val ep = req.type == "episode"
-        val s = if (ep) req.season else null
-        val e = if (ep) req.episode else null
+        // Release names write a special as S00E[n] ([DebridFiles]), so the wire form is what the matching is given.
+        val wire = wire(ctx, req)
+        val s = if (!ep) null else if (req.isSpecial) 0 else req.season
+        val e = if (!ep) null else if (req.isSpecial) wire?.number else req.episode
         // Browsing (focus resting on a card): only the quick check (two fast providers); a details page or Play: the full scrape.
         if (l.purpose == DebridPurpose.BROWSE) { gather(ctx, req, imdb, play = false, light = true); return null }
         val job = gather(ctx, req, imdb, play = l.purpose >= DebridPurpose.LIST)
         // What the quick check already found counts at once (the full scrape adds to it as it comes in).
         val quick = gathers["$k#quick"]?.takeIf { it.fresh(INDEX_TTL) }?.value
+        // A special is named both ways ([wire]): the other form is scraped beside it and ranked with it.
+        val sp = wire(ctx, req)
+        val alts = sp?.forms.orEmpty()
+        val alt = sp?.alt?.let { gather(ctx, it, imdb, play = l.purpose >= DebridPurpose.LIST) }
+        if (alt != null) Log.w(TAG, "Dream Core: ${label(req)} is a special, also looking for ${label(sp.alt!!)}")
         val f = filters(ctx)
         val rt = runtimeFor(ctx, req, f)
         val want = wantLang(ctx)
@@ -644,7 +696,7 @@ object NativeResolver {
             val avoid = skip + tried
             while (true) {
                 val v = job.version
-                all = merged(job, quick, s, e)
+                all = merged(job, listOf(quick, alt), s, e, alts)
                 kept = choose(all, f, ep, avoid, rt, want, resume = resume, dub = dub)
                 val t = now()
                 val until = l.deadline - DEBRID_RESERVE_MS
@@ -717,7 +769,7 @@ object NativeResolver {
             val at = svcs.joinToString("/") { it.key.uppercase() }
             if (round >= 3) return none("none of ${tried.size} cached at $at", Miss.NOT_READY)
             if (now() >= l.deadline) return none("budget over; none of ${tried.size} cached at $at")
-            if (job.done && chooseRelaxed(merged(job, quick, s, e), f, ep, skip + tried, rt, want, relaxOk(), resume, dub).first.isEmpty())
+            if (job.done && chooseRelaxed(merged(job, listOf(quick, alt), s, e, alts), f, ep, skip + tried, rt, want, relaxOk(), resume, dub).first.isEmpty())
                 return none("none of ${tried.size} cached at $at", Miss.NOT_READY)
         }
     }
@@ -817,14 +869,19 @@ object NativeResolver {
         val app = ctx.applicationContext
         val deadline = now() + budgetMs
         val ep = req.type == "episode"
-        val s = req.season; val e = req.episode
+        val sp = wire(app, req)
+        val s = if (!ep) null else if (req.isSpecial) 0 else req.season
+        val e = if (!ep) null else if (req.isSpecial) sp?.number else req.episode
         val acc = DebridAccounts.get(app)
         val imdb = if (req.trailer || acc?.any != true || (ep && (s == null || e == null)) || !Scrapers.active(app)) null else imdbFor(app, req)
         if (imdb == null) emptyList() else {
             // Everything the scrapers find for it (the lookup's own scrape when one ran: Change Source opens at once).
             val job = gather(app, req, imdb, play = true)
+            val sp = wire(app, req)
+            val alt = sp?.alt?.let { gather(app, it, imdb, play = true) }
             job.awaitDone(deadline)
-            val all = parsedOf(job, if (ep) s else null, if (ep) e else null)
+            alt?.awaitDone(deadline)
+            val all = merged(job, listOf(alt), s, e, sp?.forms.orEmpty())
             val f = filters(app)
             val rt = runtimeFor(app, req, f)
             val bad = failed[key(req)]?.keys.orEmpty()
@@ -872,7 +929,9 @@ object NativeResolver {
     internal fun survey(ctx: Context, req: PlaybackRequest, budgetMs: Long = 8_000): Survey? = try {
         val app = ctx.applicationContext
         val ep = req.type == "episode"
-        val s = req.season; val e = req.episode
+        val sp = wire(app, req)
+        val s = if (!ep) null else if (req.isSpecial) 0 else req.season
+        val e = if (!ep) null else if (req.isSpecial) sp?.number else req.episode
         if (!Scrapers.active(app)) throw IllegalStateException("no scraper sources added") // asked again later
         val imdb = if (ep && (s == null || e == null)) null else imdbFor(app, req)
         if (imdb == null) null else {
@@ -883,11 +942,11 @@ object NativeResolver {
             // A full scrape (a page's pre-resolve) runs up to 20 s: the first real release answers the pill.
             else while (!job.done) {
                 val v = job.version
-                if (parsedOf(job, if (ep) s else null, if (ep) e else null).any { !it.cam }) break
+                if (parsedOf(job, s, e).any { !it.cam }) break
                 if (!job.await(v, until)) break
             }
             if (job.count == 0 && (!job.done || job.failedAll)) throw IllegalStateException("the scrapers didn't answer") // asked again later
-            val all = parsedOf(job, if (ep) s else null, if (ep) e else null)
+            val all = parsedOf(job, s, e, sp?.forms.orEmpty())
             recordNames(app, req, all, wantLang(app))
             val (cams, good) = all.partition { it.cam }
             // The best release the user would play: Dolby Vision / HDR ones they hide don't count; within a quality, DV, then HDR first.

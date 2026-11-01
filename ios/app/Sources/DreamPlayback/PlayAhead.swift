@@ -48,14 +48,23 @@ public final class PlayAhead: LookAheadService, @unchecked Sendable {
             await sleepMs(ms)
             guard let self, !Task.isCancelled else { return }
             let items = await Services.shared.history.continueWatching()
-            let reqs = items.filter { !$0.hidden }.sorted { $0.updatedAt > $1.updatedAt }.prefix(Self.continueItems).map { e -> PlayRequest in
-                e.title.kind == .tv
-                    ? PlayRequest(title: e.title, season: max(1, e.season ?? 1), episode: max(1, e.episode ?? 1), episodeName: e.episodeName)
-                    : PlayRequest(title: e.title)
-            }
+            let reqs = items.filter { !$0.hidden }.sorted { $0.updatedAt > $1.updatedAt }.prefix(Self.continueItems).map(Self.request)
             self.continueWatching(Array(reqs))
         }
         lock.withLock { cwTask = t }
+    }
+
+    /// The look-ahead's request for one Continue Watching row. A special is its own kind, named by its source id:
+    /// read as a numbered episode it would warm the wrong thing.
+    private static func request(_ e: HistoryEntry) -> PlayRequest {
+        switch e.kind {
+        case .movie: return PlayRequest(title: e.title)
+        // A row holds only the id it was written under, so there is no alias to pass on; the catalog match in
+        // `specialForms` accepts either form, which is what lets an older id still resolve.
+        case .special: return .special(title: e.title, specialId: e.specialId ?? "", name: e.episodeName)
+        case .episode: return PlayRequest(title: e.title, season: max(1, e.season ?? 1), episode: max(1, e.episode ?? 1),
+                                          episodeName: e.episodeName)
+        }
     }
 
     // MARK: LookAheadService
@@ -123,11 +132,7 @@ public final class PlayAhead: LookAheadService, @unchecked Sendable {
     public func refreshNow(budgetMs: Int64) async {
         guard NativeResolver.shared.available() else { return }
         let items = await Services.shared.history.continueWatching()
-        let reqs = items.filter { !$0.hidden }.sorted { $0.updatedAt > $1.updatedAt }.prefix(Self.continueItems).map { e -> PlayRequest in
-            e.title.kind == .tv
-                ? PlayRequest(title: e.title, season: max(1, e.season ?? 1), episode: max(1, e.episode ?? 1), episodeName: e.episodeName)
-                : PlayRequest(title: e.title)
-        }
+        let reqs = items.filter { !$0.hidden }.sorted { $0.updatedAt > $1.updatedAt }.prefix(Self.continueItems).map(Self.request)
         let end = Mono.now() + budgetMs
         for r in reqs {
             if Mono.now() >= end { break }

@@ -37,10 +37,18 @@ class CoreTitleSource(
     private fun kindOf(ref: TitleRef) = if (ref.isShow) MediaKind.TV else MediaKind.MOVIE
 
     /** [airDate]: an episode's own listed day (its pill and the "still ahead" rule go by it); else the title's. */
-    private fun target(d: CoreDetails, season: Int? = null, episode: Int? = null, episodeName: String? = null, airDate: String? = null): PlayTarget = PlayTarget(
-        kind = if (season != null) PKind.EPISODE else PKind.MOVIE,
+    private fun target(d: CoreDetails, season: Int? = null, episode: Int? = null, episodeName: String? = null,
+                       airDate: String? = null, specialId: String = ""): PlayTarget = PlayTarget(
+        // A special is its own kind: it plays like an episode and is never asked for as a movie.
+        kind = when {
+            specialId.isNotEmpty() -> PKind.SPECIAL
+            season != null -> PKind.EPISODE
+            else -> PKind.MOVIE
+        },
         tmdbId = d.title.id, title = d.title.name, year = d.title.year.toIntOrNull(), imdb = d.imdbId,
-        season = season, episode = episode, episodeTitle = episodeName,
+        // A special carries no place in the series, only its identity.
+        season = season?.takeIf { specialId.isEmpty() }, episode = episode?.takeIf { specialId.isEmpty() },
+        episodeTitle = episodeName, specialId = specialId,
         originalLanguage = d.title.lang.ifBlank { null }, spokenLanguages = d.info?.spoken ?: emptyList(),
         runtimeMin = d.runtime, airDate = airDate?.ifBlank { null } ?: d.title.date.ifBlank { null },
         backdrop = d.title.backdrop("w1280"), poster = d.title.poster(), logo = d.logo(),
@@ -91,6 +99,9 @@ class CoreTitleSource(
         // A first look at a title asks OMDb (and maybe Rotten Tomatoes' site): seconds at worst. The page doesn't wait
         // past SCORES_WAIT_MS for them; the kept scores (none yet) show, and the answer is kept for the next visit.
         val asking = side.async { runCatching { titles.scores(d) }.getOrNull() }
+        // The specials catalog asks TVmaze beside the TMDB details, so the tab is there on the first visit; if TVmaze
+        // is slow the page shows without it and the next build has the answer from the catalog's cache.
+        val askingSpecials = if (ref.isShow) side.async { runCatching { titles.specialsCount(ref.tmdbId) }.getOrNull() } else null
         val scores = kotlinx.coroutines.withTimeoutOrNull(SCORES_WAIT_MS) { asking.await() }
             ?: runCatching { com.dreamos.desktop.core.content.Ratings.cached(d) }.getOrNull()
         val entry = runCatching { history.entry(t.key) }.getOrNull()
@@ -111,7 +122,7 @@ class CoreTitleSource(
                 val a = date(s.airDate)
                 SeasonInfo(s.number, seasonName(s.name, s.number), s.episodeCount, comingWords = a?.let { comingShort(it, today) } ?: "Upcoming",
                     comingLong = a?.let { "Coming " + TitleWords.long(it) } ?: TitleWords.TBA)
-            }
+            } + specialsTab(ref, askingSpecials)
         val release = if (ref.isShow) date(info.premiere) ?: date(t.date)
         else listOfNotNull(date(info.theatrical), date(info.digital)).minOrNull() ?: date(t.date)
         return TitleDetails(
@@ -151,9 +162,23 @@ class CoreTitleSource(
         const val INSTANT_MS = 5 * 60_000L
         const val MAX_BUILT = 48
         const val SCORES_WAIT_MS = 700L
+        /** How long the page waits on the specials catalog (TVmaze) before showing without the tab. */
+        const val SPECIALS_WAIT_MS = 700L
         const val SEASON_FRESH_MS = 10 * 60_000L
         const val MAX_SEASONS = 24
         const val MAX_TARGETS = 400
+    }
+
+    /**
+     * The Specials tab, after every season that is out and every one still to come, so the chosen season stays
+     * Season 1 and Play keeps naming a real episode. Nothing shows when the show has no specials.
+     */
+    private suspend fun specialsTab(ref: TitleRef, asking: kotlinx.coroutines.Deferred<Int?>?): List<SeasonInfo> {
+        if (!ref.isShow) return emptyList()
+        val n = kotlinx.coroutines.withTimeoutOrNull(SPECIALS_WAIT_MS) { asking?.await() }
+            ?: runCatching { titles.specialsCount(ref.tmdbId, peek = true) }.getOrDefault(0)
+        if (n <= 0) return emptyList()
+        return listOf(SeasonInfo(0, com.dreamos.desktop.core.model.EpisodeCode.SPECIALS, n, special = true))
     }
 
     private fun seasonName(name: String, n: Int) = name.takeIf { it.isNotBlank() && !it.startsWith("Season") && it.length <= 22 } ?: "Season $n"
@@ -213,9 +238,9 @@ class CoreTitleSource(
         return out
     }
 
-    override suspend fun season(ref: TitleRef, season: Int): List<EpisodeInfo> {
+    override suspend fun season(ref: TitleRef, season: Int, special: Boolean): List<EpisodeInfo> {
         // The first episode still ahead gets one quick look in the index first: one already up plays now.
-        val eps = titles.episodesChecked(ref.tmdbId, season)
+        val eps = if (special) titles.specials(ref.tmdbId, checked = true) else titles.episodesChecked(ref.tmdbId, season)
         val d = known["tv:${ref.tmdbId}"]
         val entry = runCatching { history.entry("tv:${ref.tmdbId}") }.getOrNull()
         val today = LocalDate.now()
@@ -223,14 +248,15 @@ class CoreTitleSource(
         // Recent and early episodes' pills: checked now, ahead of the cards' queue (this season is on screen or next).
         val due = out.mapNotNull { e -> episodeTargets[epKey(ref.tmdbId, e.season, e.number)] }
         if (due.isNotEmpty()) availability?.ask(due, priority = true)
-        synchronized(seasons) { seasons[seasonKey(ref, season)] = Kept(System.currentTimeMillis(), out) }
+        synchronized(seasons) { seasons[seasonKey(ref, season, special)] = Kept(System.currentTimeMillis(), out) }
         return out
     }
 
     // ---- preloading ----
 
     private class Kept<T>(val at: Long, val value: T)
-    private fun seasonKey(ref: TitleRef, season: Int) = "${ref.tmdbId}:$season"
+    private fun seasonKey(ref: TitleRef, season: Int, special: Boolean = false) =
+        if (special) "${ref.tmdbId}:specials" else "${ref.tmdbId}:$season"
     private fun epKey(show: Int, season: Int, episode: Int) = "tv:$show:$season:$episode"
 
     /** Seasons built in the last [SEASON_FRESH_MS]: at most [MAX_SEASONS] lists of a few dozen episodes (~10 KB each). */
@@ -246,8 +272,11 @@ class CoreTitleSource(
         override fun removeEldestEntry(e: MutableMap.MutableEntry<Int, PlayTarget>?) = size > MAX_TARGETS
     })
 
-    override fun seasonNow(ref: TitleRef, season: Int): List<EpisodeInfo>? = synchronized(seasons) { seasons[seasonKey(ref, season)] }
+    override fun seasonNow(ref: TitleRef, season: Int, special: Boolean): List<EpisodeInfo>? = synchronized(seasons) { seasons[seasonKey(ref, season, special)] }
         ?.takeIf { System.currentTimeMillis() - it.at < SEASON_FRESH_MS }?.value
+
+    override val specialsFound: kotlinx.coroutines.flow.Flow<Int>
+        get() = com.dreamos.desktop.core.content.Specials.found
 
     override val pillUpdates: kotlinx.coroutines.flow.Flow<String>
         get() = availability?.updates?.let { u -> kotlinx.coroutines.flow.flow { u.collect { emit(it.first) } } } ?: kotlinx.coroutines.flow.emptyFlow()
@@ -297,16 +326,23 @@ class CoreTitleSource(
     private suspend fun episode(e: Episode, d: CoreDetails?, entry: com.dreamos.desktop.core.model.HistoryEntry?, today: LocalDate): EpisodeInfo {
         val air = date(e.airDate)
         val upcoming = e.upcoming && !e.outEarly
-        val inProgress = entry != null && entry.season == e.season && entry.episode == e.number && !entry.finished && entry.progress > 0
+        // A special has its own entry; the show's says nothing about it, and its parent season could even match.
+        val own = if (e.isSpecial) runCatching { history.specialEntry(e.showId, e.specialId) }.getOrNull() else entry
+        val inProgress = own != null && (e.isSpecial || own.season == e.season && own.episode == e.number) &&
+            !own.finished && own.progress > 0
         val recent = e.outEarly || (air != null && !air.isAfter(today) && air.isAfter(today.minusDays(21)))
-        val target = d?.let { target(it, e.season, e.number, e.name, e.airDate) }
+        val target = d?.let { target(it, e.season, e.number, e.name, e.airDate, e.specialId) }
         if (recent && target != null) episodeTargets[epKey(e.showId, e.season, e.number)] = target
         return EpisodeInfo(
-            season = e.season, number = e.number, name = e.name, runtimeMin = e.runtime.takeIf { it > 0 }, airDate = air,
+            season = e.season, number = e.number, name = e.name, kind = e.kind, specialId = e.specialId,
+            runtimeMin = e.runtime.takeIf { it > 0 }, airDate = air,
             overview = e.overview, stillUrl = e.still("w500"),
             fallbackArt = listOfNotNull(d?.title?.backdrop("w780"), d?.title?.poster()),
-            progress = if (inProgress) entry!!.progress.toFloat() else 0f,
-            watched = runCatching { history.isEpisodeWatched(e.showId, e.season, e.number) }.getOrDefault(false),
+            progress = if (inProgress) own!!.progress.toFloat() else 0f,
+            watched = runCatching {
+                if (e.isSpecial) history.isSpecialWatched(e.showId, e.specialId)
+                else history.isEpisodeWatched(e.showId, e.season, e.number)
+            }.getOrDefault(false),
             pill = if (recent && target != null) pill(availability?.cardPill(target)) else null,
             upcoming = upcoming,
             // Upcoming.coming: "Coming Friday at 9:00 PM" (TVmaze's exact time), "Coming Tomorrow", "Coming Nov 14", else TBA.

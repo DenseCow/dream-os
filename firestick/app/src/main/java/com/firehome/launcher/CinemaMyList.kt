@@ -185,7 +185,7 @@ class CinemaMyList(shell: CinemaShell) : CinemaRowsPage(shell) {
 
 /**
  * My List's chip line: the type (All · Movies · TV Shows) and, after a quiet divider, the order (Recently
- * Added · A–Z), one current chip in each group. Hulu's chips ([CinemaKit.chip]): OK picks one, and so does
+ * Added · A–Z), one current chip in each group. The category chips ([CinemaKit.chip]): OK picks one, and so does
  * resting on it a moment, as on the other pages. Left and Right walk the whole line.
  */
 class MyListChips(private val kit: CinemaKit, typeAt: Int, orderAt: Int, private val onPick: (Int, Int) -> Unit) : FlatLinear(kit.ctx), CinemaSection {
@@ -222,7 +222,7 @@ class MyListChips(private val kit: CinemaKit, typeAt: Int, orderAt: Int, private
             base?.onFocusChange(v, has)
             rest?.let { removeCallbacks(it) }
             rest = null
-            // Resting on a chip picks it, as Hulu's chips do on the other pages.
+            // Resting on a chip picks it, as the chips do on the other pages.
             if (has) rest = Runnable { if (v.isFocused) v.performClick() }.also { postDelayed(it, REST_MS) }
         }
     }

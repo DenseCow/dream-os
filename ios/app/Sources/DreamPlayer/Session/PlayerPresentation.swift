@@ -281,10 +281,8 @@ public final class PlayerPresentation {
     static func line(for s: PlayerSession) -> String {
         guard let r = s.request else { return "" }
         if s.isTrailer { return "Trailer" }
-        if let se = r.season, let e = r.episode {
-            let name = r.episodeName ?? s.episodeInfo?.name
-            return ["S\(se) E\(e)", name].compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: "  ·  ")
-        }
+        if let line = EpisodeWords.playing(r.kind, season: r.season, episode: r.episode,
+                                           title: r.episodeName ?? s.episodeInfo?.name) { return line }
         return ["Movie", r.title.year.isEmpty ? nil : r.title.year].compactMap { $0 }.joined(separator: "  ·  ")
     }
 }

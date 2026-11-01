@@ -148,6 +148,9 @@ internal object TraktSync {
             val body = buildJsonObject {
                 if (item.movie) putJsonArray("movies") {
                     addJsonObject { putJsonObject("ids") { put("tmdb", item.tmdb) }; put("watched_at", at) }
+                } else if (item.episodeTmdb > 0) putJsonArray("episodes") {
+                    // A special by TMDB's episode id, the only numbering Trakt and Dream OS agree on.
+                    addJsonObject { putJsonObject("ids") { put("tmdb", item.episodeTmdb) }; put("watched_at", at) }
                 } else putJsonArray("shows") {
                     addJsonObject {
                         putJsonObject("ids") { put("tmdb", item.tmdb) }

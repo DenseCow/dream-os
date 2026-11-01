@@ -13,6 +13,8 @@ class TitlesImpl : Titles {
     override fun cachedDetails(kind: MediaKind, id: Int): TitleDetails? = Details.cachedDetails(kind, id)
     override suspend fun episodes(showId: Int, season: Int): List<Episode> = withContext(Dispatchers.IO) { Details.episodes(showId, season) }
     override suspend fun episodesChecked(showId: Int, season: Int): List<Episode> = withContext(Dispatchers.IO) { Details.episodes(showId, season, askEarly = true) }
+    override suspend fun specials(showId: Int, checked: Boolean): List<Episode> = withContext(Dispatchers.IO) { Details.specials(showId, askEarly = checked) }
+    override suspend fun specialsCount(showId: Int, peek: Boolean): Int = withContext(Dispatchers.IO) { Details.specialsCount(showId, peek) }
     override suspend fun scores(details: TitleDetails): Scores = withContext(Dispatchers.IO) {
         try { Ratings.scores(details) } catch (e: Exception) { Ratings.cached(details) }
     }

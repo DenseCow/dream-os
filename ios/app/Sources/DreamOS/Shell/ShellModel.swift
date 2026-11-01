@@ -71,9 +71,11 @@ final class ShellModel {
     /// last viewing still holds the episode and spot it had then: an older episode, a quarter in). fire-home
     /// `MainActivity.resumeWatching`.
     func resume(_ item: CatalogItem) {
-        let key = item.title.key
+        // The row this very card points at. A special has its own row, so finding it by the show's key would resume
+        // the show's episode instead of the special the viewer tapped.
+        let r = item.playRequest
         Task { @MainActor [weak self] in
-            let now = await Services.shared.history.entry(for: key)
+            let now = await Services.shared.history.recent().filter { !$0.hidden }.forRequest(r)
             self?.play(now.map { ContinueCard.item($0) } ?? item)
         }
     }

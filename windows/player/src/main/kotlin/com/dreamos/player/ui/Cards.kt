@@ -89,7 +89,7 @@ fun Curtain(s: PlayerSession, stage: StageControl) {
             Spacer(Modifier.height(12.dp))
             val line = when {
                 s.trailer -> "Trailer"
-                t.isEpisode -> "S${t.season} · E${t.episode}" + ((d?.episodeName ?: t.episodeTitle)?.let { "    $it" } ?: "")
+                t.isEpisode -> playingLine(t, d?.episodeName ?: t.episodeTitle, " · ", "    ")
                 else -> (d?.year ?: t.year)?.toString()
             }
             if (line != null) Text(line, style = Look.Line, color = Look.Text2, maxLines = 1, overflow = TextOverflow.Ellipsis)
@@ -160,7 +160,7 @@ private fun PauseFacts(s: PlayerSession) {
     val t = s.target
     val d = s.details
     Spacer(Modifier.height(12.dp))
-    val line = if (t.isEpisode) "S${t.season} · E${t.episode}" + ((d?.episodeName ?: t.episodeTitle)?.let { "  $it" } ?: "")
+    val line = if (t.isEpisode) playingLine(t, d?.episodeName ?: t.episodeTitle, " · ", "  ")
     else listOfNotNull((d?.year ?: t.year)?.toString(), d?.runtimeMin?.takeIf { it > 0 }?.let(::runtimeText), d?.genres?.take(2)?.joinToString(", ")?.ifEmpty { null }).joinToString(SEP)
     Text(line, style = Look.Line, color = Look.Text)
     Spacer(Modifier.height(14.dp))
@@ -207,7 +207,7 @@ private fun UpNextCard(s: PlayerSession, u: PlayerSession.PostPlay.UpNext, modif
                     Spacer(Modifier.height(6.dp))
                     // One line (two at most): "S1 E3  ·  Name" in white, "  ·  45 min" after it in gray (PostPlay.showUpNext).
                     val name = (nd?.episodeName ?: n.episodeTitle)?.takeIf { it.isNotBlank() }
-                    val ep = "S${n.season} E${n.episode}" + (name?.let { "$SEP$it" } ?: "")
+                    val ep = playingLine(n, name)
                     // "·  15 min" stays whole and never starts a line: a long name wraps before it instead.
                     val rt = nd?.episodeRuntimeMin?.takeIf { it > 0 }?.let { "\u00A0\u00A0·\u00A0\u00A0" + runtimeText(it).replace(' ', '\u00A0') }.orEmpty()
                     Text(
@@ -278,7 +278,7 @@ private fun StillWatching(s: PlayerSession) {
             Spacer(Modifier.height(8.dp))
             Text("Are You Still Watching?", style = Look.SheetTitle, color = Look.Text)
             Spacer(Modifier.height(8.dp))
-            Text("S${t.season} E${t.episode}" + ((s.details?.episodeName ?: t.episodeTitle)?.let { "$SEP$it" } ?: ""), style = Look.Line, color = Look.Text2)
+            Text(playingLine(t, s.details?.episodeName ?: t.episodeTitle), style = Look.Line, color = Look.Text2)
             Spacer(Modifier.height(24.dp))
             Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                 PillButton("Continue Watching", { s.continueWatching() }, Glyph.PLAY, primary = true)

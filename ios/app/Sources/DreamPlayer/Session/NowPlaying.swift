@@ -23,8 +23,9 @@ enum NowPlaying {
         var info: [String: Any] = [:]
         info[MPMediaItemPropertyTitle] = r?.title.name ?? "Dream Player"
         if s.isTrailer { info[MPMediaItemPropertyArtist] = "Trailer" }
-        else if let r, let se = r.season, let e = r.episode {
-            info[MPMediaItemPropertyArtist] = "S\(se) E\(e)" + ((r.episodeName ?? s.episodeInfo?.name).map { " · \($0)" } ?? "")
+        else if let r, let line = EpisodeWords.playing(r.kind, season: r.season, episode: r.episode,
+                                                       title: r.episodeName ?? s.episodeInfo?.name, join: " · ") {
+            info[MPMediaItemPropertyArtist] = line
         } else if let y = r?.title.year, !y.isEmpty { info[MPMediaItemPropertyArtist] = y }
         info[MPMediaItemPropertyPlaybackDuration] = s.state.duration
         info[MPNowPlayingInfoPropertyElapsedPlaybackTime] = s.state.position

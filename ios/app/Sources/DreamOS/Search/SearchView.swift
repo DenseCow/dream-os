@@ -91,7 +91,7 @@ struct SearchView: View {
 
     // MARK: Suggestions (CinemaSearch.showSuggestions)
 
-    /// Netflix-style autocomplete: a genre whose name starts with what's typed ("hor" → Horror), then recent searches
+    /// Autocomplete: a genre whose name starts with what's typed ("hor" → Horror), then recent searches
     /// and titles that match, prefix matches first, no repeats.
     private var suggestions: [String] {
         let q = trimmed

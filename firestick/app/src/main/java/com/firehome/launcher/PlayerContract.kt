@@ -53,8 +53,14 @@ data class PlaybackRequest(
     val tmdbId: Int,                // movie id, or the SHOW id for episodes
     val imdb: String? = null,
     val year: Int? = null,
-    val season: Int? = null,
+    val season: Int? = null,        // null for a movie, and for a special, which belongs to no season
     val episode: Int? = null,
+    /**
+     * A special ([Specials]) rather than an episode of a season: its id, which is both its kind and what
+     * identifies it (STANDARDS section 5). [season] and [episode] are null for one, since its place in air
+     * order is worked out at the edge for the forms that need it ([Specials.numberOf]).
+     */
+    val specialId: String? = null,
     val episodeTitle: String? = null,
     val backdrop: String? = null,   // TMDB image URLs
     val poster: String? = null,
@@ -64,7 +70,10 @@ data class PlaybackRequest(
     val autoplayNext: Boolean = true,
     /** A title's trailer played in Dream Player: no sources, skip, post-play or Continue Watching. */
     val trailer: Boolean = false,
-)
+) {
+    /** A special ([Specials]): its own kind, outside the show's order. */
+    val isSpecial get() = specialId != null
+}
 
 /** One audio or text track of the current stream. */
 data class Track(

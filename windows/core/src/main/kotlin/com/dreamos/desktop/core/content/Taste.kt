@@ -60,35 +60,90 @@ object Taste {
 
     /** TMDB's score steadied by its vote count (Bayesian average toward 6.4), mapped 5.5..8.5 to 0..1. */
     fun quality(t: Title): Double {
-        val m = if (t.kind == MediaKind.MOVIE) 300.0 else 100.0
+        val m = if (t.kind == MediaKind.MOVIE) AlgoRules.QUALITY_VOTES_MOVIE else AlgoRules.QUALITY_VOTES_TV
         val v = maxOf(0, t.votes).toDouble()
-        val q = if (t.rating > 0 && v > 0) (v * t.rating + m * 6.4) / (v + m) else 6.0
-        return ((q - 5.5) / 3.0).coerceIn(0.0, 1.0)
+        val q = if (t.rating > 0 && v > 0) (v * t.rating + m * AlgoRules.QUALITY_PRIOR) / (v + m) else AlgoRules.QUALITY_UNKNOWN
+        return ((q - AlgoRules.QUALITY_LOW) / AlgoRules.QUALITY_SPAN).coerceIn(0.0, 1.0)
     }
+
+    /**
+     * A title's place in the day's rotation, 0..1: fixed for [key] on [day], unrelated to the day before. The same
+     * all day (nothing moves while anyone looks), another order tomorrow. String.hashCode is specified, so the three
+     * builds work out the same number.
+     */
+    fun rotation(key: String, day: Int): Double {
+        var h = key.hashCode() * 31 + day
+        h = h xor (h ushr 16); h *= 0x45d9f3b; h = h xor (h ushr 16); h *= 0x45d9f3b; h = h xor (h ushr 16)
+        return (h and 0xFFFF) / 65535.0
+    }
+
+    /**
+     * The day the rotation turns on, in the viewer's own zone: year times 400 plus the day of the year, which is what
+     * the Fire Stick works out. The three builds have to land on the same number or they rotate on different days,
+     * and then "the same all day" is true on each but of a different day's order.
+     */
+    fun dayNumber(): Int = java.util.Calendar.getInstance().let {
+        it.get(java.util.Calendar.YEAR) * 400 + it.get(java.util.Calendar.DAY_OF_YEAR)
+    }
+
+    /** A page from 1 to [pages] that stays the same all day for [row] and moves on tomorrow. */
+    fun dailyPage(row: String, pages: Int, day: Int = dayNumber()): Int = 1 + Math.floorMod(day * 31 + row.hashCode(), pages)
+
+    /**
+     * The page a row fetches after its first: 2 to 1 + [AlgoRules.DEEPER_PAGES], the same all day for [row] and
+     * another tomorrow, so a row with no daily page of its own still changes day to day at no extra call.
+     */
+    fun rotatingPage(row: String, day: Int = dayNumber()): Int = 1 + dailyPage(row, AlgoRules.DEEPER_PAGES, day)
 
     /**
      * [list] re-ranked for [p]: the list's own order still counts for half, taste for a quarter (scaled by how well it
      * is known), steadied quality for a fifth and freshness a little; then franchises are spread out. Stable.
      */
-    fun rank(p: TasteProfile, list: List<Title>): List<Title> {
-        if (list.size <= 2) return list
+    fun rank(p: TasteProfile, list: List<Title>, artFirst: Boolean = false, day: Int = dayNumber()): List<Title> {
+        if (list.size <= 1) return list
         val n = maxOf(1, list.size - 1).toDouble()
         val y1 = RowMix.yearsAgo(1); val y3 = RowMix.yearsAgo(3); val y10 = RowMix.yearsAgo(10)
-        fun fresh(t: Title) = if (t.date.length != 10) 0.0 else if (t.date >= y1) 1.0 else if (t.date >= y3) 0.6 else if (t.date >= y10) 0.3 else 0.0
+        fun fresh(t: Title) = if (t.date.length != 10) 0.0
+            else if (t.date >= y1) AlgoRules.FRESH_1Y else if (t.date >= y3) AlgoRules.FRESH_3Y
+            else if (t.date >= y10) AlgoRules.FRESH_10Y else 0.0
         val scored = list.mapIndexed { i, t ->
-            val order = 1 - i / n
-            Triple(t, 0.50 * order + 0.25 * p.strength * p.affinity(t) + 0.20 * quality(t) + 0.05 * fresh(t), i)
+            val s = AlgoRules.W_ORDER * (1 - i / n) + AlgoRules.W_TASTE * p.strength * p.affinity(t) +
+                AlgoRules.W_QUALITY * quality(t) + AlgoRules.W_FRESH * fresh(t) +
+                AlgoRules.DAY_ROTATION * rotation(t.key, day) -
+                (if (artFirst && t.backdropPath.isNullOrEmpty()) AlgoRules.ART_PENALTY else 0.0)
+            Triple(t, s, i)
         }.sortedWith(compareByDescending<Triple<Title, Double, Int>> { it.second }.thenBy { it.third }).map { it.first }
         return spread(scored)
     }
 
-    /** Titles of one franchise apart: the first of a stem keeps its place, the rest go to the end in order. */
-    fun spread(list: List<Title>): List<Title> {
-        val seen = HashSet<String>()
-        val kept = ArrayList<Title>(list.size)
-        val later = ArrayList<Title>()
-        for (t in list) if (seen.add(stem(t.name))) kept += t else later += t
-        return kept + later
+    /**
+     * Titles of one franchise ([stem]) at least [gap] cards apart where the list allows it: each slot takes the best
+     * remaining title whose stem was last placed [gap] or more slots ago, else the one placed longest ago (a row of
+     * eight entries of one saga still shows every one). Nothing is dropped, where the old rule sent every repeat to
+     * the end of the row.
+     */
+    fun spread(list: List<Title>, gap: Int = AlgoRules.SPREAD_GAP): List<Title> {
+        if (list.size <= 2 || gap <= 1) return list
+        val stems = list.map { stem(it.name) }
+        if (stems.toHashSet().size == stems.size) return list
+        val out = ArrayList<Title>(list.size)
+        val left = list.indices.toMutableList()
+        val lastAt = HashMap<String, Int>()
+        while (left.isNotEmpty()) {
+            val slot = out.size
+            var pick = -1
+            var oldest = Int.MAX_VALUE
+            var oldestIdx = 0
+            for ((k, i) in left.withIndex()) {
+                val at = lastAt[stems[i]]
+                if (at == null || slot - at >= gap) { pick = k; break }
+                if (at < oldest) { oldest = at; oldestIdx = k }
+            }
+            val i = left.removeAt(if (pick >= 0) pick else oldestIdx)
+            lastAt[stems[i]] = slot
+            out += list[i]
+        }
+        return out
     }
 
     private val STOP = setOf("the", "a", "an", "of", "and", "in", "on", "to", "for", "with", "at", "from", "by", "&")
@@ -226,27 +281,40 @@ object Taste {
     internal fun build(history: List<HistoryEntry>, myList: List<Title>, signature: String, now: Long = System.currentTimeMillis(),
                        lookup: Boolean = true): TasteProfile {
         val seeds = ArrayList<Seed>()
+        /** Weight from opened pages alone, which shapes affinities in full but barely counts toward confidence. */
+        var opened = 0.0
         val seen = HashSet<String>()
         for (e in history.sortedByDescending { it.updatedAt }) {
             if (e.title.id <= 0 || !seen.add(e.key)) continue
-            if (e.hidden && e.progress < HistoryEntry.FINISHED && !e.upNext) continue
+            val isShow = e.title.kind != MediaKind.MOVIE
+            val finishedEpisodes = if (isShow) Watched.episodeCount(e.title.id) else 0
+            // Clearing a card is "not for me" only while it could still be a sample. Past KEPT_AFTER_EPISODES
+            // finished episodes it means "done with it for now", which is something the viewer liked, so the show
+            // keeps its signal (owner, 2026-10-31).
+            val cleared = e.hidden && e.progress < HistoryEntry.FINISHED && !e.upNext
+            if (cleared && !(isShow && finishedEpisodes >= AlgoRules.KEPT_AFTER_EPISODES)) continue
+            // STANDARDS section 5: taste comes from finished titles, My List, opened pages and Trakt, never from a
+            // title started and left. A part-watched title used to seed 0.6 or 0.25 here, which is that rule broken.
             val w = when {
-                e.progress >= HistoryEntry.FINISHED || (e.hidden && e.progress >= 0.5) -> 1.0
-                e.upNext -> 0.9
-                e.positionMs >= 10 * 60_000L -> 0.6
-                else -> 0.25
+                e.progress >= HistoryEntry.FINISHED ->
+                    if (isShow) AlgoRules.SEED_EPISODES else AlgoRules.SEED_FINISHED
+                e.upNext || (isShow && finishedEpisodes > 0) -> AlgoRules.SEED_EPISODES
+                else -> continue
             }
             val age = (now - e.updatedAt).coerceAtLeast(0) / DAY_MS.toDouble()
-            seeds += Seed(e.title.kind, e.title.id, e.title.genreIds, e.title.lang, e.title.year, w * 0.5.pow(age / 45))
-            if (seeds.size >= 60) break
+            seeds += Seed(e.title.kind, e.title.id, e.title.genreIds, e.title.lang, e.title.year,
+                w * 0.5.pow(age / AlgoRules.WATCH_HALF_LIFE_DAYS))
+            if (seeds.size >= AlgoRules.HISTORY_SEEDS) break
         }
-        for (t in myList) if (t.id > 0 && seen.add(t.key)) seeds += Seed(t.kind, t.id, t.genreIds, t.lang, t.year.take(4), 0.5)
+        for (t in myList) if (t.id > 0 && seen.add(t.key)) seeds += Seed(t.kind, t.id, t.genreIds, t.lang, t.year.take(4), AlgoRules.SEED_SAVED)
         for (o in opened()) {
             if (!seen.add(o.k)) continue
             val type = MediaKind.of(o.k.substringBefore(':')) ?: continue
             val id = o.k.substringAfter(':').toIntOrNull() ?: continue
             val age = (now - o.at).coerceAtLeast(0) / DAY_MS.toDouble()
-            seeds += Seed(type, id, o.g, o.l, o.y, 0.15 * 0.5.pow(age / 14))
+            val ow = AlgoRules.SEED_OPENED * 0.5.pow(age / AlgoRules.OPENED_HALF_LIFE_DAYS)
+            seeds += Seed(type, id, o.g, o.l, o.y, ow)
+            opened += ow
         }
         // Genres for seeds that came without them, from the cached details call.
         val missing = if (lookup) seeds.filter { it.genres.isEmpty() && it.weight >= 0.1 } else emptyList()
@@ -273,6 +341,11 @@ object Taste {
             s.year.toIntOrNull()?.takeIf { it > 1900 }?.let { era[it / 10 * 10] = (era[it / 10 * 10] ?: 0.0) + s.weight }
         }
         fun <K> norm(m: Map<K, Double>): Map<K, Double> { val mx = m.values.maxOrNull() ?: 0.0; return if (mx > 0) m.mapValues { it.value / mx } else emptyMap() }
-        return TasteProfile(norm(genre), norm(lang), norm(era), if (total > 0) shows / total else 0.5, minOf(1.0, total / 6), signature, now)
+        // Diminishing returns, never a hard ceiling at six titles: about 0.22 from one fresh finished title, 0.78
+        // from six, 0.95 from twelve. Browsing is not watching, so opened pages count toward confidence only up to
+        // OPENED_STRENGTH_CAP, however many pages were opened.
+        val counted = (total - opened).coerceAtLeast(0.0) + minOf(opened, AlgoRules.OPENED_STRENGTH_CAP)
+        val strength = if (counted <= 0) 0.0 else 1 - Math.exp(-counted / AlgoRules.STRENGTH_SCALE)
+        return TasteProfile(norm(genre), norm(lang), norm(era), if (total > 0) shows / total else 0.5, strength, signature, now)
     }
 }

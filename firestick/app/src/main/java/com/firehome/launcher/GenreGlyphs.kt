@@ -4,7 +4,7 @@ package com.firehome.launcher
  * The Browse by Genre glyphs as plain vector data (no Android types, so the same shapes can be
  * previewed off-device). [GenreArt] draws them.
  *
- * One visual language for the whole set, Apple TV / Disney+ category style: a 100 × 100 box with
+ * One visual language for the whole set: a 100 × 100 box with
  * every glyph filling about the same circle (r ≈ 34 around the centre), soft top-to-bottom
  * gradients, fully rounded joins and caps, one line weight ([LINE]) and one fine weight ([FINE]).
  * Colour is a 3-tone pastel from the card's own tint (light, mid, and a deep tone for small details

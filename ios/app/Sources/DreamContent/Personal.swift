@@ -124,11 +124,31 @@ actor NewEpisodes {
         let still: String?
         let overview: String
         let upcoming: Bool
-        var key: String { "\(show.id):s\(season)e\(number)" }
+        /// A special only: its source id, which is what marks this item as one (`WatchKind`).
+        var specialId: String? = nil
+        /// A special's other source id, so what was remembered under it still counts (`Episode.specialAlias`).
+        var specialAlias: String? = nil
+        var kind: WatchKind { specialId != nil ? .special : .episode }
+        /// Every id a special answers to, preferred first.
+        var specialIds: [String] { [specialId, specialAlias].compactMap { $0 }.filter { !$0.isEmpty } }
+        var key: String { specialId.map { "\(show.id)/sp:\($0)" } ?? "\(show.id):s\(season)e\(number)" }
 
-        /// "S2  ·  E5  ·  Aired yesterday", "S1  ·  E1–8  ·  Aired today", "S3  ·  E1  ·  Tonight".
+        /// The episode as cards, Play and the availability check see it. The one conversion: built by hand, a special
+        /// loses its kind and turns into a numbered episode at the season it merely aired beside.
+        var episode: Episode {
+            var e = Episode(showId: show.id, season: season, number: number, name: name, overview: overview,
+                            stillPath: still, airDate: airDate, airsAt: at, upcoming: upcoming)
+            if let id = specialId {
+                e.isSpecial = true
+                e.specialId = id
+                e.specialAlias = specialAlias ?? ""
+            }
+            return e
+        }
+
+        /// "S2  ·  E5  ·  Aired yesterday", "S1  ·  E1–8  ·  Aired today", "S3  ·  E1  ·  Tonight". A special has no
+        /// place in the order to show, so it says what it is and when: "Special  ·  Aired today".
         func badge() -> String {
-            let eps = lastNumber > number ? "E\(number)–\(lastNumber)" : "E\(number)"
             let days = DreamTime.daysFromToday(airDate) ?? 0
             let time: String
             if upcoming {
@@ -140,6 +160,8 @@ actor NewEpisodes {
             } else {
                 if days >= 0 { time = "Aired today" } else if days == -1 { time = "Aired yesterday" } else { time = "Aired " + (DreamTime.formatDay(airDate, "EEE") ?? airDate) }
             }
+            if kind.isSpecial { return "Special  ·  \(time)" }
+            let eps = lastNumber > number ? "E\(number)–\(lastNumber)" : "E\(number)"
             return "S\(season)  ·  \(eps)  ·  \(time)"
         }
     }
@@ -160,13 +182,23 @@ actor NewEpisodes {
     func load() async -> (recent: [Item], upcoming: [Item]) {
         let shows = await followed()
         var recent: [Item] = [], upcoming: [Item] = []
-        await withTaskGroup(of: (Item?, Item?).self) { g in
+        // A special is its own slot, never taking the next episode's: it is in the past by the time it shows, so
+        // letting it stand in for `next` would drop the show's real next episode out of Coming Up.
+        await withTaskGroup(of: (Item?, Item?, Item?).self) { g in
             for s in shows { g.addTask { await Self.items(s) } }
-            for await (r, u) in g { if let r { recent.append(r) }; if let u { upcoming.append(u) } }
+            for await (r, u, sp) in g {
+                if let r { recent.append(r) }
+                if let u { upcoming.append(u) }
+                if let sp { recent.append(sp) }
+            }
         }
         // Caught up (the drop's last episode, or a later one, finished): not new to this viewer until a newer one airs.
+        // A special asks its own question, because being caught up on the show says nothing about it.
         let history = await Services.shared.history.recent()
-        func unseen(_ i: Item) -> Bool { !Self.caughtUp(show: i.show.id, season: i.season, episode: i.lastNumber, history: history) }
+        func unseen(_ i: Item) -> Bool {
+            if i.kind.isSpecial { return !Self.caughtUpSpecial(show: i.show.id, ids: i.specialIds, history: history) }
+            return !Self.caughtUp(show: i.show.id, season: i.season, episode: i.lastNumber, history: history)
+        }
         recent = recent.filter(unseen)
         upcoming = upcoming.filter(unseen)
         recent.sort { ($0.airDate, $0.at ?? .distantPast, $1.show.name) > ($1.airDate, $1.at ?? .distantPast, $0.show.name) }
@@ -187,15 +219,31 @@ actor NewEpisodes {
     /// rule every "new episode" surface goes by (New Episodes for You, the banner and its notice, NEW EPISODE badges,
     /// the general New Episodes rows), the same on the TV and Windows. Local and instant.
     nonisolated static func caughtUp(show: Int, season: Int, episode: Int, history: [HistoryEntry]) -> Bool {
-        past(WatchedLedger.shared.furthest(show: show), history.first { $0.title.kind == .tv && $0.title.id == show }, season, episode)
+        // The show's own row, never a special's: a special has no place in this order.
+        past(WatchedLedger.shared.furthest(show: show), history.series(show), season, episode)
     }
 
-    /// `caughtUp` on its inputs: `finished` the latest finished episode, `entry` the show's history entry.
+    /// The same rule for a special, which sits outside the order: being caught up on the show says nothing about it,
+    /// so the only things that count are that special's own finish and its own row. Without this branch a viewer who
+    /// finished a later season would never be offered a special at all.
+    nonisolated static func caughtUpSpecial(show: Int, ids: [String], history: [HistoryEntry]) -> Bool {
+        pastSpecial(WatchedLedger.shared.specialWatched(show: show, anyOf: ids), history.special(show, anyOf: ids))
+    }
+
+    /// `caughtUp` on its inputs: `finished` the latest finished episode, `entry` the show's own history row.
     nonisolated static func past(_ finished: (season: Int, episode: Int)?, _ entry: HistoryEntry?, _ season: Int, _ episode: Int) -> Bool {
         if let f = finished, (f.season, f.episode) >= (season, episode) { return true }
         guard let e = entry, let es = e.season, let en = e.episode else { return false }
         if (es, en) > (season, episode) { return true }
         return es == season && en == episode && !e.upNext && (e.hidden || e.progress >= 0.92)
+    }
+
+    /// `caughtUpSpecial` on its inputs: `finished` from the watched ledger, `entry` the special's own row. One still
+    /// in progress stays new; one finished, or taken off Continue Watching, does not.
+    nonisolated static func pastSpecial(_ finished: Bool, _ entry: HistoryEntry?) -> Bool {
+        if finished { return true }
+        guard let e = entry else { return false }
+        return !e.upNext && (e.hidden || e.progress >= 0.92)
     }
 
     func isNew(_ key: String) -> Bool { fresh.contains(key) }
@@ -211,8 +259,9 @@ actor NewEpisodes {
         return (o["season_number"] as? Int ?? 0, o["episode_number"] as? Int ?? 0, Tmdb.str(o, "name"), d, Tmdb.path(o, "still_path"), Tmdb.str(o, "overview"))
     }
 
-    private static func items(_ show: Title) async -> (Item?, Item?) {
-        guard let o = try? await Tmdb.object("/tv/\(show.id)") else { return (nil, nil) }
+    /// A show's recent episode, its upcoming one, and a special out in the recent window, each in its own slot.
+    private static func items(_ show: Title) async -> (Item?, Item?, Item?) {
+        guard let o = try? await Tmdb.object("/tv/\(show.id)") else { return (nil, nil, nil) }
         let t = Tmdb.parse(o, .tv) ?? show
         let now = Date()
         let air = await AirTimes.info(show.id)
@@ -240,7 +289,19 @@ actor NewEpisodes {
                 upcoming = Item(show: t, season: n.0, number: n.1, lastNumber: n.1, name: n.2, airDate: n.3, at: at, still: n.4, overview: n.5, upcoming: true)
             }
         }
-        return (recent, upcoming)
+        return (recent, upcoming, await special(t, air: air))
     }
 
+    /// A special out in the recent window, if TVmaze named one as this show's previous or next episode. That naming
+    /// is the only cheap signal there is: TMDB has no record of many specials at all, so without it one is invisible.
+    /// The catalog then says which special it is, and nothing here touches the show's own episodes.
+    private static func special(_ show: Title, air: AirTimes.Info?) async -> Item? {
+        guard let a = [air?.prev, air?.next].compactMap({ $0 }).first(where: { $0.special }) else { return nil }
+        let day = DreamTime.ymd(a.at)
+        guard let sp = await SpecialsCatalog.of(show.id).first(where: { $0.airsAt == a.at || $0.airDate == day }),
+              !sp.upcoming, let days = DreamTime.daysFromToday(sp.airDate), (-recentDays...0).contains(days) else { return nil }
+        return Item(show: show, season: sp.season, number: sp.number, lastNumber: sp.number, name: sp.name,
+                    airDate: sp.airDate, at: sp.airsAt, still: sp.stillPath, overview: sp.overview, upcoming: false,
+                    specialId: sp.specialId, specialAlias: sp.specialAlias.isEmpty ? nil : sp.specialAlias)
+    }
 }

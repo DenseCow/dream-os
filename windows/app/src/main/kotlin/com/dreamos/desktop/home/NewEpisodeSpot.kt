@@ -2,6 +2,7 @@ package com.dreamos.desktop.home
 
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import com.dreamos.desktop.core.model.EpisodeCode
 import androidx.compose.runtime.Composable
 import com.dreamos.desktop.preload.BannerAhead
 import androidx.compose.runtime.LaunchedEffect
@@ -51,12 +52,17 @@ import kotlinx.coroutines.launch
  * Stick's NewEpisodeSpot: caught-up rule, out in the last 3 days, retired 48 h after it first showed).
  */
 object NewEpisodeSpot {
-    /** "S3 · E7"; a batch drop "S1 · E5-8" (the Fire Stick's code, one separator style). */
-    fun code(e: NewEpisodeInfo): String = "S${e.season} · " + if (e.lastNumber > e.number) "E${e.number}-${e.lastNumber}" else "E${e.number}"
+    /** "S3 · E7"; a batch drop "S1 · E5-8". A special is named, not numbered ([EpisodeCode]). */
+    fun code(e: NewEpisodeInfo): String =
+        if (e.isSpecial) EpisodeCode.specialWords(e.name)
+        else "S${e.season} · " + if (e.lastNumber > e.number) "E${e.number}-${e.lastNumber}" else "E${e.number}"
 
     /** The episode's name beside its code; a batch drop "4 Episodes". */
-    fun name(e: NewEpisodeInfo): String =
-        if (e.lastNumber > e.number) "${e.lastNumber - e.number + 1} Episodes" else e.name.ifBlank { "Episode ${e.number}" }
+    fun name(e: NewEpisodeInfo): String = when {
+        e.isSpecial -> EpisodeCode.SPECIALS
+        e.lastNumber > e.number -> "${e.lastNumber - e.number + 1} Episodes"
+        else -> e.name.ifBlank { "Episode ${e.number}" }
+    }
 
     /** "S3 · E7 · Episode Name"; a batch drop "S1 · E5-8 · 4 Episodes". */
     fun line(e: NewEpisodeInfo): String = "${code(e)} · ${name(e)}"
@@ -110,14 +116,18 @@ fun NewEpisodeSlot(state: ShellState, heroShown: () -> Boolean = { false }) {
     fun done() { scope.launch { runCatching { Services.newEpisodes.bannerDone(e) } } }
     // Its availability pill, asked up front; until it answers, when it came out.
     LaunchedEffect(e.key) {
-        state.catalog.askEpisode(e.show, e.season, e.number, e.name, e.airDate)
+        // A special has its own pill target; an episode pill asked with its parent season would be another episode.
+        if (!e.isSpecial) state.catalog.askEpisode(e.show, e.season, e.number, e.name, e.airDate)
         // Its stream found ahead once Home has settled, so Play starts at once (fire-home NewEpisodeSpot.prepare).
         delay(BANNER_PREP_MS)
         kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
             runCatching {
                 com.dreamos.desktop.shell.AppServices.playback?.nextEpisodeAhead(com.dreamos.desktop.core.playback.PlayTarget(
-                    com.dreamos.desktop.core.playback.MediaKind.EPISODE, e.show.id, e.show.name, e.show.year.toIntOrNull(),
-                    season = e.season, episode = e.number, episodeTitle = e.name.ifBlank { null },
+                    if (e.isSpecial) com.dreamos.desktop.core.playback.MediaKind.SPECIAL
+                    else com.dreamos.desktop.core.playback.MediaKind.EPISODE,
+                    e.show.id, e.show.name, e.show.year.toIntOrNull(),
+                    season = e.season.takeIf { !e.isSpecial }, episode = e.number.takeIf { !e.isSpecial },
+                    episodeTitle = e.name.ifBlank { null }, specialId = e.specialId,
                     originalLanguage = e.show.lang.ifEmpty { null }, airDate = e.airDate.ifEmpty { null },
                     backdrop = e.show.backdrop("w1280"), poster = e.show.poster(),
                 ))
@@ -125,7 +135,7 @@ fun NewEpisodeSlot(state: ShellState, heroShown: () -> Boolean = { false }) {
         }
     }
     state.pillVersion
-    val pill = state.catalog.episodePill(e.show, e.season, e.number, e.name, e.airDate)
+    val pill = if (e.isSpecial) null else state.catalog.episodePill(e.show, e.season, e.number, e.name, e.airDate)
     val dens = LocalDensity.current
     val h = m.u(150)
     val shape = RoundedCornerShape(m.u(16))
@@ -162,7 +172,7 @@ fun NewEpisodeSlot(state: ShellState, heroShown: () -> Boolean = { false }) {
         }
         Spacer(Modifier.width(m.u(16)))
         ButtonRow {
-            PlayButton("Play", { done(); spot = null; state.playAt(e.show, e.season, e.number, e.name, fromStart = false) })
+            PlayButton("Play", { done(); spot = null; state.playAt(e.show, e.season, e.number, e.name, fromStart = false, specialId = e.specialId) })
             PearlButton("Go to Show", { state.openTitle(e.show) }, icon = com.dreamos.desktop.ui.kit.Icon.INFO)
             PearlButton("Dismiss", { done(); leaving = true })
         }

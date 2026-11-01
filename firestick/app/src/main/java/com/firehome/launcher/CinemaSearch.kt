@@ -14,7 +14,7 @@ import android.widget.LinearLayout
 import android.widget.TextView
 
 /**
- * Cinema's Search (Apple TV): the field and the Dream keyboard on the left, results on the right as a
+ * Cinema's Search: the field and the Dream keyboard on the left, results on the right as a
  * calm poster grid (Trending Now while the field is empty, Top Results and a person's titles while
  * typing), recent searches and suggestions under the keyboard. The search itself is
  * TMDB's spoken-query search plus a person lookup, debounced, with recent searches per profile;
@@ -196,7 +196,7 @@ class CinemaSearch(shell: CinemaShell) : CPage(shell) {
     // ---- suggestions under the keyboard ----
 
     /**
-     * Netflix-style autocomplete: a genre whose name starts with what's typed ("hor" → Horror), recent
+     * Autocomplete: a genre whose name starts with what's typed ("hor" → Horror), recent
      * searches and titles that match, prefix matches first, no repeats; as many as fit under the keyboard.
      */
     private fun showSuggestions(q: String, titles: List<Title>) {

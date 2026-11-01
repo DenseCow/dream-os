@@ -18,9 +18,9 @@ import android.view.View
 
 /**
  * Dream Cinema: the shared design tokens every Cinema screen is built
- * from, so the shell, its pages and the title page read as one product. The idea in one line: Apple TV's
- * calm full-bleed art and focus, Netflix's hero (title logo, two-line synopsis, Play / More Info),
- * Disney+'s top bar of icon tabs, hero carousel with dots and brand tiles, Hulu's big landscape cards
+ * from, so the shell, its pages and the title page read as one product. The idea in one line: calm full-bleed
+ * art and focus, a hero with the title's logo, a two-line synopsis and Play / More Info, a top bar of icon tabs,
+ * a hero carousel with dots and brand tiles, and big landscape cards
  * with their details underneath and category chips.
  *
  * Lightweight by rule (the Fire TV Stick's CPU and GPU are small): no blur, no per-frame layout,
@@ -33,7 +33,7 @@ import android.view.View
  */
 object CinemaStyle {
     // ---- layout (dp) ----
-    /** Left/right safe margin of every page (TV overscan-safe, Apple TV-like breathing room). */
+    /** Left/right safe margin of every page (TV overscan-safe, with room to breathe). */
     const val GUTTER = 56
     /** Top bar height; the bar floats over the hero and fades out once rows are browsed. */
     const val BAR_H = 64
@@ -44,11 +44,11 @@ object CinemaStyle {
     const val ROW_TITLE_GAP = 10
     const val CARD_GAP = 14
 
-    // Card sizes (dp, 16:9 unless named): standard landscape, Hulu's big landscape, poster (2:3), brand tile.
+    // Card sizes (dp, 16:9 unless named): standard landscape, big landscape, poster (2:3), brand tile.
     const val CARD_W = 248
     const val CARD_H = 140
     /**
-     * Hulu's big landscape card, three across in a wide 7:3 (scope) frame: wider than the standard card,
+     * The big landscape card, three across in a wide 7:3 (scope) frame: wider than the standard card,
      * yet a row of them with its title and captions is no taller than a standard row, so the focused row
      * and the next one always fit above the bottom fade (see [ROW_LINE]).
      */
@@ -107,7 +107,7 @@ object CinemaStyle {
     fun secondary(ctx: Context) = Theme.get(ctx, Theme.BTN_SECONDARY)
 
     /**
-     * Card lift on focus: scale (+ elevation unless [z] is false) only, no layout; [big] for Hulu-size
+     * Card lift on focus: scale (+ elevation unless [z] is false) only, no layout; [big] for big-card-size
      * cards. Glowing views ([CinemaGlow]) pass z = false: the glow is the depth, and an elevation shadow
      * would only cost a shadow pass that can't be seen on the dark background.
      */

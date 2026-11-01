@@ -391,6 +391,19 @@ object Details {
     }
 
     /**
+     * [showId]'s specials in air order, the ones still to come marked `upcoming` ([Specials] merges TMDB's season 0
+     * with TVmaze's list, since TMDB often has no record of one). [askEarly] (the title page): a day still ahead gets
+     * the index's quick look first. Blocking.
+     */
+    fun specials(showId: Int, askEarly: Boolean = false): List<Episode> =
+        Specials.episodes(showId, DreamTime.now(), early = if (askEarly) WatchHistory.specialEarlyRelease else null,
+            outEarly = WatchHistory.specialOutEarly)
+
+    /** How many specials [showId] has; 0 when it has none. [peek]: only what is already known, no network. */
+    fun specialsCount(showId: Int, peek: Boolean = false): Int =
+        (if (peek) Specials.peek(showId) else Specials.of(showId)).orEmpty().size
+
+    /**
      * The Upcoming split (fire-home Upcoming.split, iPhone Details.episodes), pure: an episode is out when past its
      * exact instant ([maze]), else on or after its air day; one still ahead is `outEarly` when [outEarly] says the
      * index has it, or (while no episode before it is truly upcoming) when [early]'s quick check finds a source; else

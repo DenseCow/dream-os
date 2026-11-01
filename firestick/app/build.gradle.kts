@@ -23,7 +23,7 @@ val signingProps: Properties? = (System.getenv("DREAMOS_SIGNING") ?: localProps.
     ?.takeIf { p -> listOf("storeFile", "storePassword", "keyAlias", "keyPassword").all { !p.getProperty(it).isNullOrBlank() } }
 
 /** Dream OS's version (major.minor[.patch]): the one place to change it for a release. See versionCode below. */
-val dreamVersion = "4.3.7"
+val dreamVersion = "4.3.8"
 
 /** A local.properties value as a Java string literal for BuildConfig (quotes and backslashes escaped). */
 fun localString(key: String): String =
@@ -102,6 +102,9 @@ android {
     }
     kotlinOptions { jvmTarget = "17" }
     lint { checkReleaseBuilds = false }
+    // The algorithm harness (app/src/test, AlgoHarnessTest) runs the ranking on this PC with no device and no
+    // network; the Android stubs it brushes against (Log, LruCache) answer with defaults instead of throwing.
+    testOptions { unitTests.isReturnDefaultValues = true }
 }
 
 // Embedded Python 3.11 (Chaquopy) for the scraper modules users add (Scrapers.kt): 3.11 is what current
@@ -132,4 +135,6 @@ dependencies {
     // Unlock Dream OS Features: an ADB client (Apache-2.0) for the stick's own ADB at 127.0.0.1 (DreamUnlock.kt).
     implementation("dev.mobile:dadb:1.2.10")
     coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.1.5")
+    // The offline algorithm harness: gradle :app:testReleaseUnitTest --tests "*AlgoHarness*"
+    testImplementation("junit:junit:4.13.2")
 }

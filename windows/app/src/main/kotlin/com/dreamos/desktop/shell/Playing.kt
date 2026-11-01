@@ -16,13 +16,14 @@ import com.dreamos.desktop.core.playback.MediaKind as PKind
  * from the title's details (cached by core after the first look), so the scrapers and the curtain have everything.
  */
 object Targets {
-    suspend fun of(t: Title, season: Int? = null, episode: Int? = null, episodeName: String? = null): PlayTarget {
+    suspend fun of(t: Title, season: Int? = null, episode: Int? = null, episodeName: String? = null, specialId: String = ""): PlayTarget {
         val d = runCatching { Services.titles.details(t.kind, t.id) }.getOrNull()
         val title = d?.title ?: t
         var s = season
         var e = episode
         var name = episodeName
-        // A show without an episode: where the watch history says (Resume / Up Next), else the first episode.
+        // A show without an episode: where the watch history says (Resume / Up Next), else the first episode. A
+        // special always carries its own place, so it never falls through to the series.
         if (t.isShow && (s == null || e == null)) {
             val next = runCatching { Services.history.nextFor(title) }.getOrNull()
             s = next?.season ?: 1
@@ -30,9 +31,16 @@ object Targets {
             name = next?.episodeName
         }
         return PlayTarget(
-            kind = if (t.isShow) PKind.EPISODE else PKind.MOVIE,
+            kind = when {
+                specialId.isNotEmpty() -> PKind.SPECIAL
+                t.isShow -> PKind.EPISODE
+                else -> PKind.MOVIE
+            },
             tmdbId = title.id, title = title.name, year = title.year.toIntOrNull(), imdb = d?.imdbId,
-            season = if (t.isShow) s else null, episode = if (t.isShow) e else null, episodeTitle = name,
+            // A special carries no place in the series, only its identity.
+            season = if (t.isShow && specialId.isEmpty()) s else null,
+            episode = if (t.isShow && specialId.isEmpty()) e else null,
+            episodeTitle = name, specialId = specialId,
             originalLanguage = title.lang.ifBlank { null }, spokenLanguages = d?.info?.spoken ?: emptyList(),
             runtimeMin = d?.runtime ?: 0, airDate = title.date.ifBlank { null },
             backdrop = title.backdrop("w1280"), poster = title.poster(), logo = TmdbImage.url(d?.logoPath, "w500"),

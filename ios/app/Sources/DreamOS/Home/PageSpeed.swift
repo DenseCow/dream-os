@@ -235,7 +235,7 @@ enum PageSnapshots {
 }
 
 extension CatalogPage {
-    /// A file-safe name for the page ("genre_Action", "service_Netflix").
+    /// A file-safe name for the page ("genre_Action", "service_<name>").
     var storeKey: String {
         let raw: String = switch self {
         case .home: "home"
@@ -307,8 +307,8 @@ enum TitleAhead {
         if t.kind == .tv {
             Task(priority: .userInitiated) {
                 let season = max(1, await Services.shared.history.entry(for: t.key)?.season ?? 1)
-                guard !SeasonCache.fresh(t.id, season) else { return }
-                if let eps = try? await c.episodes(showId: t.id, season: season) { SeasonCache.put(t.id, season, eps) }
+                guard !SeasonCache.fresh(t.id, .season(season)) else { return }
+                if let eps = try? await c.episodes(showId: t.id, season: season) { SeasonCache.put(t.id, .season(season), eps) }
             }
         }
         Task(priority: .userInitiated) {

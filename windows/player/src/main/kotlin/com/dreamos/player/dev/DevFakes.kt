@@ -80,8 +80,9 @@ internal class DemoServices : PlayerServices {
     )
     private val names = listOf("One", "Two", "Three")
     override suspend fun seasons(showId: Int) = listOf(SeasonItem(1, "Season 1", 3), SeasonItem(2, "Season 2", 2))
-    override suspend fun episodes(showId: Int, season: Int) = (1..(if (season == 1) 3 else 2)).map {
-        EpisodeItem(season, it, "Test Episode ${names[it - 1]}", "Test data for the episode layout.", null, "2010-09-27", 15)
+    override suspend fun episodes(showId: Int, season: Int, special: Boolean) = (1..(if (season == 1) 3 else 2)).map {
+        EpisodeItem(season, it, "Test Episode ${names[it - 1]}", overview = "Test data for the episode layout.",
+            airDate = "2010-09-27", runtimeMin = 15)
     } + listOfNotNull(if (season == 1) EpisodeItem(1, 4, "Test Episode Four", upcoming = true,
         airsAt = System.currentTimeMillis() + 3 * 86_400_000L, airDate = java.time.LocalDate.now().plusDays(3).toString()) else null)
     override suspend fun nextEpisode(target: PlayTarget) =

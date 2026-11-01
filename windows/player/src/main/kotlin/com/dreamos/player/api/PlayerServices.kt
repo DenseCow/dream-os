@@ -11,7 +11,8 @@ interface PlayerServices {
     // ---- Content (TMDB through core) ----
     suspend fun details(target: PlayTarget): PlayerDetails? = null
     suspend fun seasons(showId: Int): List<SeasonItem> = emptyList()
-    suspend fun episodes(showId: Int, season: Int): List<EpisodeItem> = emptyList()
+    /** [special]: the show's specials instead of a season's episodes. */
+    suspend fun episodes(showId: Int, season: Int, special: Boolean = false): List<EpisodeItem> = emptyList()
     /** The next aired episode (WatchHistory.episodeAfter: the one rule; an episode up early counts as aired). */
     suspend fun nextEpisode(target: PlayTarget): PlayTarget? = null
     /** More Like This at a movie's end: 4 with a backdrop, the profile's Kids limit applied. */
@@ -79,12 +80,15 @@ data class PlayerDetails(
     val imdbId: String? = null,
 )
 
-data class SeasonItem(val number: Int, val name: String, val episodeCount: Int)
+/** [special]: the show's specials rather than a season; its tab sits last and is never called a season. */
+data class SeasonItem(val number: Int, val name: String, val episodeCount: Int, val special: Boolean = false)
 
 data class EpisodeItem(
     val season: Int,
     val number: Int,
     val name: String,
+    /** A special's identity (a source id); "" for a numbered episode, which is what [season] and [number] describe. */
+    val specialId: String = "",
     val overview: String = "",
     val stillUrl: String? = null,
     val airDate: String = "",
@@ -92,7 +96,9 @@ data class EpisodeItem(
     val upcoming: Boolean = false,
     /** The exact instant an upcoming episode airs (epoch ms), null when only [airDate] is known. */
     val airsAt: Long? = null,
-)
+) {
+    val isSpecial: Boolean get() = specialId.isNotEmpty()
+}
 
 data class RecItem(val tmdbId: Int, val isShow: Boolean, val title: String, val backdropUrl: String?, val year: Int? = null, val posterUrl: String? = null)
 

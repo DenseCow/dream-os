@@ -20,11 +20,26 @@ object DebridFiles {
     /** A bare-hash magnet; the name helps the service label the item if it ever shows in the account. */
     fun magnet(s: Source) = "magnet:?xt=urn:btih:${s.hash}" + if (s.torrentName.isNotBlank()) "&dn=" + DebridHttp.enc(s.torrentName) else ""
 
-    /** S02E01 / 2x01 / s2e1 match for [season]/[episode] in a file name, built once per pick. */
-    private fun episodeMatcher(season: Int, episode: Int): (String) -> Boolean {
-        val sxe = Regex("(?i)s0*$season[ ._-]*e0*$episode(?![0-9])")
-        val nxn = Regex("(?i)(?<![0-9])${season}x0*$episode(?![0-9])")
-        return { name -> base(name).let { sxe.containsMatchIn(it) || nxn.containsMatchIn(it) } }
+    /** Every form [s]'s episode may be numbered in a release name: what was asked for, then [Source.altForms]. */
+    private fun formsOf(s: Source): List<EpisodeForm>? {
+        val asked = EpisodeForm(s.season ?: return null, s.episode ?: return null)
+        return listOf(asked) + s.altForms.filter { it != asked }
+    }
+
+    /** The S02E01 / 2x01 / s2e1 patterns for one numbering form. */
+    private fun patterns(f: EpisodeForm): List<Regex> = listOf(
+        Regex("(?i)s0*${f.season}[ ._-]*e0*${f.episode}(?![0-9])"),
+        Regex("(?i)(?<![0-9])${f.season}x0*${f.episode}(?![0-9])"),
+    )
+
+    /**
+     * [fileName] names the episode [s] was asked for, in any form a release may number it ([Source.altForms]: a
+     * special asked for as S00E01 is named "S01E00" just as often). True for anything when nothing was asked for.
+     */
+    fun names(fileName: String, s: Source): Boolean {
+        val forms = formsOf(s) ?: return true
+        val n = base(fileName)
+        return forms.any { f -> patterns(f).any { it.containsMatchIn(n) } }
     }
 
     /**
@@ -34,8 +49,10 @@ object DebridFiles {
     fun pick(files: List<Pair<String, Long>>, s: Source): Int {
         s.fileName?.let { want -> files.indexOfFirst { base(it.first).equals(base(want), true) }.let { if (it >= 0) return it } }
         val videos = files.withIndex().filter { isVideo(it.value.first) && !JUNK.containsMatchIn(base(it.value.first)) }
-        val se = s.season; val ep = s.episode
-        val pool = if (se != null && ep != null) episodeMatcher(se, ep).let { m -> videos.filter { m(it.value.first) } } else videos
+        // The patterns are built once per pick, not once per file.
+        val res = formsOf(s)?.flatMap { patterns(it) }
+        val pool = if (res == null) videos
+        else videos.filter { v -> base(v.value.first).let { n -> res.any { it.containsMatchIn(n) } } }
         return pool.maxByOrNull { it.value.second }?.index ?: -1
     }
 }

@@ -12,7 +12,7 @@ import java.util.Date
 import java.util.Locale
 
 /**
- * Everything a title page's Information section shows (Apple TV style): release dates, run time, age rating,
+ * Everything a title page's Information section shows: release dates, run time, age rating,
  * the people behind it, studios, money, where to watch. Parsed once from the details call ([Tmdb.fetchDetails]
  * appends release_dates / content_ratings to it, so no extra request) and cached with the [Details].
  * Every date is worded through [DreamTime] (the user's zone and clock format).
@@ -136,7 +136,7 @@ class TitleInfo(
         return "Season $nextSeason, Episode $nextEpisode  ·  $whenWords"
     }
 
-    /** "Streaming on Netflix, Max" and "Rent or Buy on Amazon, Apple TV" (two lines at most). */
+    /** "Streaming on <service>, <service>" and "Rent or Buy on <store>, <store>" (two lines at most). */
     fun watchWords(): String {
         val first = listOfNotNull(
             streaming.take(4).takeIf { it.isNotEmpty() }?.let { "Streaming on " + it.joinToString(", ") },
@@ -322,7 +322,7 @@ class TitleInfo(
          */
         private fun providerNames(a: JSONArray?): List<String> {
             if (a == null) return emptyList()
-            // The services Dream OS knows lead (Netflix, HBO Max...), the rest in TMDB's order.
+            // The services Dream OS knows lead, the rest in TMDB's order.
             return (0 until a.length()).mapNotNull { a.optJSONObject(it) }.sortedWith(compareBy(
                 { o -> if (Tmdb.SERVICES.any { it.providerId == o.optInt("provider_id") }) 0 else 1 },
                 { o -> o.optInt("display_priority", 999) })).mapNotNull { o -> providerName(o.optInt("provider_id"), o.optString("provider_name")) }

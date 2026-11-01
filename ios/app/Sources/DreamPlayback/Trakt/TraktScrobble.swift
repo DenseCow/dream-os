@@ -38,6 +38,8 @@ final class TraktScrobbler {
         let req = r.request
         guard req.title.id > 0, r.durationMs >= 5 * 60_000 else { return }
         let ep = req.title.kind == .tv
+        // A special isn't scrobbled yet: Trakt takes one by its own episode id, and sending it as a numbered episode
+        // would write the wrong one. It carries no season or number, so it stops here.
         if ep && (req.season == nil || req.episode == nil) { return }
         let trakt = Trakt.shared
         guard trakt.signedIn else { return }

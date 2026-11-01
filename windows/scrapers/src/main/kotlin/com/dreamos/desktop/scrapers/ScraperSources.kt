@@ -260,7 +260,9 @@ class ScraperInfo(private val tmdb: TmdbFetch?) {
         val id = r.tmdbId
         fun obj(s: String?): JsonObject? = s?.let { try { Json.parseToJsonElement(it) as? JsonObject } catch (e: Exception) { null } }
         // The details and the episode are asked at the same time; each gets at most [waitMs].
-        val epiCall = if (tmdb != null && ep && id > 0) CompletableFuture.supplyAsync {
+        // A special's own TMDB episode call is pointless for the many TMDB has no record of; its name and date come
+        // from the catalog instead, on the target (Specials.kt).
+        val epiCall = if (tmdb != null && ep && !r.isSpecial && id > 0) CompletableFuture.supplyAsync {
             tmdb.get("/tv/$id/season/${r.season}/episode/${r.episode}", emptyMap(), waitMs)
         } else null
         val d = if (tmdb != null && id > 0) obj(tmdb.get("/$type/$id", mapOf("append_to_response" to "external_ids,alternative_titles"), waitMs)) else null
@@ -293,8 +295,11 @@ class ScraperInfo(private val tmdb: TmdbFetch?) {
                 put("tvshowtitle", JsonPrimitive(title))
                 put("title", JsonPrimitive(r.episodeTitle ?: e.str("name").ifEmpty { "Episode ${r.episode}" }))
                 put("localtitle", JsonPrimitive(title))
-                put("season", JsonPrimitive(r.season.toString())); put("episode", JsonPrimitive(r.episode.toString()))
-                put("premiered", JsonPrimitive(e.str("air_date")))
+                // The index numbers a special S00E{n} (Cinemeta answers series/{imdb}:0:{n}): the one place a
+                // season 0 is written, and the resolver already set the number on the target.
+                put("season", JsonPrimitive(if (r.isSpecial) "0" else r.season.toString()))
+                put("episode", JsonPrimitive(r.episode.toString()))
+                put("premiered", JsonPrimitive(r.airDate?.takeIf { r.isSpecial } ?: e.str("air_date")))
                 put("tvdb", JsonPrimitive(ext?.get("tvdb_id")?.jsonPrimitive?.intOrNull?.takeIf { it > 0 }?.toString() ?: ""))
                 d?.get("number_of_seasons")?.jsonPrimitive?.intOrNull?.takeIf { it > 0 }?.let { put("total_seasons", JsonPrimitive(it)) }
             } else {

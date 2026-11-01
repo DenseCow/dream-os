@@ -108,6 +108,16 @@ because something broke or looked wrong before. Check new work against the **che
   JustWatch) carries a small dim "Streaming Availability From JustWatch" credit where it shows (title page
   Information, Also Streaming On) and in Settings › About.
 
+- **Never name a brand, show, film or other rights holder's property** (owner, 2026-10-31): not in code, not in a
+  comment, not in a log line, not in a commit message and not in release notes. Dream OS ships no content, and a
+  repository that names titles reads as if it did. Write what the case actually is instead: "a sequel still months
+  out charted at #8", "a 1080p MKV episode", "a series listed in English on TMDB and made in Japan". The names of
+  services Dream OS really talks to (TMDB, TVmaze, Trakt, the debrid services, Rotten Tomatoes, the streaming
+  providers in Where to Watch) are not covered by this: those are integrations, and their credits are required.
+  **A name the app needs to work keeps it** (owner, 2026-10-31): a search synonym a viewer types, a TMDB keyword or
+  genre label a row is built from, a release-name token the resolver matches, a provider or service id. The test is
+  whether taking it out breaks something, not whether it reads better. Everything else goes.
+
 ## 5. Content rules
 
 - **Anime only in Anime sections** (the Anime page/chip, Crunchyroll, and personal rows like Continue Watching / My
@@ -119,7 +129,7 @@ because something broke or looked wrong before. Check new work against the **che
   `RowMix.animeHidden` (or `Tmdb.trendingShown`, which does).
   - What counts as anime (`RowMix.isAnime`, the same rule on Windows and iPhone): animation (genre 16) that is
     Japanese-language; or made in Japan (origin country JP) and not for kids or families (genres 10762 / 10751),
-    whatever its language (Cyberpunk: Edgerunners is English on TMDB); or a Chinese or Korean animated series that
+    whatever its language (one such series is listed in English on TMDB); or a Chinese or Korean animated series that
     isn't for kids or families. The origin comes from the list result (TMDB's show lists carry `origin_country`) or,
     for movies (whose list results don't), from a details call the app already made (`Tmdb.origin`). Never add a
     per-card details call to learn it.
@@ -170,6 +180,30 @@ because something broke or looked wrong before. Check new work against the **che
   `NewEpisodes.caughtUp`: the `Watched` ledger (Trakt's history included) has that episode or a later one, or the watch
   history is on a later episode (in progress or Up Next), or holds that episode finished or removed from Continue
   Watching. An episode still in progress stays new. The iPhone and Windows apps use the same rule.
+- **A special is its own kind, never season zero** (owner, 2026-10-31: a service dropped a 30-minute special of
+  a returning show that day and Dream OS could not show it anywhere). Season 0 is something the outside world
+  imposes; inside the app a special is a kind on the model (`WatchHistory.Kind.SPECIAL`,
+  `PlaybackRequest.specialId`, `NewEpisodes.Ep.specialId`), and what identifies one is the id of the source that
+  listed it (`Specials.ID`: TMDB's episode id, else TVmaze's), never its place in a list. **Season 0 survives
+  only at three wire boundaries, converted at the edge:** TMDB's `/tv/{id}/season/0` request, the index request
+  form `{imdb}:0:{n}`, and release-name matching (`S00E{n}`, `S{parent}E00`, a loose `0x01`, and TMDB's own
+  number). The 1-based air order those need is worked out when they are asked (`Specials.numberOf`), because an
+  older special added later moves it; nothing is ever stored under it.
+- **A special is listed, plays, and never costs the viewer their place.** The one catalog is `Specials`: TMDB's
+  season 0 where it has one, TVmaze's `?specials=1` list for the rest, since TMDB has no record of many (a
+  `/tv/{id}/season/0` that answers 404 on the day the special is out). It gets a "Specials" row **after** every
+  season, on the title page and in the player's list, with the special's own name on the card (a number there
+  would move). It lives a movie's life in the watch history: **its own Continue Watching row, beside the show's**
+  (`WatchHistory.specialKey`), joining after 90 s of real playback, off the row when it is finished, and it can
+  be marked watched (its own set in the `Watched` ledger). The show's position is never touched, so the title
+  page's Play keeps naming the episode the viewer is really on. It is never Up Next, never the next episode
+  (`PlayFlow.episodeAfter`), and never what Play names: no screen writes "S0" or "Season 0" anywhere
+  (`PlayFlow.episodeCode`). It belongs in New Episodes on its own merits: being caught up on the show never hides
+  it, and only finishing that very special does (the one rule, `NewEpisodes.caughtUp`, by its id). Its date
+  doesn't gate it either: an announced 9 PM airstamp never hides a special that has been up since the morning (a
+  source decides, not the date). Which history row a lookup wants is said out loud (`WatchHistory.seriesEntry` /
+  `specialEntry` / `entryFor`), never "the first entry for this show". Trakt syncs a special by TMDB episode id
+  or not at all. The iPhone and Windows apps follow the same model.
 - **All times and dates** go through `DreamTime` (the user's time zone and 12/24-hour choice). Date-only TMDB dates never
   shift a day.
 - **Scores:** the Rotten Tomatoes tomato, then the audience score exactly as published (`Ratings.audienceFor` /
@@ -181,8 +215,22 @@ because something broke or looked wrong before. Check new work against the **che
 - **Taste:** discovery rows are ranked by `Taste` (list order, taste, steadied quality, freshness; franchises spread);
   taste comes from finished titles, My List, Trakt and opened pages, **never from started-but-unfinished titles**, and
   a title removed from Continue Watching before it was finished seeds nothing (taste, Because You Watched, Top Picks).
+  One exception, and only for taste: a show the viewer has finished at least `AlgoRules.KEPT_AFTER_EPISODES` episodes
+  of keeps its signal when its card is cleared, because by then clearing means "done with it for now", not "not for
+  me". The Because You Watched row still never names a cleared show back to the viewer.
   Charts, Coming Soon, In Theaters and the viewer's own rows keep their order (`Taste.ranks`).
 - **Plainly bad titles** (under 5.0 with 100+ votes, `RowMix.poorlyRated`) never make a discovery row.
+- **Rows change a little every day, never under the viewer's eyes** (owner, 2026-10-31): a discovery row's rank
+  carries a small per-title daily rotation (`AlgoRules.DAY_ROTATION`), and a row that fetched a fixed second page
+  fetches the day's page from 2 to 4 instead (`RowMix.rotatingPage`), always behind the first page: the rank's order
+  term is a title's place in the list, so a deeper page is never mixed into the first (only lists with different sorts
+  interleave, movies with shows, popular with favorites). The same all day; a change lands only when a page is built
+  (a new day, something watched), never in place while anyone is looking. Charts and the viewer's own rows are untouched.
+- **Art never outranks taste:** ranking runs on TMDB's real order, and a missing backdrop only costs a title a few
+  places (`AlgoRules.ART_PENALTY`), never a partition ahead of the rank. Rows that keep their order still show art first.
+- **Taste's confidence grows with diminishing returns** (`Taste.strength`, `AlgoRules.STRENGTH_SCALE`): about 0.2 from
+  one finished title, 0.8 from six, 0.95 from twelve. Opened pages alone never make a confident profile
+  (`AlgoRules.OPENED_STRENGTH_CAP`).
 - **Continue Watching is real watching:** a title joins it only after 90 s of actual playback in Dream Player (seeks
   and skips add nothing, `DreamPlayerActivity.realWatchedMs`); one already on the row keeps saving as before.
 - **Continue Watching shows where the viewer really is:** the row is rebuilt whenever the history changes, focus
@@ -208,6 +256,19 @@ because something broke or looked wrong before. Check new work against the **che
   preference that lifts the viewer's own Maximum Quality (Prefer HDR, `quality.hdr`) works only on a TV that
   reports HDR, keeps the speed and size limits, and never lifts to a Remux or past the Wi-Fi-friendly size. A
   setting that can do nothing on this TV isn't shown (Prefer HDR on a non-HDR TV).
+- **A playing trailer is promoted, never reloaded, in both directions** (owner, 2026-10-31): while a title's
+  trailer is playing behind its artwork, Trailer moves that running player into Dream Player
+  (`HeroTrailer.handOver`, taken by `ExoEngine.adopt`), which shows it full screen with its own controls, at the
+  true frame, with the sound up; closing the watch moves the same player back behind the artwork
+  (`ExoEngine.detach` → `HeroTrailer.handBack`), playing on from where it reached, the page as the viewer left it
+  and the sound back at the setting. It is never looked up, prepared, seeked or buffered again either way, and the
+  picture it was showing covers each move until the next first frame lands. A trailer that ended or failed while
+  full screen has nothing to bring back: the still settles over the artwork and nothing restarts. Only when nothing
+  is playing (trailers off, still being found, stopped, or another video) does Trailer look the trailer up, from the
+  spot the background trailer reached. The iPhone and Windows apps follow the same rule.
+- **Background Trailers start muted on every build** (owner, 2026-10-31): a trailer nobody asked for never brings
+  sound with it. The three choices stay On with Sound / On, Muted / Off, the setting is per profile, and a profile
+  that has already chosen keeps its choice (`HeroTrailer.mode`).
 
 ## 6. Performance budgets (Fire TV Stick 4K: weak GPU, ~1.7 GB RAM)
 
@@ -276,6 +337,12 @@ because something broke or looked wrong before. Check new work against the **che
   `BUILD_CHANNEL`; on iPhone the bundle), never a number written in code or art.
 - **Bugs and ideas:** GitHub issues.
 - **Edits:** small, targeted edits; no bulk rewrite scripts across many files; keep LF line endings.
+- **Algorithm tunables live in `shared/rules.json`**, the one source for all three builds (weights, gates, windows,
+  vote floors). Each build's `AlgoRules` file is generated from it by `tools/gen-rules.py` and is never edited by
+  hand: `tools/gen-rules.py --check` fails when one is out of date, and the generator overwrites it anyway. One edit,
+  three builds. Change a value only with the harness open
+  (`gradle :app:testReleaseUnitTest --tests "*AlgoHarness*"`, report in `app/build/reports/algo-harness.txt`) and put
+  its before-and-after numbers in the commit message.
 
 ## 9. Checklist for every new screen or feature
 
@@ -283,7 +350,8 @@ because something broke or looked wrong before. Check new work against the **che
 - [ ] Drawn icons, no text check marks (emoji are allowed); illustrations in Dream OS line art.
 - [ ] Focus every element: nothing clipped (all four sides), nothing cut by the screen edge, nothing overlapping.
 - [ ] Long lists: `softEdges`, `clipViewport`, and focus can always reach the page's action.
-- [ ] Words: Title Case labels, sentence-case descriptions, no hints, no technical terms, no "can't" lists.
+- [ ] Words: Title Case labels, sentence-case descriptions, no hints, no technical terms, no "can't" lists,
+      and no brand, show or film named anywhere, comments and commit messages included.
 - [ ] Content: anime filter, Kids limits, pill rules, `DreamTime` for every date/time.
 - [ ] Performance: measured with gfxinfo on the stick within the budgets; nothing animating while idle.
 - [ ] No Kodi or Umbrella anywhere, no YouTube as a trailer source (YouTube TV in Where to Watch is fine); no secrets in source.

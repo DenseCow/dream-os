@@ -39,7 +39,8 @@ import com.dreamos.desktop.core.playback.MediaKind as PlayKind
  * Every TMDB lookup goes through the 3 h lookup cache and the disk (TmdbDisk), so a title page's Play costs nothing.
  */
 object ContentPlaybackHooks : PlaybackHooks {
-    private fun showKind(t: PlayTarget) = if (t.kind == PlayKind.EPISODE) MediaKind.TV else MediaKind.MOVIE
+    /** Either episode kind belongs to a show: a special asked as a movie would fetch /movie/{showId}. */
+    private fun showKind(t: PlayTarget) = if (t.isEpisode) MediaKind.TV else MediaKind.MOVIE
 
     /** The title's TMDB details with external ids and alternative titles (the scrapers' extra names). Blocking. */
     private fun details(t: PlayTarget): JsonObject? =
@@ -67,7 +68,7 @@ object ContentPlaybackHooks : PlaybackHooks {
 
     /** The scrape query from a details answer (pure; the iPhone's ScraperInfo names). */
     fun query(target: PlayTarget, imdb: String, d: JsonObject): ScrapeQuery {
-        val show = target.kind == PlayKind.EPISODE
+        val show = target.isEpisode
         val title = d.str(if (show) "name" else "title").ifEmpty { target.title }
         val seen = hashSetOf(title.lowercase())
         val aliases = ArrayList<String>()
@@ -104,11 +105,19 @@ object ContentPlaybackHooks : PlaybackHooks {
         val d = Details.cachedDetails(title.kind, title.id)
         val show = title.isShow && episode != null
         return PlayTarget(
-            kind = if (show) PlayKind.EPISODE else PlayKind.MOVIE,
+            // A special is its own kind: it plays like an episode and is never asked for as a movie.
+            kind = when {
+                show && episode!!.isSpecial -> PlayKind.SPECIAL
+                show -> PlayKind.EPISODE
+                else -> PlayKind.MOVIE
+            },
             tmdbId = title.id, title = title.name, year = title.year.toIntOrNull(),
             imdb = imdb ?: d?.imdbId,
-            season = episode?.season?.takeIf { show }, episode = episode?.number?.takeIf { show },
+            // A special has no place in the series to carry; its source id is what identifies it.
+            season = episode?.season?.takeIf { show && !episode.isSpecial },
+            episode = episode?.number?.takeIf { show && !episode.isSpecial },
             episodeTitle = episode?.name?.takeIf { show && it.isNotBlank() },
+            specialId = episode?.specialId.orEmpty(),
             originalLanguage = title.lang.ifEmpty { null }, isAnime = RowMix.isAnime(title),
             runtimeMin = (if (show) episode?.runtime ?: 0 else 0).takeIf { it > 0 } ?: d?.runtime ?: 0,
             airDate = (if (show) episode?.airDate else title.date)?.ifEmpty { null },
@@ -118,7 +127,8 @@ object ContentPlaybackHooks : PlaybackHooks {
 
     /** Dream Core's target for what the viewer asked to play. */
     fun target(r: PlayRequest): PlayTarget {
-        val ep = if (r.season != null && r.episode != null) Episode(r.title.id, r.season, r.episode, r.episodeName.orEmpty()) else null
+        val ep = if (r.season != null && r.episode != null) Episode(r.title.id, r.season, r.episode, r.episodeName.orEmpty(),
+            kind = r.kind, specialId = r.specialId) else null
         return target(r.title, ep, r.imdbId)
     }
 
@@ -127,7 +137,7 @@ object ContentPlaybackHooks : PlaybackHooks {
         val kind = showKind(t)
         val title = Details.cachedDetails(kind, t.tmdbId)?.title
             ?: Title(t.tmdbId, kind, t.title, year = t.year?.toString().orEmpty(), lang = t.originalLanguage.orEmpty())
-        return PlayRequest(title, t.imdb, t.season, t.episode, t.episodeTitle)
+        return PlayRequest(title, t.imdb, t.season, t.episode, t.episodeTitle, specialId = t.specialId)
     }
 }
 

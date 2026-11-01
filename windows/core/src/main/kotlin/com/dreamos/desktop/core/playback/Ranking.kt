@@ -41,13 +41,16 @@ object Ranking {
         val traits by lazy { SourceMemory.traits(s.torrentName, s.fileName, s.provider, s.sizeBytes) }
     }
 
-    /** A scraped result as Dream Core ranks it, or null for junk (recaps, reviews, betting-site rips: never a source). */
-    fun parse(i: ScrapedSource, season: Int?, episode: Int?): Parsed? {
+    /**
+     * A scraped result as Dream Core ranks it, or null for junk (recaps, reviews, betting-site rips: never a source).
+     * [alts]: the other ways release names number this same episode, which a special has ([EpisodeForm]).
+     */
+    fun parse(i: ScrapedSource, season: Int?, episode: Int?, alts: List<EpisodeForm> = emptyList()): Parsed? {
         if (ReleaseWords.isJunk(i.name) || i.hash.isBlank()) return null
         val (q, camLabel) = ReleaseWords.quality(i.quality, i.name)
         // A season pack's size is the whole season's: unknown per episode (size limits and the size rank skip it).
         val s = Source(i.hash.lowercase(Locale.US), i.name, i.fileName, i.fileIdx, if (i.pack) 0 else i.sizeBytes, q, i.seeders,
-            i.provider, i.pack, season, episode)
+            i.provider, i.pack, season, episode, alts)
         return Parsed(s, camLabel || ReleaseWords.isCam(i.name))
     }
 

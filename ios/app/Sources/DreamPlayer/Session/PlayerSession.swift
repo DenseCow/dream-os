@@ -236,6 +236,28 @@ public final class PlayerSession: ObservableObject {
         resolveTrailer()
     }
 
+    /// A trailer that is **already playing** in this session's engine, moved here from a title page's hero
+    /// (`AVTrailerEngine`, owner 2026-10-31): full screen from the frame that is on screen, with no curtain, no
+    /// look-up, no load and no seek. `keys` is what Try Again looks up again if the video fails later on.
+    public func adoptPlayingTrailer(of title: Title, keys: [String]) {
+        isTrailer = true
+        trailerKeys = keys
+        trailerAllKeys = keys
+        trailerStart = 0
+        trailerAdvances = 0
+        request = PlayRequest(title: title)
+        beginItem()
+        // Nothing to wait for: the picture is already on screen, so the curtain never goes up and its deadline is void.
+        curtainTimer?.cancel(); curtainTimer = nil
+        firstFrame = true
+        phase = .playing
+        loadStartedAt = Date()
+        lastLoadAt = Date()
+        Log.player.info("Player: the page's trailer moved to full screen, no reload, at \(String(format: "%.1f", self.state.position), privacy: .public) s")
+        NowPlaying.update(self)
+        tick &+= 1
+    }
+
     private func beginItem() {
         gen += 1
         phase = .loading
@@ -251,10 +273,13 @@ public final class PlayerSession: ObservableObject {
             // card, a misplaced tap) must play `realWatchToSave` for real before it takes the show back from where
             // the viewer is (fire-home DreamPlayerActivity onRow).
             Task { [weak self] in
-                let e = await Services.shared.history.entry(for: r.title.key)
-                var on = e != nil && e?.hidden != true
-                if on, let e, let ep = r.episode, r.title.kind == .tv {
-                    let s = r.season ?? 0, es = e.season ?? 0, ee = e.episode ?? 0
+                // The row this very thing is on. A special has its own row, so the show's position never answers
+                // for it: taken from the show's row, a first play of a special would skip the 90 s and join the row
+                // at once instead of earning its place like a movie.
+                let e = await Services.shared.history.recent().filter { !$0.hidden }.forRequest(r)
+                var on = e != nil
+                if on, let e, e.kind.isSeries, let ep = r.episode, let s = r.season {
+                    let es = e.season ?? 0, ee = e.episode ?? 0
                     if es > s || (es == s && ee > ep) { on = false } // WatchHistory.later
                 }
                 await MainActor.run { if self?.gen == g { self?.onRow = on } }
@@ -795,7 +820,8 @@ public final class PlayerSession: ObservableObject {
         // Stamped now (`updatedAt`): WatchHistory drops a save that lands after a newer one (each waits on TMDB).
         let entry = HistoryEntry(title: r.title, season: r.season, episode: r.episode,
                                  episodeName: r.episodeName ?? episodeInfo?.name, stillPath: episodeInfo?.stillPath,
-                                 positionMs: Int64(pos * 1000), durationMs: Int64(d * 1000), updatedAt: Date())
+                                 positionMs: Int64(pos * 1000), durationMs: Int64(d * 1000), updatedAt: Date(),
+                                 kind: r.kind, specialId: r.specialId)
         guard force else {
             Task { await Services.shared.history.record(entry, exact: false) }
             return

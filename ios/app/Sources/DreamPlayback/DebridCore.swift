@@ -76,6 +76,15 @@ struct Candidate: Sendable, Hashable {
     var seeders: Int
     var season: Int?           // what was asked for (episodes)
     var episode: Int?
+    /// The other ways release names number this very episode. A special asked for as S00E01 is named "S01E00" just as
+    /// often, so both forms find its file inside the torrent (`NativeResolver.specialForms`).
+    var altForms: [EpisodeForm] = []
+}
+
+/// One way a release name can number an episode (`Candidate.altForms`).
+struct EpisodeForm: Sendable, Hashable {
+    var season: Int
+    var episode: Int
 }
 
 /// A playable link (DebridApi.kt `Found`): all four services serve HTTPS, so a plain-HTTP link is upgraded.
@@ -421,13 +430,20 @@ enum DebridFiles {
             n.range(of: "(?<![0-9])\(season)[x]0*\(episode)(?![0-9])", options: [.regularExpression, .caseInsensitive]) != nil
     }
 
+    /// Every form [c]'s episode may be numbered in a release name, its own first.
+    private static func forms(_ c: Candidate) -> [EpisodeForm]? {
+        guard let s = c.season, let e = c.episode else { return c.altForms.isEmpty ? nil : c.altForms }
+        return [EpisodeForm(season: s, episode: e)] + c.altForms
+    }
+
     /// Among [files] (path or name, size), the one to play for [c]: the index's own file name when it's there, else for
-    /// an episode the largest video named for it, else (a movie) the largest video that isn't a sample. -1 when none.
+    /// an episode the largest video named for it, in any of its numbering forms, else (a movie) the largest video that
+    /// isn't a sample. -1 when none.
     static func pick(_ files: [(String, Int64)], _ c: Candidate) -> Int {
         if let want = c.fileName.map(base), let i = files.firstIndex(where: { base($0.0).caseInsensitiveCompare(want) == .orderedSame }) { return i }
         let videos = files.enumerated().filter { isVideo($0.element.0) && !junk(base($0.element.0)) }
         let pool: [EnumeratedSequence<[(String, Int64)]>.Element]
-        if let s = c.season, let e = c.episode { pool = videos.filter { isEpisode($0.element.0, s, e) } } else { pool = videos }
+        if let fs = forms(c) { pool = videos.filter { f in fs.contains { isEpisode(f.element.0, $0.season, $0.episode) } } } else { pool = videos }
         return pool.max(by: { $0.element.1 < $1.element.1 })?.offset ?? -1
     }
 

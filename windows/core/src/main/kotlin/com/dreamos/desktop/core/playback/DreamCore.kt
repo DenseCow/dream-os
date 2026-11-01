@@ -69,6 +69,8 @@ class DreamCore(
         const val STALE_MS = 5_000L
         /** A scrape not done after this long is stuck (the engine ends its own by 20 s plus a 30 s slot wait and 15 s). */
         const val SCRAPE_STUCK_MS = 90_000L
+        /** The gather key of a special's second scrape (its parent-season numbering), beside its own. */
+        private const val ALT_FORM = "#alt"
         private const val MIN_TIMED = 3
         private const val CLEARLY_FASTER_MS = 1_500L
 
@@ -367,7 +369,9 @@ class DreamCore(
     private suspend fun lookup(t: PlayTarget, k: String, l: Lookup, startMs: Long?): Stream? {
         val t0 = now()
         if (!kit.accounts.any) return none(t, k, l, "no debrid account linked")
-        if (t.isEpisode && (t.season == null || t.episode == null)) return none(t, k, l, "no season/episode")
+        // Only a numbered episode must carry a number: a special is identified by its source id and the resolver
+        // derives its place in air order from the catalog ([special]).
+        if (t.kind == MediaKind.EPISODE && (t.season == null || t.episode == null)) return none(t, k, l, "no season/episode")
         l.phase = "finding its IMDb id"
         val imdb = imdbFor(t) ?: return none(t, k, l, "no IMDb id")
         if (!engine.active()) return none(t, k, l, "no scraper sources added", Miss.NOTHING)
@@ -384,8 +388,8 @@ class DreamCore(
      * The scrape for [t]: one running or done in the last [INDEX_TTL] (an empty one is redone after two minutes; one the
      * scrapers never answered at once), else a new one. QUICK: the pills' quick check, kept under its own key.
      */
-    private suspend fun gather(t: PlayTarget, imdb: String, mode: ScrapeMode): Gather {
-        val k = t.key + if (mode == ScrapeMode.QUICK) "#quick" else ""
+    private suspend fun gather(t: PlayTarget, imdb: String, mode: ScrapeMode, tag: String = ""): Gather {
+        val k = t.key + tag + if (mode == ScrapeMode.QUICK) "#quick" else ""
         fun usable(g: Stamped<Gather>?) = g != null && now() - g.at < INDEX_TTL && !g.value.state.cancelled &&
             !(g.value.done && g.value.count == 0 && (!g.value.answered || now() - g.at >= 2 * 60_000L)) &&
             !(!g.value.done && now() - g.value.startedAt > SCRAPE_STUCK_MS)
@@ -422,15 +426,57 @@ class DreamCore(
         old.take((gathers.size - 4).coerceAtLeast(0)).forEach { gathers.remove(it.key) }
     }
 
-    private fun parsed(g: Gather?, season: Int?, episode: Int?) = g?.state?.sources.orEmpty().mapNotNull { Ranking.parse(it, season, episode) }
+    private fun parsed(g: Gather?, season: Int?, episode: Int?, alts: List<EpisodeForm> = emptyList()) =
+        g?.state?.sources.orEmpty().mapNotNull { Ranking.parse(it, season, episode, alts) }
 
-    /** The full scrape plus what the pills' quick check found (the card said Available Now from those: Play counts them). */
-    private fun merged(g: Gather, k: String, season: Int?, episode: Int?): List<Ranking.Parsed> {
-        val a = parsed(g, season, episode)
+    /**
+     * The full scrape plus what the pills' quick check found (the card said Available Now from those: Play counts
+     * them) and, for a special, the second scrape of its other numbering ([extra]). Each torrent counts once.
+     */
+    private fun merged(g: Gather, k: String, season: Int?, episode: Int?,
+                       alts: List<EpisodeForm> = emptyList(), extra: Gather? = null): List<Ranking.Parsed> {
+        val a = parsed(g, season, episode, alts)
         val quick = synchronized(lock) { gathers["$k#quick"]?.takeIf { now() - it.at < INDEX_TTL }?.value }
-        if (quick == null || quick === g) return a
+        val more = listOfNotNull(quick, extra).filter { it !== g }
+        if (more.isEmpty()) return a
         val seen = a.mapTo(HashSet()) { it.s.hash }
-        return a + parsed(quick, season, episode).filter { seen.add(it.s.hash) }
+        return a + more.flatMap { parsed(it, season, episode, alts) }.filter { seen.add(it.s.hash) }
+    }
+
+    /**
+     * What a special's lookup adds to an ordinary one (STANDARDS §5). The index answers for S00E{n}, so that is what
+     * is asked for ([wire], one of the three places season 0 reaches), while scene and P2P names put the same file in
+     * the parent season as "S01E00 <special title>". An index that searches by name finds those only when it is asked
+     * for that form, so **two** scrapes go out, the air-order one and the parent-season one ([alt]), while **three**
+     * forms are accepted when the file inside a torrent is picked ([forms]: TMDB's own season-0 number is the third).
+     * TMDB's number gets no scrape of its own on purpose: an imdb-keyed index answers with everything it has for the
+     * special anyway, so a miss there would really be a file-matching miss, and a third round trip per play is not
+     * worth it. Verified live: the air-order form returned usable streams, the parent-season form returned none.
+     */
+    private class Special(val wire: PlayTarget, val alt: PlayTarget?, val forms: List<EpisodeForm>)
+
+    /**
+     * The second scrape, the parent-season one. A special's [PlayTarget.key] comes from its source id, which both
+     * numbering forms carry, so the two scrapes differ only by [ALT_FORM]: without it this would hand back the
+     * primary's own job and the parent-season form would never be asked for. Null when there is no second form.
+     */
+    private suspend fun altGather(sp: Special?, imdb: String, mode: ScrapeMode): Gather? {
+        val alt = sp?.alt ?: return null
+        if (alt.key != sp.wire.key) {
+            PlaybackLog.w("Dream Core: a special's two forms no longer share a key; the second scrape is skipped")
+            return null
+        }
+        return gather(alt, imdb, mode, ALT_FORM)
+    }
+
+    private suspend fun special(t: PlayTarget): Special? {
+        if (!t.isSpecial) return null
+        val sp = hooks.specialForms(t) ?: return null
+        // The index request form: season 0 and the place in air order, derived now, never stored.
+        val wire = t.copy(season = 0, episode = sp.number.takeIf { it > 0 } ?: return null,
+            episodeTitle = t.episodeTitle ?: sp.name)
+        val alt = sp.parentForm?.let { wire.copy(season = it.season, episode = it.episode) }
+        return Special(wire, alt, sp.forms)
     }
 
     private fun context(t: PlayTarget, f: SourceFilters.Values, skip: Set<String>, resume: Boolean): Ranking.Context {
@@ -464,9 +510,16 @@ class DreamCore(
         // Read live: a Play that joins a look-ahead raises its l.purpose and brings its own l.deadline.
         // Only a real Play sets the filters aside when nothing passes them (no speculative CAM unlocks).
         val ep = t.isEpisode
-        val s = if (ep) t.season else null
-        val e = if (ep) t.episode else null
-        val g = gather(t, imdb, if (l.purpose == DebridPurpose.PLAY) ScrapeMode.PLAY else ScrapeMode.FULL)
+        val mode = if (l.purpose == DebridPurpose.PLAY) ScrapeMode.PLAY else ScrapeMode.FULL
+        val sp = special(t)
+        // Release names are matched against the form the index was asked for: a special's is S00E{n}.
+        val asked = sp?.wire ?: t
+        val s = if (ep) asked.season else null
+        val e = if (ep) asked.episode else null
+        val g = gather(asked, imdb, mode)
+        val alts = sp?.forms.orEmpty()
+        val alt = altGather(sp, imdb, mode)
+        if (alt != null) PlaybackLog.i("Dream Core: ${t.label} is a special; also looking for its parent-season form")
         l.phase = "waiting for the scrapers"
         val f = filters.current()
         val resume = (startMs ?: hooks.resumeMs(t)) > 0
@@ -481,7 +534,7 @@ class DreamCore(
             var cx = context(t, f, skip + tried, resume)
             while (true) {
                 val v = g.version
-                kept = Ranking.choose(merged(g, k, s, e), cx)
+                kept = Ranking.choose(merged(g, k, s, e, alts, alt), cx)
                 val n = now()
                 if (g.done || n >= l.deadline - DEBRID_RESERVE_MS) break
                 var wake = l.deadline - DEBRID_RESERVE_MS
@@ -500,10 +553,10 @@ class DreamCore(
                 cx = context(t, f, skip + tried, resume)
             }
             var level = 0
-            if (kept.isEmpty() && (l.purpose == DebridPurpose.PLAY)) Ranking.chooseRelaxed(merged(g, k, s, e), cx, true).let { kept = it.first; level = it.second }
+            if (kept.isEmpty() && (l.purpose == DebridPurpose.PLAY)) Ranking.chooseRelaxed(merged(g, k, s, e, alts, alt), cx, true).let { kept = it.first; level = it.second }
             if (kept.isEmpty()) {
                 if (g.done || now() >= l.deadline) {
-                    val n = merged(g, k, s, e).size
+                    val n = merged(g, k, s, e, alts, alt).size
                     if (n == 0) {
                         // No answer at all (busy, not running, every provider failed) is unknown, never "not out yet".
                         if (g.done && !g.answered) return none(t, k, l, "the scrapers didn't answer", Miss.NO_ANSWER)
@@ -516,7 +569,7 @@ class DreamCore(
                 continue
             }
             val top = kept.take(TOP)
-            recordNames(t, merged(g, k, s, e))
+            recordNames(t, merged(g, k, s, e, alts, alt))
             val p = l.purpose
             l.ran = p
             if (servicesFor != p) services = null
@@ -549,7 +602,7 @@ class DreamCore(
             val names = svcs.joinToString("/") { it.key.uppercase() }
             if (round >= 3) return none(t, k, l, "none of ${tried.size} cached at $names", Miss.NOT_READY)
             if (now() >= l.deadline) return none(t, k, l, "budget over; none of ${tried.size} cached at $names")
-            if (g.done && Ranking.chooseRelaxed(merged(g, k, s, e), context(t, f, skip + tried, resume), (l.purpose == DebridPurpose.PLAY)).first.isEmpty())
+            if (g.done && Ranking.chooseRelaxed(merged(g, k, s, e, alts, alt), context(t, f, skip + tried, resume), (l.purpose == DebridPurpose.PLAY)).first.isEmpty())
                 return none(t, k, l, "none of ${tried.size} cached at $names", Miss.NOT_READY)
         }
     }
@@ -746,11 +799,16 @@ class DreamCore(
     suspend fun sources(t: PlayTarget, loose: Boolean, budgetMs: Long = 8_000): List<SourceRow> {
         val deadline = now() + budgetMs
         val ep = t.isEpisode
-        if (!kit.accounts.any || (ep && (t.season == null || t.episode == null)) || !engine.active()) return emptyList()
+        if (!kit.accounts.any || !engine.active()) return emptyList()
+        if (t.kind == MediaKind.EPISODE && (t.season == null || t.episode == null)) return emptyList()
         val imdb = imdbFor(t) ?: return emptyList()
-        val g = gather(t, imdb, ScrapeMode.PLAY)
+        val sp = special(t)
+        val g = gather(sp?.wire ?: t, imdb, ScrapeMode.PLAY)
+        val alt = altGather(sp, imdb, ScrapeMode.PLAY)
         g.awaitDone(deadline)
-        val all = merged(g, t.key, if (ep) t.season else null, if (ep) t.episode else null)
+        alt?.awaitDone(deadline)
+        val all = merged(g, t.key, if (ep) sp?.wire?.season ?: t.season else null,
+            if (ep) sp?.wire?.episode ?: t.episode else null, sp?.forms.orEmpty(), alt)
         val f = filters.current()
         val bad = synchronized(lock) { failed[t.key]?.keys?.toSet().orEmpty() }
         val cx = context(t, f, emptySet(), hooks.resumeMs(t) > 0)
@@ -821,12 +879,17 @@ class DreamCore(
      */
     suspend fun survey(t: PlayTarget, budgetMs: Long = 8_000): SourceSurvey? {
         val ep = t.isEpisode
-        if (!engine.active() || (ep && (t.season == null || t.episode == null))) return null
+        if (!engine.active() || (t.kind == MediaKind.EPISODE && (t.season == null || t.episode == null))) return null
         val imdb = imdbFor(t) ?: return null
-        val s = if (ep) t.season else null
-        val e = if (ep) t.episode else null
+        // Read before anything else suspends: a full scrape already in flight means no quick check is needed.
+        val running = gatherOf(t.key)
+        val sp = special(t)
+        val asked = sp?.wire ?: t
+        val s = if (ep) asked.season else null
+        val e = if (ep) asked.episode else null
+        val alts = sp?.forms.orEmpty()
         val t0 = now()
-        gatherOf(t.key)?.let { g ->
+        running?.let { g ->
             val end = t0 + budgetMs
             while (!g.done && now() < end) {
                 val v = g.version
@@ -834,18 +897,18 @@ class DreamCore(
                 val first = g.firstAt
                 if (first != null) {
                     val since = now() - first
-                    if (since >= GRACE_MS) { if (parsed(g, s, e).any { !it.cam }) break } else wake = minOf(end, now() + GRACE_MS - since)
+                    if (since >= GRACE_MS) { if (parsed(g, s, e, alts).any { !it.cam }) break } else wake = minOf(end, now() + GRACE_MS - since)
                 }
                 g.await(v, wake)
             }
-            if (g.count > 0) return summarize(t, parsed(g, s, e))
+            if (g.count > 0) return summarize(t, parsed(g, s, e, alts))
             if (!g.done) return null
         }
-        val q = gather(t, imdb, ScrapeMode.QUICK)
+        val q = gather(asked, imdb, ScrapeMode.QUICK)
         q.awaitDone(t0 + budgetMs)
         if (q.count == 0 && (!q.done || !q.answered)) { PlaybackLog.i("Avail: no scraper answer for ${t.label}"); return null }
         PlaybackLog.i("Avail: ${t.label} from the quick check in ${now() - t0} ms (${q.count} sources)")
-        return summarize(t, parsed(q, s, e))
+        return summarize(t, parsed(q, s, e, alts))
     }
 
     private fun summarize(t: PlayTarget, all: List<Ranking.Parsed>): SourceSurvey {

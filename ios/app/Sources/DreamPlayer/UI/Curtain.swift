@@ -96,10 +96,9 @@ struct Curtain: View {
     private var line: String {
         guard let r = session.request else { return "" }
         if session.isTrailer { return "Trailer" }
-        if let s = r.season, let e = r.episode {
-            let name = r.episodeName ?? session.episodeInfo?.name
-            return "S\(s) · E\(e)" + (name.map { "    " + $0 } ?? "")
-        }
+        if let line = EpisodeWords.playing(r.kind, season: r.season, episode: r.episode,
+                                           title: r.episodeName ?? session.episodeInfo?.name,
+                                           separator: " · ", join: "    ") { return line }
         return r.title.year
     }
 }

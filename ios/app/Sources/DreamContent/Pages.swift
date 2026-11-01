@@ -234,9 +234,14 @@ enum Pages {
     static func continueRow(_ kind: MediaKind?) async -> CatalogRow? {
         let list = await Services.shared.history.continueWatching().filter { kind == nil || $0.title.kind == kind }.prefix(15)
         if list.isEmpty { return nil }
-        let items = list.map { e in
-            CatalogItem(title: e.title, episode: e.season.map { Episode(showId: e.title.id, season: $0, number: e.episode ?? 1, name: e.episodeName ?? "", stillPath: e.stillPath) },
-                        progress: e.upNext ? 0 : e.progress, subtitle: e.season.map { "S\($0)  ·  E\(e.episode ?? 1)" + (e.upNext ? "  ·  Up Next" : "") })
+        let items = list.map { e -> CatalogItem in
+            // A special has its own card beside the show's, named by its own title (`HistoryEntry.asEpisode`).
+            if e.kind.isSpecial {
+                return CatalogItem(title: e.title, episode: e.asEpisode, progress: e.progress,
+                                   subtitle: EpisodeWords.name(e.kind, season: nil, episode: nil, title: e.episodeName))
+            }
+            return CatalogItem(title: e.title, episode: e.asEpisode,
+                               progress: e.upNext ? 0 : e.progress, subtitle: e.season.map { "S\($0)  ·  E\(e.episode ?? 1)" + (e.upNext ? "  ·  Up Next" : "") })
         }
         return CatalogRow(id: "Continue Watching", name: "Continue Watching", style: .continueWatching, items: items)
     }
@@ -246,11 +251,11 @@ enum Pages {
         if snap.recent.isEmpty && snap.upcoming.isEmpty { return nil }
         var out: [CatalogItem] = []
         for i in snap.recent + snap.upcoming.prefix(10) {
-            let ep = Episode(showId: i.show.id, season: i.season, number: i.number, name: i.name, overview: i.overview, stillPath: i.still,
-                             airDate: i.airDate, airsAt: i.at, upcoming: i.upcoming)
+            let ep = i.episode
             // Upcoming: looked up too (it can be up early), but in the background: the row never waits on it.
+            // A special's recency goes by its air day, never its airstamp (`recentEpisode(_:)`).
             let avail = i.upcoming ? await AvailabilityChecker.shared.episodeNow(ep, show: i.show)?.state
-                : AvailabilityChecker.recentEpisode(at: i.at, date: i.airDate) ? await AvailabilityChecker.shared.episode(ep, show: i.show)?.state : nil
+                : AvailabilityChecker.recentEpisode(ep) ? await AvailabilityChecker.shared.episode(ep, show: i.show)?.state : nil
             let isNew = !i.upcoming ? await NewEpisodes.shared.isNew(i.key) : false
             out.append(CatalogItem(title: i.show, episode: ep, availability: avail, subtitle: i.badge(), badge: isNew ? "NEW" : nil))
         }
@@ -322,7 +327,8 @@ enum Pages {
             s.add(titles("Bingeworthy Shows") {
                 let q = "&include_adult=false&sort_by=popularity.desc&vote_count.gte=1000&vote_average.gte=7.8&first_air_date.gte=\(RowMix.yearsAgo(12))" +
                     "&without_genres=10763,10764,10766,10767,10762"
-                async let a = Tmdb.list("/discover/tv", q, type: .tv); async let b = Tmdb.list("/discover/tv", "\(q)&page=2", type: .tv)
+                async let a = Tmdb.list("/discover/tv", q, type: .tv)
+                async let b = Tmdb.list("/discover/tv", "\(q)&page=\(Taste.rotatingPage("Bingeworthy Shows"))", type: .tv)
                 return try await a + b
             })
         }
@@ -433,7 +439,12 @@ enum Pages {
         func titles(_ n: String, _ style: RowStyle = .landscape, min: Int = minRow, _ load: @escaping @Sendable () async throws -> [Title]) -> Slot {
             titleRow(n, style, decorate: { _ in (style == .big ? name : nil, nil, nil) }) { let l = c.take(n, withArt(try await load())); return l.count >= min ? l : nil }
         }
-        s.add(titles("Popular on \(name)", .big) { async let a = serviceMixed(name); async let b = serviceMixed(name, extra: "&page=2"); return await a + b })
+        // The first page, then the day's deeper one behind it: a service's row changes day to day.
+        s.add(titles("Popular on \(name)", .big) {
+            async let a = serviceMixed(name)
+            async let b = serviceMixed(name, extra: "&page=\(Taste.rotatingPage("Popular on \(name)"))")
+            return await a + b
+        })
         if !spec.networkIds.isEmpty {
             let nets = spec.networkIds.map(String.init).joined(separator: "|")
             s.add(titles("\(name) Originals") {

@@ -727,7 +727,8 @@ class PlayerMenus(
     fun openInfo() {
         val req = host.request
         val kicker = when {
-            req?.type == "episode" && req.season != null && req.episode != null -> "${req.title}  ·  S${req.season} · E${req.episode}"
+            req?.type == "episode" && (req.episode != null || req.isSpecial) ->
+                "${req.title}  ·  " + PlayFlow.episodeCode(req.isSpecial, req.season, req.episode, " · ")
             req != null -> req.year?.let { "Movie  ·  $it" } ?: "Movie"
             else -> null
         }
@@ -796,8 +797,9 @@ class PlayerMenus(
     private var chipRow: LinearLayout? = null
     private var epList: LinearLayout? = null
     private var epScroll: SmoothScrollView? = null
-    private var season = -1
-    private var pendingSeason = -1
+    /** The row on show: a season number, [Specials.ROW], or 0 until the first one is picked. */
+    private var season = 0
+    private var pendingSeason = 0
     private var history: WatchHistory.Entry? = null
     private val seasonSwitch = Runnable { showSeason(pendingSeason) }
 
@@ -833,19 +835,24 @@ class PlayerMenus(
         epScroll = epSv
         epList = list
         for (i in 0 until 3) list.addView(skeletonRow())
-        val cur = req.season ?: 1
+        val cur = if (req.isSpecial) Specials.ROW else req.season ?: 1
         Net.background({
             val d = try { Tmdb.details(ctx, Title(req.tmdbId, "tv", req.title, "", null, null, "", 0.0)) } catch (e: Exception) { null }
-            val h = try { WatchHistory.entries(ctx).firstOrNull { it.isShow && it.tmdbId == req.tmdbId } } catch (e: Exception) { null }
-            Pair(d, h)
+            val h = try { WatchHistory.seriesEntry(ctx, req.tmdbId) } catch (e: Exception) { null }
+            // TMDB has no season 0 for many shows that do have specials: the catalog knows ([Specials]).
+            val sp = try { Specials.of(ctx, req.tmdbId).size } catch (e: Exception) { 0 }
+            Triple(d, h, sp)
         }) { res ->
             if (gen != myGen || kind != "episodes") return@background
             history = res?.second
-            val seasons = res?.first?.seasons.orEmpty().filter { it.episodes > 0 }
-                .sortedWith(compareBy({ if (it.number == 0) 1 else 0 }, { it.number }))
+            // TMDB lists specials as its season 0; here they are a row of their own, last ([Specials.ROW]).
+            val specials = res?.third?.takeIf { it > 0 }?.let { Season(Specials.ROW, "Specials", it, "") }
+            val seasons = (res?.first?.seasons.orEmpty().filter { it.number > 0 && it.episodes > 0 } + listOfNotNull(specials))
+                .sortedWith(compareBy({ if (it.number == Specials.ROW) 1 else 0 }, { it.number }))
                 .ifEmpty { listOf(Season(cur, "Season $cur", 0, "")) }
             for (s in seasons.take(60)) {
-                val name = s.name.takeIf { it.isNotBlank() && !it.startsWith("Season") && it.length <= 18 } ?: if (s.number == 0) "Specials" else "Season ${s.number}"
+                val name = s.name.takeIf { it.isNotBlank() && !it.startsWith("Season") && it.length <= 18 }
+                    ?: if (s.number == Specials.ROW) "Specials" else "Season ${s.number}"
                 chips.addView(chip(name, "season:${s.number}", s.number == cur, onFocus = { has -> if (has) queueSeason(s.number) }) {
                     queueSeason(s.number); flushSeason()
                     (epList?.findViewWithTag<View>(PLAYING_TAG) ?: epList?.getChildAt(0)?.takeIf { v -> v.isFocusable })?.requestFocus()
@@ -870,7 +877,7 @@ class PlayerMenus(
 
     private fun flushSeason() {
         main.removeCallbacks(seasonSwitch)
-        if (pendingSeason >= 0 && pendingSeason != season) showSeason(pendingSeason)
+        if (pendingSeason != 0 && pendingSeason != season) showSeason(pendingSeason)
     }
 
     private fun showSeason(n: Int, focus: Boolean = false) {
@@ -882,7 +889,9 @@ class PlayerMenus(
         val myGen = gen
         Net.background({
             // Out (playable) and still to come (Upcoming.kt; the first one is named under the list).
-            WatchHistory.seasonEpisodes(ctx, req.tmdbId, n)?.let { Upcoming.split(ctx, req.tmdbId, req.title, n, it) }
+            val season = n.takeIf { it != Specials.ROW }
+            Specials.list(ctx, req.tmdbId, n == Specials.ROW, season)
+                ?.let { Upcoming.split(ctx, req.tmdbId, req.title, season, it) }
         }) { split ->
             if (gen != myGen || kind != "episodes" || season != n) return@background
             fillSeason(list, n, split?.aired.orEmpty(), focus)
@@ -892,9 +901,12 @@ class PlayerMenus(
 
     /** A quiet line under the episodes: "Next Episode: E7 · Ace of Spades · Friday at 9:00 PM" (not focusable, not playable). */
     private fun comingLine(ep: JSONObject): View {
-        val words = listOfNotNull("E${ep.optInt("episode_number")}", Upcoming.title(ep),
+        // A special has no number to show ([Specials]); its own name says which one is coming.
+        val which = if (season == Specials.ROW) null else "E${ep.optInt("episode_number")}"
+        val words = listOfNotNull(which, Upcoming.title(ep),
             Upcoming.whenWords(ep.optLong(Upcoming.AT), Upcoming.date(ep)) ?: Upcoming.TBA).joinToString("  ·  ")
-        return kit.label("Next Episode:  $words", Ui.T_CAPTION, Ui.alpha(kit.text, 0.58f), kit.medium).apply {
+        val lead = if (season == Specials.ROW) "Next Special:" else "Next Episode:"
+        return kit.label("$lead  $words", Ui.T_CAPTION, Ui.alpha(kit.text, 0.58f), kit.medium).apply {
             setPadding(12.dp, 12.dp, 12.dp, 12.dp)
         }
     }
@@ -908,7 +920,7 @@ class PlayerMenus(
         epScroll?.let { it.scrollTo(0, 0) }
         val req = host.request ?: return
         if (eps.isEmpty()) {
-            list.addView(kit.label(if (Tmdb.hasKey(ctx)) "No Episodes to Watch Yet" else "Episode list needs a TMDB key", Ui.T_BODY, kit.dim)
+            list.addView(kit.label(if (Tmdb.hasKey(ctx)) "No ${if (n == Specials.ROW) "Specials" else "Episodes"} to Watch Yet" else "Episode list needs a TMDB key", Ui.T_BODY, kit.dim)
                 .apply { setPadding(12.dp, 12.dp, 0, 12.dp) })
             if (hadFocus) chipRow?.findViewWithTag<View>("season:$n")?.requestFocus()
             return
@@ -936,7 +948,8 @@ class PlayerMenus(
     private fun episodeRow(n: Int, ep: JSONObject, req: PlaybackRequest): View {
         val num = ep.optInt("episode_number")
         val name = ep.optString("name").takeIf { it.isNotBlank() && it != "null" } ?: "Episode $num"
-        val isPlaying = req.season == n && req.episode == num
+        val isPlaying = if (n == Specials.ROW) req.specialId != null && req.specialId == Specials.idOf(ep)
+            else req.season == n && req.episode == num
         val h = history
         val row = LinearLayout(ctx).apply {
             orientation = LinearLayout.HORIZONTAL

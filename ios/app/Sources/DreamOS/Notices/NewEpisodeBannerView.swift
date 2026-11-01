@@ -82,7 +82,7 @@ struct NewEpisodeBannerView: View {
     }
 
     private func play(_ item: NewEpisodeInfo) {
-        Log.app.notice("NewEp: Play \(item.show.name, privacy: .public) S\(item.season)E\(item.number)")
+        Log.app.notice("NewEp: Play \(item.show.name, privacy: .public) \(NewEpisodeSpot.code(item), privacy: .public)")
         shell.play(CatalogItem(title: item.show, episode: item.episode))
         // Once the player covers Home, the banner leaves (Continue Watching has the episode now).
         DispatchQueue.main.asyncAfter(deadline: .now() + 2) { spot.done(item, why: "played") }

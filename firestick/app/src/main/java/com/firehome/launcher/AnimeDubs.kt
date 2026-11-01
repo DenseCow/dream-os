@@ -182,10 +182,14 @@ object AnimeDubs {
 
     // ---- what the scrapers found, per title / episode ----
 
-    /** The key [NativeResolver] and [Availability] use: "movie:<id>" or "tv:<show>:<s>:<e>". */
+    /** The key [NativeResolver] and [Availability] use: "movie:<id>", "tv:<show>:<s>:<e>", or "tv:<show>:sp:<n>" for a special. */
     fun key(r: PlaybackRequest): String {
         val id = if (r.tmdbId > 0) "${r.tmdbId}" else r.imdb.orEmpty()
-        return if (r.type == "episode") "tv:$id:${r.season}:${r.episode}" else "movie:$id"
+        return when {
+            r.type != "episode" -> "movie:$id"
+            r.isSpecial -> "tv:$id:sp:${r.specialId}"
+            else -> "tv:$id:${r.season}:${r.episode}"
+        }
     }
 
     /** Dream Core read [copies] (release name, info hash) for [key] (a survey, a lookup, the source list): kept for the language pills. */

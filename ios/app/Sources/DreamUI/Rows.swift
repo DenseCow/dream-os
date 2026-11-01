@@ -207,7 +207,7 @@ public struct SectionHeading: View {
 
 // MARK: Chips
 
-/// Hulu's category chip: an outline at rest, a soft fill when current, pearl with ink and a rainbow border while pressed.
+/// A category chip: an outline at rest, a soft fill when current, pearl with ink and a rainbow border while pressed.
 public struct ChipButtonStyle: ButtonStyle {
     var selected: Bool
     public init(selected: Bool = false) { self.selected = selected }

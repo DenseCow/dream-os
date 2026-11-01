@@ -100,3 +100,16 @@ fun offsetText(deltaMs: Long): String {
 }
 
 const val SEP = "  ·  "
+
+/**
+ * What is playing, in words: "S2 E5  ·  Episode Name" for a numbered episode, a special's own title alone (a
+ * special has no place in the show's order to name, STANDARDS §5), a movie's year. [sep] joins the code and the
+ * name; [between] goes between the two parts.
+ */
+fun playingLine(t: com.dreamos.desktop.core.playback.PlayTarget, name: String?, sep: String = " ", between: String = SEP): String {
+    val code = com.dreamos.desktop.core.model.EpisodeCode.maybe(t.episodeKind, t.season, t.episode, name, sep)
+        ?: return t.year?.toString().orEmpty()
+    if (t.isSpecial) return code
+    val n = name?.takeIf { it.isNotBlank() && it != "null" } ?: return code
+    return code + between + n
+}

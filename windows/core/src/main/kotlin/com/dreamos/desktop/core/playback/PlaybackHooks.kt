@@ -15,6 +15,13 @@ interface PlaybackHooks {
     suspend fun scrapeQuery(target: PlayTarget, imdb: String, quick: Boolean, waitMs: Long): ScrapeQuery =
         if (quick) ScrapeQuery.quick(target, imdb) else ScrapeQuery(target, imdb)
 
+    /**
+     * What a special needs from the specials catalog: the place in air order the index numbers it by, every form
+     * release names write it in, and its own title for the scrapers' query. Null when [target] isn't a special, or
+     * the catalog no longer has it. The default reads core's catalog.
+     */
+    suspend fun specialForms(target: PlayTarget): SpecialForms? = contentSpecialForms(target)
+
     /** The profile's audio language (2 letters; Dream Player's setting, else the system's). */
     fun audioLang(): String? = ReleaseLanguage.norm(java.util.Locale.getDefault().language)
 
@@ -49,6 +56,29 @@ interface PlaybackHooks {
     fun accountSummaryAtStart(): Boolean = runCatching {
         com.dreamos.desktop.core.store.DreamStore.shared.profileFile("pages").getBoolean("notices.summary", true)
     }.getOrDefault(true)
+}
+
+/**
+ * One special as the resolver needs it. [number]: its place in air order, which is how the index numbers it (the
+ * `{imdb}:0:{n}` request form), computed now rather than stored, since a backfilled earlier special moves it.
+ * [forms]: every way release names number it, S00E{n} and S{parent}E00 alike. [name]: its own title, which the
+ * scrapers search by.
+ */
+data class SpecialForms(val number: Int, val forms: List<EpisodeForm>, val name: String?) {
+    /** The parent-season request a name-searching index needs ("<show> S01E00 <special title>"). */
+    val parentForm: EpisodeForm? get() = forms.firstOrNull { it.episode == 0 && it.season > 0 }
+}
+
+/** [PlaybackHooks.specialForms] over core's specials catalog. */
+suspend fun contentSpecialForms(target: PlayTarget): SpecialForms? {
+    if (!target.isSpecial || target.specialId.isEmpty()) return null
+    return try {
+        kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+            val s = com.dreamos.desktop.core.content.Specials.byId(target.tmdbId, target.specialId) ?: return@withContext null
+            SpecialForms(s.number, com.dreamos.desktop.core.content.Specials.formsFor(target.tmdbId, target.specialId),
+                s.name.ifBlank { null })
+        }
+    } catch (e: kotlinx.coroutines.CancellationException) { throw e } catch (e: Exception) { null }
 }
 
 /** [PlaybackHooks.showFacts] over core's title details (`Services.titles`). */

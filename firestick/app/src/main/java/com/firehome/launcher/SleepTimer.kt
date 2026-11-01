@@ -33,7 +33,7 @@ class SleepTimer(private val service: AccessibilityService) {
         private set
     private var chosenMinutes = 0
 
-    /** Like Netflix: "Keep watching" re-arms for the full chosen time, at least 90 minutes. */
+    /** "Keep watching" re-arms for the full chosen time, at least 90 minutes. */
     private fun keepWatching() = arm(maxOf(chosenMinutes, 90))
 
     // postDelayed runs on uptime, which stops while the stick sleeps: a timer that ran out during a sleep is over,

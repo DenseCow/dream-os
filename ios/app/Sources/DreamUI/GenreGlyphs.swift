@@ -1,7 +1,7 @@
 import SwiftUI
 
 // The Browse by Genre and seasonal hub glyphs (fire-home GenreGlyphs.kt, SeasonGlyphs.kt, GenreArt.kt), shape for
-// shape. One visual language, Apple TV / Disney+ category style: a 100 × 100 box, every glyph filling about the same
+// shape. One visual language: a 100 × 100 box, every glyph filling about the same
 // circle, soft top-to-bottom gradients, rounded joins and caps, two line weights, a 3-tone pastel from the card's tint
 // plus pearl, and a faint soft shadow straight down under filled silhouettes. Static: drawn once, nothing animates.
 

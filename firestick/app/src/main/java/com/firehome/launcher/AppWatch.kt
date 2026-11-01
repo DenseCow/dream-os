@@ -20,13 +20,13 @@ import android.util.Log
 import android.view.accessibility.AccessibilityNodeInfo
 
 /**
- * Continue Watching for the official apps (Prime Video, Netflix, Hulu, ...).
+ * Continue Watching for the official streaming apps.
  *
  * Progress comes from each app's media session (read by [AppWatchService], a notification listener
  * granted over adb). What's playing comes from the session metadata when the app fills it in, and
- * otherwise from what was selected on screen when OK was pressed to start it: Prime Video's
- * session only says "PrimeVideo", but its detail page / home card expose "[American Horror Story, ...]
- * Resume S1 E2" to accessibility, which HomeRedirectService hands to [onOkPressed].
+ * otherwise from what was selected on screen when OK was pressed to start it. One app's
+ * session says only its own name, for instance, while its detail page and home card expose
+ * "[<title>, ...] Resume S1 E2" to accessibility, which HomeRedirectService hands to [onOkPressed].
  */
 object AppWatch {
     private const val TAG = "FireHome"

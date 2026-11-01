@@ -96,8 +96,11 @@ public enum AnimeDubs {
     private static let lock = NSLock()
     nonisolated(unsafe) private static var found: [String: Summary] = [:]
 
-    /// "movie:603" / "tv:1396:1:2" (Dream Core's key).
+    /// "movie:603" / "tv:1396:1:2" / "tv:1396/sp:tmdb:4921" (Dream Core's key).
     public static func key(_ r: PlayRequest) -> String {
+        // A special has no season, so without a key of its own it falls through to the show's: the special would
+        // read the show's release names as its own, and the show's language pills would come from the special.
+        if let id = r.specialId { return "tv:\(r.title.id)/sp:\(id)" }
         if r.title.kind == .tv, let s = r.season, let e = r.episode { return "tv:\(r.title.id):\(s):\(e)" }
         return "\(r.title.kind.rawValue):\(r.title.id)"
     }

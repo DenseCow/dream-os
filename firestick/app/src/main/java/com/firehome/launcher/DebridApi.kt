@@ -26,6 +26,11 @@ class Candidate(
     val seeders: Int,
     val season: Int?,               // what was asked for (episodes)
     val episode: Int?,
+    /**
+     * The other ways release names number this very episode, beside S[season]E[episode]: a special asked for
+     * as S00E01 is named "S01E00" as often ([Specials]), so both find its file inside the torrent.
+     */
+    val altForms: List<Pair<Int, Int>> = emptyList(),
 )
 
 /** A playable direct HTTPS link to the video file. */
@@ -213,11 +218,20 @@ internal object DebridFiles {
     fun isVideo(name: String) = VIDEO.containsMatchIn(name)
     fun base(path: String) = path.substringAfterLast('/').substringAfterLast('\\')
 
-    /** S02E01 / 2x01 / s2e1 style match for [season]/[episode] in a file name: built once per pick, not per file. */
-    private fun episodeMatcher(season: Int, episode: Int): (String) -> Boolean {
-        val sxe = Regex("(?i)s0*$season[ ._-]*e0*$episode(?![0-9])")
-        val nxn = Regex("(?i)(?<![0-9])$season[x]0*$episode(?![0-9])")
-        return { name -> base(name).let { sxe.containsMatchIn(it) || nxn.containsMatchIn(it) } }
+    /**
+     * S02E01 / 2x01 / s2e1 style match for [c]'s episode in a file name, in every form it may be numbered:
+     * the pair asked for plus [Candidate.altForms]. For a special that is three, its place in air order
+     * ("S00E03"), the parent season's scene form ("S01E00") and TMDB's own season-0 number when that differs
+     * ("S00E07"). Built once per pick, not per file.
+     */
+    private fun episodeMatcher(c: Candidate): ((String) -> Boolean)? {
+        val s = c.season ?: return null
+        val e = c.episode ?: return null
+        val forms = listOf(s to e) + c.altForms
+        val res = forms.flatMap { (season, episode) ->
+            listOf(Regex("(?i)s0*$season[ ._-]*e0*$episode(?![0-9])"), Regex("(?i)(?<![0-9])$season[x]0*$episode(?![0-9])"))
+        }
+        return { name -> base(name).let { n -> res.any { it.containsMatchIn(n) } } }
     }
 
     /**
@@ -229,8 +243,7 @@ internal object DebridFiles {
         val want = c.fileName?.let { base(it) }
         if (want != null) files.indexOfFirst { base(it.first).equals(want, true) }.let { if (it >= 0) return it }
         val videos = files.withIndex().filter { isVideo(it.value.first) && !JUNK.containsMatchIn(base(it.value.first)) }
-        val s = c.season; val e = c.episode
-        val pool = if (s != null && e != null) episodeMatcher(s, e).let { m -> videos.filter { m(it.value.first) } } else videos
+        val pool = episodeMatcher(c)?.let { m -> videos.filter { m(it.value.first) } } ?: videos
         return pool.maxByOrNull { it.value.second }?.index ?: -1
     }
 }

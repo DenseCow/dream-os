@@ -23,7 +23,7 @@ struct RouteView: View {
 }
 
 extension CatalogPage {
-    /// The page's name in its bar ("Movies", "Netflix", "Horror").
+    /// The page's name in its bar ("Movies", "Horror", a service's name).
     var name: String {
         switch self {
         case .home: "Home"
@@ -39,8 +39,11 @@ extension CatalogPage {
 }
 
 extension CatalogItem {
-    /// What Play asks for: the title, and the episode the card points at.
+    /// What Play asks for: the title, and the episode the card points at. A special goes through the factory that
+    /// takes the whole episode, so every id it answers to comes along. Listing the fields by hand here is how one
+    /// falls out at a conversion, and nothing downstream can tell it was ever there.
     var playRequest: PlayRequest {
-        PlayRequest(title: title, season: episode?.season, episode: episode?.number, episodeName: episode?.name)
+        if let ep = episode, ep.isSpecial { return .special(title: title, ep) }
+        return PlayRequest(title: title, season: episode?.season, episode: episode?.number, episodeName: episode?.name)
     }
 }

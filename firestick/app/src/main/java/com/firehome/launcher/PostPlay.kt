@@ -378,7 +378,7 @@ class PostPlayController(private val host: PlayerHost) {
         val col = LinearLayout(ctx).apply { orientation = LinearLayout.VERTICAL; clipChildren = false; clipToPadding = false }
         col.addView(k.kicker("Next Episode").apply { setTextColor(CinemaStyle.textDim(ctx)) })
         // The episode in white, its runtime after it in cool gray (two lines at most at the column width, then an ellipsis).
-        val ep = listOfNotNull("S${r.season} E${r.episode}", r.episodeTitle?.takeIf { it.isNotBlank() }).joinToString("  ·  ")
+        val ep = listOfNotNull(PlayFlow.episodeCode(r.isSpecial, r.season, r.episode), r.episodeTitle?.takeIf { it.isNotBlank() }).joinToString("  ·  ")
         val rt = if (n.runtimeMin > 0) "  ·  " + PlayerMeta.runtime(n.runtimeMin) else ""
         val name = android.text.SpannableString(ep + rt).apply {
             if (rt.isNotEmpty()) setSpan(android.text.style.ForegroundColorSpan(CinemaStyle.textDim(ctx)), ep.length, ep.length + rt.length, android.text.Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
@@ -518,7 +518,7 @@ class PostPlayController(private val host: PlayerHost) {
     }
 
     /**
-     * Dream Cinema's "Are You Still Watching?" (Netflix's, in Cinema's type): the paused picture dimmed and
+     * Dream Cinema's "Are You Still Watching?": the paused picture dimmed and
      * melting dark toward the left, and on the page's left line the show in small caps, the question in the
      * hero's big bold title, the episode under it, then Continue Watching and Back to Browse as Cinema pills
      * (glass at rest; selected, pearl with the fading rainbow border). Left / Right choose, OK acts, Back leaves.
@@ -539,7 +539,7 @@ class PostPlayController(private val host: PlayerHost) {
         col.addView(k.label("Are You Still Watching?", CinemaStyle.T_HERO_TITLE, k.text, k.bold, -0.015f),
             LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT))
         if (r.season != null && r.episode != null) {
-            val ep = listOfNotNull("S${r.season} E${r.episode}", r.episodeTitle?.takeIf { it.isNotBlank() }).joinToString("  ·  ")
+            val ep = listOfNotNull(PlayFlow.episodeCode(r.isSpecial, r.season, r.episode), r.episodeTitle?.takeIf { it.isNotBlank() }).joinToString("  ·  ")
             col.addView(k.label(ep, 16f, Ui.alpha(k.text, 0.78f), k.medium).apply { maxWidth = 560.dp },
                 LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT).apply { topMargin = 12.dp })
         }

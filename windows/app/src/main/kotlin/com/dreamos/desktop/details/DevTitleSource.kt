@@ -188,7 +188,7 @@ class DevTitleSource(private val tmdbKey: String?, private val omdbKey: String?)
         return out
     }
 
-    override suspend fun season(ref: TitleRef, season: Int): List<EpisodeInfo> = withContext(Dispatchers.IO) {
+    override suspend fun season(ref: TitleRef, season: Int, special: Boolean): List<EpisodeInfo> = withContext(Dispatchers.IO) {
         val j = tmdb("/tv/${ref.tmdbId}/season/$season")
         val today = LocalDate.now()
         j.arr("episodes").mapNotNull { it.obj() }.map { e ->

@@ -53,7 +53,9 @@ struct XRayView: View {
 
     private var kicker: String {
         guard let r = session.request else { return "" }
-        if let s = r.season, let e = r.episode { return "\(r.title.name)  ·  S\(s) · E\(e)" }
+        if let n = EpisodeWords.name(r.kind, season: r.season, episode: r.episode, title: r.episodeName, separator: " · ") {
+            return "\(r.title.name)  ·  \(n)"
+        }
         return r.title.name
     }
 
