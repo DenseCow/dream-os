@@ -128,8 +128,15 @@ if [ -z "$(git -C "$ROOT" status --porcelain)" ]; then
   echo "  Code unchanged since the last push."
 elif [ -z "$DRY" ]; then
   git -C "$ROOT" add -A
-  git -C "$ROOT" commit -q -m "Sync Fire Stick, iPhone and Windows code for Dream OS $VERSION" \
-    -m "Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
+  # Nothing staged after `add`: the synced files differed only by line endings, which normalise away. `commit`
+  # then exits 1 and `set -e` would stop the run here, after every artifact is built and before anything is
+  # pushed, which looks exactly like a release that quietly did nothing.
+  if git -C "$ROOT" diff --cached --quiet; then
+    echo "  Code unchanged once line endings normalised."
+  else
+    git -C "$ROOT" commit -q -m "Sync Fire Stick, iPhone and Windows code for Dream OS $VERSION" \
+      -m "Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
+  fi
 fi
 if [ -n "$DRY" ]; then
   echo "  Dry run: nothing pushed or published. Assets in $WORK/out:"; ls -la "$WORK/out"; exit 0
